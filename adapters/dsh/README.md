@@ -66,8 +66,39 @@ profile under `$DSH_HOME`.
 
 Checked with DSH **0.2.2-rc.5** on Linux, without changing the global profile,
 using `examples/dsh-demo/`: the patch composes and the MCP server starts
-under real DSH. **A full agent run (a model calling the tools) was not
-possible**: the test host had no model credential.
+under real DSH.
+
+A full agent run was done in headless mode after a project install
+(`code-audit install --host dsh --absolute`):
+
+```sh
+dsh headless --patch <models-overlay.yml> --patch dsh/cordis.patch.yml \
+    --approval-policy never --json "Run a security audit of this project ..."
+```
+
+The model loaded the skill and called `mcp__code-audit__audit_start`,
+`audit_status`, `audit_findings`, `audit_read`, `audit_search`,
+`audit_verdict` and `audit_report`: 21 tool calls, every one completed. The
+run was slow with the model used and was continued once with `--session-id`.
+
+Two things to know for headless runs:
+
+- The shipped `headless` profile has the `credentials` plugin disabled, so
+  model keys stored through the web UI are not found
+  (`MISSING_CREDENTIAL`). Either export the provider's key variable, or pass
+  an overlay that enables it and configures a provider, for example:
+
+  ```yaml
+  - id: credentials
+    disabled: false
+  # followed by your `llm-pi-ai` providers and `agent-default-model` entries,
+  # as in the web profile's cordis.patch.yml
+  ```
+
+- `--approval-policy never` is needed so MCP tool calls are not held for
+  approval in a non-interactive run.
+
+The static checks that came first:
 
 ```text
 $ dsh --profile web --patch examples/dsh-demo/dsh/cordis.patch.yml --dump-config

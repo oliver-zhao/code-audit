@@ -70,3 +70,7 @@ With a logged-in Claude Code 2.1.183 on macOS, both installation styles ran a fu
 - standalone plugin (`--plugin-dir adapters/claude-code`, `/code-audit:audit`): 29 tool calls, none failed.
 
 This supersedes the "Claude Code … needs a logged-in CLI" item under "Not verified" above. Still not exercised: interactive approval of the project MCP server and installation through the plugin marketplace.
+
+## DSH verification (after 0.2.0 was prepared)
+
+With model providers configured on the test host, DSH 0.2.2-rc.5 ran a full audit in headless mode after `code-audit install --host dsh --absolute`: the skill was loaded and `audit_start`, `audit_status`, `audit_findings`, `audit_read`, `audit_search`, `audit_verdict` (9) and `audit_report` were called through the MCP client — 21 tool calls, all completed, checked in the `--json` event log. The run used a slow model and was resumed once with `--session-id` after a 20-minute limit. The headless profile ships with the credentials plugin disabled; an overlay passed with `--patch` enabled it and supplied the provider configuration, without changing the profile on disk. All four hosts have now run a full audit through the MCP tools with this version.

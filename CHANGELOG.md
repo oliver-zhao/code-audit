@@ -123,7 +123,7 @@ so those findings would be reported as new.
 See "Limits" in the README, `docs/security-model.md`, `docs/M4_REPORT.md` and
 `docs/PY1_REPORT.md`. In short: pattern rules do not follow data across
 statements or files; Semgrep has never been executed in testing; Windows is
-untested; the DSH adapter has not been run end to end with a model.
+untested.
 
 [Unreleased]: https://github.com/oliver-zhao/code-audit/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/oliver-zhao/code-audit/releases/tag/v0.2.0
