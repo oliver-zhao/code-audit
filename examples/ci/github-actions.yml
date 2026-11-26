@@ -1,0 +1,74 @@
+# code-audit CI workflow for GitHub Actions.
+#
+# This workflow checks out the repository, installs code-audit, runs a scan
+# that fails only on NEW findings relative to a committed baseline, uploads the
+# SARIF report to the GitHub code-scanning API, and uploads the Markdown report
+# as an artifact.
+#
+# The baseline workflow:
+#   1. Run `code-audit scan . --out audit-out` locally once.
+#   2. Run `code-audit baseline <run-dir>` to write .code-audit-baseline.json.
+#   3. Commit .code-audit-baseline.json to the repository.
+#   4. CI then fails only when a scan introduces findings that are not in the
+#      baseline. Pre-existing findings do not break the build.
+#
+# To suppress a finding permanently, add an entry to .code-audit-ignore (see
+# the README "Suppressing findings" section).
+#
+# Exit codes: 0 = clean (or only baseline findings), 1 = new findings reached
+# the fail-on threshold, 2 = runtime error (bad config, missing baseline, ...).
+
+name: code-audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@<pin-to-commit-sha> # pin to a full commit SHA
+
+      - name: Set up Node 22
+        uses: actions/setup-node@<pin-to-commit-sha> # pin to a full commit SHA
+        with:
+          node-version: "22"
+
+      - name: Install code-audit (placeholder)
+        # There is no published @code-audit/cli npm package yet. This block is
+        # a placeholder that installs from a pinned git checkout of this
+        # repository. Replace <org> and <pin-to-commit-sha> before use.
+        run: |
+          git clone https://github.com/<org>/code-audit.git /tmp/code-audit
+          cd /tmp/code-audit
+          git checkout <pin-to-commit-sha>
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm run link:local
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+
+      - name: Run code-audit
+        run: code-audit scan . --ci --format sarif,md --out audit-out --latest-link
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@<pin-to-commit-sha> # pin to a full commit SHA
+        with:
+          sarif_file: audit-out/latest/results.sarif
+
+      - name: Upload Markdown report
+        if: always()
+        uses: actions/upload-artifact@<pin-to-commit-sha> # pin to a full commit SHA
+        with:
+          name: code-audit-report
+          path: audit-out/latest/report.md

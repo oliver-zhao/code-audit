@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectLanguage, type Language } from "./language.js";
 import { toPosixRelative, validateAuditRoot } from "./pathJail.js";
+import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
 
 export const DEFAULT_EXCLUDED_DIRS = [
   "node_modules",
@@ -284,6 +285,11 @@ export function inventory(
 
       if (adapterFiles.has(rel)) {
         skipped.push({ relPath: rel, reason: "code-audit adapter file" });
+        continue;
+      }
+
+      if (rel === IGNORE_FILE_NAME || rel === BASELINE_FILE_NAME) {
+        skipped.push({ relPath: rel, reason: "code-audit control file" });
         continue;
       }
 

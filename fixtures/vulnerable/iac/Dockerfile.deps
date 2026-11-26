@@ -1,0 +1,5 @@
+FROM node:22.11.0-alpine
+USER 10001:10001
+RUN pip install --trusted-host pypi.example.com --index-url http://pypi.example.com/simple requests
+RUN npm install http://example.invalid/pkg.tgz
+CMD ["node", "app.js"]

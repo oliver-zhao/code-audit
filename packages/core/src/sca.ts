@@ -528,6 +528,76 @@ function manifestHygieneWarnings(inventory: InventoryResult): string[] {
   return warnings;
 }
 
+export interface ManifestLockfileIssue {
+  /** Project-relative manifest path. */
+  file: string;
+  /** Line of the dependency declaration, or 1 when it cannot be found. */
+  line: number;
+  /** Manifest base name, e.g. package.json. */
+  manifest: string;
+}
+
+function dependencyDeclarationLine(absPath: string, base: string): number {
+  let content: string;
+  try {
+    content = fs.readFileSync(absPath, "utf8");
+  } catch {
+    return 1;
+  }
+  const patterns: RegExp[] =
+    base === "package.json"
+      ? [/"dependencies"\s*:/, /"devDependencies"\s*:/]
+      : base === "pyproject.toml"
+        ? [/^\s*dependencies\s*=/, /\[tool\.poetry\.dependencies\]/, /\[project\]/]
+        : [];
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (patterns.some((pattern) => pattern.test(lines[index] ?? ""))) {
+      return index + 1;
+    }
+  }
+  return 1;
+}
+
+/**
+ * The same detection that produces the "no matching lockfile found" warning,
+ * exposed as structured issues so the scanner can emit one low-confidence
+ * hotspot per manifest that has no lockfile next to it.
+ */
+export function manifestLockfileIssues(
+  inventory: InventoryResult,
+): ManifestLockfileIssue[] {
+  const byDir = new Map<string, Set<string>>();
+  for (const manifest of inventory.manifests) {
+    const dir = dirOf(manifest.relPath);
+    const set = byDir.get(dir) ?? new Set<string>();
+    set.add(path.basename(manifest.relPath));
+    byDir.set(dir, set);
+  }
+
+  const issues: ManifestLockfileIssue[] = [];
+  for (const manifest of inventory.manifests) {
+    if (manifest.isLockfile) continue;
+    const base = path.basename(manifest.relPath);
+    const dir = dirOf(manifest.relPath);
+    const present = byDir.get(dir) ?? new Set<string>();
+    const required = EXPECTED_LOCKFILES[base];
+    const missing = required
+      ? !required.some((candidate) => present.has(candidate))
+      : base.endsWith(".csproj") && !present.has("packages.lock.json");
+    if (!missing) continue;
+    issues.push({
+      file: manifest.relPath,
+      line: dependencyDeclarationLine(
+        path.join(inventory.root, manifest.relPath),
+        base,
+      ),
+      manifest: base,
+    });
+  }
+  return issues;
+}
+
 export function parseCvssV3(vector: string): number | undefined {
   const metrics = new Map<string, string>();
   for (const part of vector.split("/")) {

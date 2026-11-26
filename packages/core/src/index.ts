@@ -1,6 +1,7 @@
 export * from "./pathJail.js";
 export * from "./meta.js";
 export * from "./language.js";
+export * from "./glob.js";
 export * from "./inventory.js";
 export * from "./finding.js";
 export * from "./rules.js";
@@ -9,5 +10,9 @@ export * from "./sca.js";
 export * from "./coverage.js";
 export * from "./report.js";
 export * from "./runstore.js";
+export * from "./ignore.js";
+export * from "./baseline.js";
+export * from "./git.js";
+export * from "./ci.js";
 export * from "./scan.js";
 export * from "./external/index.js";

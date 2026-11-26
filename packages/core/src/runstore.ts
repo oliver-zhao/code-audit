@@ -1162,6 +1162,9 @@ export function renderRunReport(
 export function runStatus(ref: string, options: ResolveRunOptions = {}) {
   const run = loadRun(ref, options);
   const stats = reviewStats(run);
+  const runRecord = run.run as {
+    baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
+  };
   return {
     runId: run.runId,
     runDir: run.runDir,
@@ -1178,6 +1181,7 @@ export function runStatus(ref: string, options: ResolveRunOptions = {}) {
     unreviewed: stats.unreviewed,
     falsePositive: stats.falsePositive,
     findingCounts: countBySeverity(effectiveFindings(run)),
+    ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
     warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],
   };
 }

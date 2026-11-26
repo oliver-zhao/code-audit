@@ -64,6 +64,80 @@ Semgrep; Semgrep is used only when Opengrep is not installed.
 | `1` | At least one finding reached the thresholds (or Node < 22 for `doctor`). |
 | `2` | Runtime error (bad arguments, missing path, rule loading failure, ...). |
 
+## CI usage
+
+`code-audit` is designed to run in CI with a baseline so that only **new**
+findings break the build. Pre-existing findings are recorded in a baseline file
+and do not fail the build until they are fixed or explicitly suppressed.
+
+### Baseline workflow
+
+1. Run a scan locally and create a baseline once:
+
+   ```sh
+   code-audit scan . --out audit-out
+   code-audit baseline audit-out/<run-id>
+   ```
+
+   This writes `.code-audit-baseline.json` in the audit root. Commit it.
+
+2. In CI, run with `--ci`. The scan automatically picks up
+   `.code-audit-baseline.json` and fails only on findings whose fingerprint is
+   not in the baseline:
+
+   ```sh
+   code-audit scan . --ci --format sarif,md --out audit-out --latest-link
+   ```
+
+   `--latest-link` copies the produced reports to `audit-out/latest/`
+   (`audit-out/latest/results.sarif`, `audit-out/latest/report.md`) as plain
+   files, so CI can reference a stable path instead of the run-id directory.
+   The run directory layout (`audit-out/<run-id>/`) is unchanged.
+
+   Use `--fail-on-existing` to restore the old behaviour (fail on any finding,
+   including baseline entries). Use `--no-baseline` to ignore the baseline file.
+
+3. When `GITHUB_ACTIONS=true`, each actionable finding is emitted as a GitHub
+   workflow annotation (`::error` for critical/high, `::warning` for medium and
+   below), capped at 50. When `GITHUB_STEP_SUMMARY` is set, a Markdown summary
+   is appended to the job summary.
+
+See `examples/ci/github-actions.yml`, `examples/ci/gitlab-ci.yml` and
+`examples/ci/pre-commit-hook.sh` for reference configurations.
+
+### Suppressing findings
+
+Add a `.code-audit-ignore` file in the audit root to suppress findings by
+fingerprint, rule id, path glob or SCA advisory:
+
+```yaml
+version: 1
+ignore:
+  - rule: "py-weak-hash"
+    paths: ["tests/**", "legacy/*.py"]
+    reason: "MD5 used for cache keys only"
+  - paths: ["vendor/**"]
+    reason: "third-party code"
+  - fingerprint: "<64 hex>"
+    reason: "reviewed, not exploitable"
+    expires: "2027-06-30"
+```
+
+Suppressed findings stay in `findings.json` but are excluded from statistics
+and the exit code. Use `--no-ignore-file` to audit everything. Inline
+suppression with `code-audit:ignore <rule-id> -- <reason>` is also supported.
+
+### Incremental scans
+
+`--since <git-ref>` restricts the report to findings in files changed between
+the ref and the working tree (committed, staged, unstaged and untracked but
+not git-ignored files). This is useful for pre-commit hooks and pull-request
+checks:
+
+```sh
+code-audit scan . --since HEAD --ci --profile quick
+```
+
 ## License
 
 Apache-2.0. The repository bundles only self-written rules; no Semgrep

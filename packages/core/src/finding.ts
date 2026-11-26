@@ -44,6 +44,16 @@ export const CONFIDENCE_ORDER: Record<Confidence, number> = {
 export const FindingKindSchema = z.enum(["finding", "hotspot"]);
 export type FindingKind = z.infer<typeof FindingKindSchema>;
 
+/** How a finding came to be suppressed. */
+export const SuppressionSchema = z.object({
+  source: z.enum(["ignore-file", "inline"]),
+  entry: z.number().int().nonnegative().optional(),
+  reason: z.string(),
+  /** Ignore-file expiry date (YYYY-MM-DD), when the entry has one. */
+  expires: z.string().optional(),
+});
+export type Suppression = z.infer<typeof SuppressionSchema>;
+
 export const FindingCategorySchema = z.enum([
   "sast",
   "secrets",
@@ -91,6 +101,10 @@ export const FindingSchema = z
     references: z.array(z.string()).optional(),
     provenance: ProvenanceSchema,
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    /** Present when the finding was suppressed by an ignore file or inline comment. */
+    suppression: SuppressionSchema.optional(),
+    /** Present when a baseline was used: whether this finding is new or existing. */
+    baselineState: z.enum(["new", "existing"]).optional(),
     // SCA-specific fields.
     package: z.string().optional(),
     ecosystem: z.string().optional(),

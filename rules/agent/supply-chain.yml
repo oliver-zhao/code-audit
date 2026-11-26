@@ -1,0 +1,110 @@
+version: 1
+rules:
+  - id: agent-mcp-remote-script
+    title: MCP server config runs a remote script
+    title_zh: MCP 服务器配置执行远程脚本
+    severity: critical
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - json
+    pattern: (?:curl|wget)[^|\n]*\|\s*(?:ba|z)?sh\b
+    pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|mcp\.json|mcp-supply\.json|\.claude/settings\.json)$
+    message: An MCP server pipes a remote script straight into a shell, a severe supply-chain risk.
+    message_zh: MCP 服务器把远程脚本直接交给 shell 执行，存在严重供应链风险。
+    remediation: Pin downloaded content and verify SHA256; never pipe remote scripts to a shell.
+    remediation_zh: 固定下载内容并校验 SHA256；不要把远程脚本直接交给 shell。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: agent-mcp-unpinned-npx
+    title: MCP server config runs an unpinned npx package
+    title_zh: MCP 服务器配置运行未固定版本的 npx 包
+    severity: medium
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - json
+    pattern: npx\s+-y\s+(?!.*@)\S+
+    pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|mcp\.json|mcp-supply\.json|\.claude/settings\.json)$
+    message: An MCP server runs an npx package without a pinned version, so the code can change between installs.
+    message_zh: MCP 服务器运行未固定版本的 npx 包，安装之间代码可能变化。
+    remediation: Pin the package to an exact version (pkg@1.2.3) and verify its integrity.
+    remediation_zh: 将包固定到精确版本（pkg@1.2.3）并校验完整性。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: agent-mcp-inline-secret
+    title: MCP server config has an inline secret
+    title_zh: MCP 服务器配置包含内联密钥
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages:
+      - json
+    pattern: "['\"]?(?:api[_-]?key|token|secret|password)['\"]?\\s*:\\s*\"[A-Za-z0-9_\\-]{12,}\""
+    pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|mcp\.json|mcp-supply\.json|\.claude/settings\.json)$
+    message: A credential is embedded in an MCP/agent config file, exposing it to anyone who reads the repository.
+    message_zh: MCP/Agent 配置文件中内联了凭据，任何能读取仓库的人都能获取。
+    remediation: Reference the secret from an environment variable or a secrets manager.
+    remediation_zh: 通过环境变量或密钥管理器引用凭据。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: agent-hook-network-exec
+    title: Agent hook executes network-fetched code
+    title_zh: Agent hook 执行网络获取的代码
+    severity: critical
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - json
+    pattern: (?:curl|wget|fetch|http)[^"\n]*\|\s*(?:ba|z)?sh\b
+    pathInclude: (?:^|/)(?:\.claude/settings\.json|opencode\.jsonc?|hooks?\.json|mcp-supply\.json)$
+    message: A hook downloads and executes code from the network, enabling remote code execution on every tool call.
+    message_zh: Hook 从网络下载并执行代码，可在每次工具调用时实现远程代码执行。
+    remediation: Remove the hook or vendor the script with a pinned checksum.
+    remediation_zh: 移除该 hook，或将脚本纳入仓库并固定校验和。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: agent-disable-permissions
+    title: Agent config disables permission checks
+    title_zh: Agent 配置关闭权限检查
+    severity: high
+    confidence: high
+    cwe: CWE-284
+    owasp: A01:2021
+    languages:
+      - markdown
+    pattern: dangerously[- ]skip[- ]permissions|--dangerously-skip-permissions|disable\s+(?:all\s+)?permission
+    pathInclude: (?:^|/)(?:AGENTS|SKILL|CLAUDE)[\w-]*\.md$|(?:^|/)\.(?:claude|opencode|codex)/(?:commands|skills|agents)/.*\.md$
+    message: Documentation instructs the agent to bypass permission checks, allowing arbitrary tool execution.
+    message_zh: 文档指示 Agent 绕过权限检查，可执行任意工具。
+    remediation: Remove the instruction and keep human confirmation for privileged actions.
+    remediation_zh: 删除该指令，并对特权操作保留人工确认。
+    references:
+      - CWE-284
+      - OWASP A01:2021
+  - id: agent-exfil-env
+    title: Agent instructions ask to exfiltrate environment variables
+    title_zh: Agent 指令要求外传环境变量
+    severity: high
+    confidence: low
+    cwe: CWE-200
+    owasp: A01:2021
+    languages:
+      - markdown
+    pattern: (?:env|environment|secrets?|\.env)[^.\n]{0,40}(?:exfiltrat|send|upload|post|curl)
+    pathInclude: (?:^|/)(?:AGENTS|SKILL|CLAUDE)[\w-]*\.md$|(?:^|/)\.(?:claude|opencode|codex)/(?:commands|skills|agents)/.*\.md$
+    message: Documentation asks to send environment variables or secrets out, a common prompt-injection and supply-chain pattern.
+    message_zh: 文档要求外传环境变量或密钥，是典型的提示注入/供应链攻击特征。
+    remediation: Do not follow the instruction; remove or quarantine the document and review its origin.
+    remediation_zh: 不要执行该指令；删除或隔离相关文档，并审查其来源。
+    references:
+      - CWE-200
+      - OWASP A01:2021

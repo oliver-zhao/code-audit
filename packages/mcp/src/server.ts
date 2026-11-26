@@ -16,6 +16,7 @@ import {
   SEVERITIES,
   VERDICT_STATUSES,
   addFinding,
+  loadRun,
   makeRunId,
   queryRunFindings,
   readRunState,
@@ -24,6 +25,7 @@ import {
   registerRunIndex,
   renderRunReport,
   resolveRunDir,
+  resolveInside,
   runStatus,
   scanProject,
   searchCode,
@@ -209,6 +211,13 @@ async function startAudit(args: Record<string, unknown>): Promise<unknown> {
       ? args.root
       : process.cwd();
   const validated = validateAuditRoot(rootInput);
+  // The baseline path comes from a model, not a human at a shell. Unlike the
+  // CLI (which accepts absolute paths), require it to resolve inside the audit
+  // root so a model cannot point the scan at an arbitrary file.
+  let baselinePath: string | undefined;
+  if (typeof args.baseline === "string" && args.baseline.trim()) {
+    baselinePath = resolveInside(validated.root, args.baseline);
+  }
   const now = new Date();
   const runId = makeRunId(now);
   const runDir = path.join(validated.root, ".audit", runId);
@@ -260,6 +269,8 @@ async function startAudit(args: Record<string, unknown>): Promise<unknown> {
         ? (args.minConfidence as Confidence)
         : undefined,
     lang: args.lang === "zh" ? "zh" : "en",
+    baseline: baselinePath,
+    noBaseline: args.noBaseline === true,
   })
     .then((result) => {
       trackedRuns.set(runId, {
@@ -307,7 +318,15 @@ function statusTool(args: Record<string, unknown>): unknown {
   const runId = String(args.run_id ?? "");
   const runDir = resolveForTool(runId);
   try {
-    return runStatus(runDir);
+    const status = runStatus(runDir);
+    const run = loadRun(runDir);
+    const runRecord = run.run as {
+      baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
+    };
+    return {
+      ...status,
+      ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
+    };
   } catch {
     const state = readRunState(runDir);
     return {
@@ -577,6 +596,16 @@ export function createAuditServer(): McpServer {
           .enum(["en", "zh"])
           .optional()
           .describe("Report language; defaults to English."),
+        baseline: z
+          .string()
+          .optional()
+          .describe(
+            "Path to a baseline file. Defaults to <root>/.code-audit-baseline.json when present.",
+          ),
+        noBaseline: z
+          .boolean()
+          .optional()
+          .describe("Disable the automatic baseline file."),
       },
     },
     safeTool(startAudit),

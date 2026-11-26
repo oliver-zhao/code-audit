@@ -1,0 +1,97 @@
+version: 1
+rules:
+  - id: tf-sg-open-ssh
+    title: Terraform security group opens 0.0.0.0/0
+    title_zh: Terraform 安全组对 0.0.0.0/0 开放
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-284
+    owasp: A05:2021
+    languages:
+      - yaml
+    # The built-in engine matches line by line and cannot correlate a from_port
+    # with a cidr_blocks in the same resource block. Flagging either one alone
+    # is noisy, so this is a low-confidence hotspot for an open CIDR only.
+    pattern: cidr_blocks\s*=\s*\[[^\]]*0\.0\.0\.0/0
+    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    message: A security group exposes 0.0.0.0/0; review whether the port is meant to be internet-facing.
+    message_zh: 安全组对 0.0.0.0/0 开放，请确认端口是否确实需要对公网开放。
+    remediation: Restrict the CIDR to trusted ranges or use a VPN/bastion host.
+    remediation_zh: 将来源 CIDR 限制为可信网段，或通过 VPN/堡垒机访问。
+    references:
+      - CWE-284
+      - OWASP A05:2021
+  - id: tf-public-s3-acl
+    title: Terraform S3 bucket has a public ACL
+    title_zh: Terraform S3 存储桶使用公共 ACL
+    severity: high
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages:
+      - yaml
+    pattern: acl\s*=\s*"(?:public-read|public-read-write)"
+    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    message: A public S3 ACL exposes bucket contents to the internet.
+    message_zh: 公共 S3 ACL 会把存储桶内容暴露给互联网。
+    remediation: Use acl = "private" and grant access through IAM policies.
+    remediation_zh: 使用 acl = "private"，通过 IAM 策略授权访问。
+    references:
+      - CWE-732
+      - OWASP A01:2021
+  - id: tf-unencrypted-storage
+    title: Terraform storage not encrypted
+    title_zh: Terraform 存储未加密
+    severity: medium
+    confidence: medium
+    cwe: CWE-311
+    owasp: A02:2021
+    languages:
+      - yaml
+    pattern: encrypted\s*=\s*false|storage_encrypted\s*=\s*false
+    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    message: Storage is explicitly unencrypted, exposing data at rest to anyone with disk or snapshot access.
+    message_zh: 存储被显式设为未加密，拥有磁盘或快照访问权限的人可读取静态数据。
+    remediation: Enable encryption (SSE) with a managed key.
+    remediation_zh: 启用服务端加密（SSE）并使用托管密钥。
+    references:
+      - CWE-311
+      - OWASP A02:2021
+  - id: tf-hardcoded-credentials
+    title: Terraform provider block has hard-coded credentials
+    title_zh: Terraform provider 块中硬编码凭据
+    severity: critical
+    confidence: high
+    cwe: CWE-798
+    owasp: A07:2021
+    languages:
+      - yaml
+    pattern: (?:access_key|secret_key|token|password)\s*=\s*"[^"]{8,}"
+    notPattern: \$\{|\b(?:var|local|data)\.|\bchangeme\b|<[^>]*>|x{3,}
+    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    message: A credential is embedded in a provider block, leaking it to anyone who reads the source.
+    message_zh: 凭据直接写入 provider 块，任何能读取源码的人都能获取。
+    remediation: Use environment variables or a secrets manager; never commit credentials.
+    remediation_zh: 使用环境变量或密钥管理器；切勿提交凭据。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: tf-iam-wildcard
+    title: Terraform IAM policy allows Action and Resource wildcards
+    title_zh: Terraform IAM 策略使用 Action 与 Resource 通配符
+    severity: high
+    confidence: medium
+    cwe: CWE-732
+    owasp: A01:2021
+    languages:
+      - yaml
+    pattern: actions?\s*=\s*\[[^\]]*"\*"[^\]]*\]|resources?\s*=\s*\[[^\]]*"\*"[^\]]*\]
+    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    message: An IAM policy with Action "*" and Resource "*" grants unrestricted access.
+    message_zh: Action 与 Resource 均为 "*" 的 IAM 策略授予不受限的访问权限。
+    remediation: Scope actions and resources to the minimum required.
+    remediation_zh: 将 Action 与 Resource 收窄到最小所需范围。
+    references:
+      - CWE-732
+      - OWASP A01:2021

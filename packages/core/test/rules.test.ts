@@ -86,7 +86,11 @@ describe("rule coverage of fixtures", () => {
   });
 
   it("matches every EXPECTED.json seed at the expected line", () => {
+    // Seeds for scanner-emitted hotspots (for example dep-missing-lockfile,
+    // which the rule engine no longer owns) are covered by scan.test.ts.
+    const ruleIds = new Set(ruleSet.rules.map((rule) => rule.id));
     const missing = expected.seeds
+      .filter((seed) => ruleIds.has(seed.ruleId))
       .map(
         (seed) => `${seed.file}:${seed.line}:${seed.ruleId}`,
       )

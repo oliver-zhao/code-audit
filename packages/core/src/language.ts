@@ -48,6 +48,8 @@ const EXTENSION_LANGUAGE: Record<string, Language> = {
   ".hxx": "cpp",
   ".yml": "yaml",
   ".yaml": "yaml",
+  ".tf": "yaml",
+  ".tfvars": "yaml",
   ".json": "json",
   ".jsonc": "json",
   ".md": "markdown",

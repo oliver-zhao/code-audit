@@ -1,0 +1,59 @@
+version: 1
+rules:
+  - id: dep-http-install
+    title: Dependency installed over plain HTTP or unpinned git URL
+    title_zh: 依赖通过明文 HTTP 或未固定提交的 git URL 安装
+    severity: medium
+    confidence: medium
+    cwe: CWE-494
+    owasp: A08:2021
+    languages:
+      - javascript
+      - python
+      - dockerfile
+    pattern: (?:pip\s+install[^\n]*--index-url\s+http://|npm\s+install[^\n]*http://|git\+https?://(?!.*#[0-9a-f]{7,}))\S*
+    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt|json))$
+    message: Installing from a plain HTTP URL or an unpinned git URL allows a man-in-the-middle or moving target to swap the code.
+    message_zh: 通过明文 HTTP 或未固定提交的 git URL 安装依赖，中间人或可变目标可替换代码。
+    remediation: Use HTTPS and pin dependencies to a commit SHA or an exact version with a checksum.
+    remediation_zh: 使用 HTTPS，并将依赖固定到提交 SHA 或带校验和的精确版本。
+    references:
+      - CWE-494
+      - OWASP A08:2021
+  - id: dep-postinstall-download
+    title: postinstall script downloads and executes code
+    title_zh: postinstall 脚本下载并执行代码
+    severity: high
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - json
+    pattern: "['\"]?postinstall['\"]?\\s*:\\s*\"[^\"]*(?:curl|wget)[^\"]*\\|\\s*(?:ba|z)?sh"
+    pathInclude: (?:^|/)package\.json$
+    message: A postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
+    message_zh: postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
+    remediation: Remove the postinstall download or vendor the binary with a pinned checksum.
+    remediation_zh: 移除 postinstall 下载，或将二进制纳入仓库并固定校验和。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: dep-pip-trusted-host
+    title: pip install uses trusted-host or HTTP index
+    title_zh: pip install 使用 trusted-host 或 HTTP 索引
+    severity: medium
+    confidence: high
+    cwe: CWE-494
+    owasp: A08:2021
+    languages:
+      - python
+      - dockerfile
+    pattern: pip\s+install[^\n]*(?:--trusted-host|--index-url\s+http://)
+    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt))$
+    message: --trusted-host or an HTTP index disables TLS verification, allowing package substitution.
+    message_zh: --trusted-host 或 HTTP 索引会关闭 TLS 校验，允许替换软件包。
+    remediation: Use the default HTTPS index and remove --trusted-host.
+    remediation_zh: 使用默认 HTTPS 索引并移除 --trusted-host。
+    references:
+      - CWE-494
+      - OWASP A08:2021

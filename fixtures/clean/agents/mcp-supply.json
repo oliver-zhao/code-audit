@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "local": {
+      "command": "node",
+      "args": ["server.js"]
+    },
+    "pinned": {
+      "command": "npx -y some-package@1.2.3"
+    }
+  }
+}

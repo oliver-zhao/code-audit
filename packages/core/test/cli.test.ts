@@ -379,6 +379,51 @@ describe("CLI query commands", () => {
   });
 });
 
+describe("CLI --latest-link", () => {
+  it("copies the produced reports to <out>/latest as plain files", () => {
+    const out = path.join(temp, "latest-out");
+    const result = run([
+      "scan",
+      CLEAN,
+      "--offline",
+      "--no-external",
+      "--format",
+      "md,json,sarif",
+      "--out",
+      out,
+      "--latest-link",
+    ]);
+    expect(result.status).toBe(0);
+    const runDir = reportDir(result.stdout);
+    const latest = path.join(out, "latest");
+    for (const name of ["report.md", "results.sarif", "findings.json"]) {
+      const target = path.join(latest, name);
+      expect(fs.existsSync(target)).toBe(true);
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(target, "utf8")).toBe(
+        fs.readFileSync(path.join(runDir, name), "utf8"),
+      );
+    }
+
+    // A second run overwrites the plain copies.
+    const second = run([
+      "scan",
+      CLEAN,
+      "--offline",
+      "--no-external",
+      "--format",
+      "md,json,sarif",
+      "--out",
+      out,
+      "--latest-link",
+    ]);
+    expect(second.status).toBe(0);
+    expect(fs.lstatSync(path.join(latest, "report.md")).isSymbolicLink()).toBe(
+      false,
+    );
+  });
+});
+
 describe("CLI install command", () => {
   it("creates project-local OpenCode files and merges JSONC", () => {
     const project = path.join(temp, "install-opencode");
@@ -528,5 +573,164 @@ describe("CLI install command", () => {
     expect(coverage.scannedFiles.some((file) => file.path === "app.py")).toBe(
       true,
     );
+  });
+});
+
+describe("CLI baseline command", () => {
+  it("writes a baseline and makes a rescan exit 0 with New: 0", () => {
+    const project = path.join(temp, "baseline-cli");
+    fs.cpSync(VULNERABLE, project, { recursive: true });
+
+    const first = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--format",
+      "json",
+      "--out",
+      path.join(temp, "baseline-out1"),
+    ]);
+    expect(first.status).toBe(1);
+    const runDir = reportDir(first.stdout);
+
+    const baseline = run(["baseline", runDir]);
+    expect(baseline.status).toBe(0);
+    expect(baseline.stdout).toContain("baseline written to");
+    expect(
+      fs.existsSync(path.join(project, ".code-audit-baseline.json")),
+    ).toBe(true);
+
+    const second = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--format",
+      "json",
+    ]);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain("New: 0");
+
+    // Append one vulnerable line: exactly one new finding, exit 1.
+    fs.appendFileSync(
+      path.join(project, "python", "app.py"),
+      '\nos.system("ls " + command)\n',
+      "utf8",
+    );
+    const third = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--format",
+      "json",
+    ]);
+    expect(third.status).toBe(1);
+    expect(third.stdout).toContain("New: 1");
+  });
+
+  it("restores the old behaviour with --fail-on-existing", () => {
+    const project = path.join(temp, "baseline-existing");
+    fs.cpSync(VULNERABLE, project, { recursive: true });
+    const first = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--format",
+      "json",
+      "--out",
+      path.join(temp, "baseline-existing-out1"),
+    ]);
+    const runDir = reportDir(first.stdout);
+    run(["baseline", runDir]);
+
+    const result = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--fail-on-existing",
+      "--format",
+      "json",
+    ]);
+    expect(result.status).toBe(1);
+  });
+
+  it("returns 2 for a corrupt baseline", () => {
+    const project = path.join(temp, "baseline-corrupt");
+    fs.cpSync(VULNERABLE, project, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".code-audit-baseline.json"),
+      "{not json",
+      "utf8",
+    );
+    const result = run([
+      "scan",
+      project,
+      "--offline",
+      "--no-external",
+      "--format",
+      "json",
+    ]);
+    expect(result.status).toBe(2);
+  });
+});
+
+describe("CLI --ci mode", () => {
+  it("prints ::error annotations and exits 1 under GITHUB_ACTIONS", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "scan",
+        VULNERABLE,
+        "--ci",
+        "--offline",
+        "--no-external",
+      ],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 60_000,
+        env: { ...process.env, GITHUB_ACTIONS: "true" },
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("::error file=");
+    // No progress/colour lines in CI mode.
+    expect(result.stdout).not.toContain("code-audit scan completed");
+  });
+
+  it("prints run warnings in the summary and as ::warning:: lines", () => {
+    const project = path.join(temp, "ci-warnings");
+    fs.cpSync(VULNERABLE, project, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".code-audit-ignore"),
+      [
+        "version: 1",
+        "ignore:",
+        '  - rule: "py-weak-hash"',
+        '    paths: ["python/**"]',
+        '    reason: "old entry"',
+        '    expires: "2020-01-01"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [CLI, "scan", project, "--ci", "--offline", "--no-external"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 60_000,
+        env: { ...process.env, GITHUB_ACTIONS: "true" },
+      },
+    );
+    expect(result.stdout).toContain("::warning::");
+    expect(result.stdout).toContain("expired on 2020-01-01");
+    expect(result.stdout).toContain("### Warnings");
   });
 });

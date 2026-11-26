@@ -1,0 +1,134 @@
+version: 1
+rules:
+  - id: k8s-privileged-container
+    title: Kubernetes container runs privileged
+    title_zh: Kubernetes 容器以特权模式运行
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: privileged\s*:\s*true
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: A privileged container has almost all host capabilities, so a container escape has severe impact.
+    message_zh: 特权容器几乎拥有宿主机全部能力，容器逃逸影响极大。
+    remediation: Remove privileged and grant only the specific capabilities the workload needs.
+    remediation_zh: 移除 privileged，仅按需授予容器所需的具体 capability。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: k8s-host-network
+    title: Kubernetes pod uses hostNetwork or hostPID
+    title_zh: Kubernetes Pod 使用 hostNetwork 或 hostPID
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: host(?:Network|PID|IPC)\s*:\s*true
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: Sharing the host network, PID or IPC namespace weakens isolation and exposes host processes and ports.
+    message_zh: 共享宿主机网络、PID 或 IPC 命名空间会削弱隔离并暴露宿主机进程与端口。
+    remediation: Remove hostNetwork/hostPID/hostIPC and use the pod own namespaces.
+    remediation_zh: 移除 hostNetwork/hostPID/hostIPC，使用 Pod 自身的命名空间。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: k8s-allow-privilege-escalation
+    title: Kubernetes container allows privilege escalation
+    title_zh: Kubernetes 容器允许权限提升
+    severity: high
+    confidence: high
+    cwe: CWE-269
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: allowPrivilegeEscalation\s*:\s*true
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: allowPrivilegeEscalation lets a process gain more privileges than its parent, enabling setuid-style escalation.
+    message_zh: allowPrivilegeEscalation 允许进程获得比父进程更高的权限，可能实现 setuid 式提权。
+    remediation: Set allowPrivilegeEscalation to false and drop all capabilities.
+    remediation_zh: 将 allowPrivilegeEscalation 设为 false 并丢弃所有 capability。
+    references:
+      - CWE-269
+      - OWASP A05:2021
+  - id: k8s-run-as-root
+    title: Kubernetes container runs as root
+    title_zh: Kubernetes 容器以 root 运行
+    severity: high
+    confidence: medium
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: runAsNonRoot\s*:\s*false|runAsUser\s*:\s*0\b
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: Running as root (or explicitly non-root=false) amplifies the impact of a container compromise.
+    message_zh: 以 root 运行（或显式 runAsNonRoot=false）会放大容器被攻破后的影响。
+    remediation: Set runAsNonRoot to true and a non-zero runAsUser.
+    remediation_zh: 设置 runAsNonRoot 为 true 并使用非零的 runAsUser。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: k8s-hostpath-mount
+    title: Kubernetes mounts a sensitive hostPath
+    title_zh: Kubernetes 挂载敏感 hostPath
+    severity: critical
+    confidence: high
+    cwe: CWE-552
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: path\s*:\s*"?/(?:var/run/docker\.sock|run/containerd|containerd)\b|path\s*:\s*"?/\s*$
+    notPattern: mountPath
+    filePattern: hostPath
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: Mounting the container runtime socket gives the pod control equivalent to host root.
+    message_zh: 挂载容器运行时套接字会让 Pod 获得等同宿主机 root 的控制权。
+    remediation: Avoid hostPath mounts of the runtime socket; use a restricted CSI driver or a dedicated volume.
+    remediation_zh: 避免挂载运行时套接字的 hostPath；改用受限的 CSI 驱动或专用卷。
+    references:
+      - CWE-552
+      - OWASP A05:2021
+  - id: k8s-image-latest-tag
+    title: Kubernetes image uses latest tag or no tag
+    title_zh: Kubernetes 镜像使用 latest 标签或未固定标签
+    severity: medium
+    confidence: medium
+    cwe: CWE-1104
+    owasp: A06:2021
+    languages:
+      - yaml
+    pattern: 'image\s*:\s*\S+:latest\s*$|image\s*:\s*(?!.*@)(?:[^:\s/]+(?::\d+)?/)*[^:\s/]+\s*$'
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    filePattern: 'image\s*:'
+    message: An image with the latest tag (or no tag) is not reproducible and may pull unaudited changes.
+    message_zh: 使用 latest 标签（或省略标签）的镜像不可复现，可能引入未审计的变更。
+    remediation: Pin images to an explicit version or digest.
+    remediation_zh: 将镜像固定到明确版本或 digest。
+    references:
+      - CWE-1104
+      - OWASP A06:2021
+  - id: k8s-secret-in-env
+    title: Kubernetes env value may be a secret
+    title_zh: Kubernetes env 值可能是密钥
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-798
+    owasp: A07:2021
+    languages:
+      - yaml
+    # The built-in engine cannot correlate a value with the preceding name:
+    # line, so a long value alone is only a low-confidence hotspot.
+    pattern: value\s*:\s*["']?[A-Za-z0-9_\-]{12,}
+    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    message: A credential value is embedded directly in a pod env, exposing it to anyone who can read the manifest.
+    message_zh: 凭据值直接写入 Pod env，任何能读取清单的人都能看到。
+    remediation: Reference a Secret via valueFrom/secretKeyRef and keep the value out of the manifest.
+    remediation_zh: 通过 valueFrom/secretKeyRef 引用 Secret，避免把值写入清单。
+    references:
+      - CWE-798
+      - OWASP A07:2021

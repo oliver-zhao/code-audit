@@ -83,6 +83,23 @@ describe("MCP server", () => {
     }
   });
 
+  it("rejects an audit_start baseline outside the audit root", async () => {
+    const outside = path.join(temp, "outside-baseline.json");
+    const error = await callError("audit_start", {
+      root: project,
+      offline: true,
+      baseline: outside,
+    });
+    expect(error.code).toBe("PATH_OUTSIDE_ROOT");
+
+    const traversal = await callError("audit_start", {
+      root: project,
+      offline: true,
+      baseline: "../x",
+    });
+    expect(traversal.code).toBe("PATH_OUTSIDE_ROOT");
+  });
+
   it("starts a scan in the background and reports completion", async () => {
     const started = await call("audit_start", {
       root: project,

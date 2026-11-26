@@ -1,0 +1,36 @@
+# code-audit CI configuration for GitLab CI.
+#
+# This file is provided as a reference and has NOT been executed on a real
+# GitLab CI system. Adjust the image, Node version and paths to match your
+# project before using it.
+#
+# The baseline workflow mirrors the GitHub Actions example: create a baseline
+# once, commit it, and let CI fail only on new findings.
+
+stages:
+  - audit
+
+code-audit:
+  stage: audit
+  image: node:22-alpine
+  variables:
+    # Fail only on new findings relative to the committed baseline.
+    CODE_AUDIT_ARGS: "--ci --format sarif,md --out audit-out --latest-link"
+  before_script:
+    # There is no published @code-audit/cli npm package yet. This is a
+    # placeholder that installs from a pinned git checkout of this repository.
+    - git clone https://github.com/<org>/code-audit.git /tmp/code-audit
+    - cd /tmp/code-audit
+    - git checkout <pin-to-commit-sha>
+    - corepack enable
+    - pnpm install --frozen-lockfile
+    - pnpm build
+    - pnpm run link:local
+    - export PATH="/tmp/code-audit/bin:$PATH"
+  script:
+    - code-audit scan . $CODE_AUDIT_ARGS
+  artifacts:
+    when: always()
+    paths:
+      - audit-out/latest/
+    expire_in: 1 week

@@ -20,8 +20,24 @@ import { validateAuditRoot } from "./pathJail.js";
 import { renderFindingsJson, renderMarkdown, renderSarif, type ReportLang } from "./report.js";
 import { loadRules, scanRules, type LoadedRule, type RuleSet } from "./rules.js";
 import { registerRunIndex, writeRunState } from "./runstore.js";
-import { runSca, type HttpClient, type ScaResult } from "./sca.js";
+import { runSca, manifestLockfileIssues, type HttpClient, type ScaResult } from "./sca.js";
 import { scanSecrets } from "./secrets.js";
+import {
+  loadIgnoreFile,
+  matchIgnoreEntry,
+  resolveIgnoreFile,
+  type IgnoreEntry,
+} from "./ignore.js";
+import {
+  buildBaseline,
+  compareBaseline,
+  readBaseline,
+  serializeBaseline,
+  type BaselineComparison,
+  type BaselineDocument,
+  type BaselineEntry,
+} from "./baseline.js";
+import { listChangedFiles } from "./git.js";
 import {
   crossEngineDedupe,
   defaultOpengrepRulesDir,
@@ -74,6 +90,22 @@ export interface ScanOptions {
   now?: () => Date;
   /** Pre-allocated run id, used by the MCP server to answer before scanning. */
   runId?: string;
+  /** Path to a `.code-audit-ignore` file; defaults to `<root>/.code-audit-ignore`. */
+  ignoreFile?: string;
+  /** Disable the ignore file entirely (audits that must see everything). */
+  noIgnoreFile?: boolean;
+  /** Path to a baseline file; defaults to `<root>/.code-audit-baseline.json`. */
+  baseline?: string;
+  /** Disable the automatic baseline file. */
+  noBaseline?: boolean;
+  /** Treat existing (baseline) findings as failing too. */
+  failOnExisting?: boolean;
+  /** Only report findings in files changed since this git ref. */
+  since?: string;
+  /** Write the baseline to this path instead of the default location. */
+  baselineOutput?: string;
+  /** Copy the produced report files to `<out>/latest/` after a successful write. */
+  latestLink?: boolean;
 }
 
 export interface ScanResult {
@@ -131,6 +163,7 @@ function buildCoverage(
   engines: CoverageEngine[],
   warnings: string[],
   suppressed: CoverageReport["suppressed"],
+  scope?: { outOfScope: number; sinceRef?: string; changedFileCount: number },
 ): CoverageReport {
   const scannedFiles = inv.files.map((file) => {
     const fileEngines: string[] = [];
@@ -162,6 +195,15 @@ function buildCoverage(
     rulesCount: ruleSet.rules.length,
     warnings,
     suppressed,
+    ...(scope
+      ? {
+          scope: {
+            since: scope.sinceRef ?? null,
+            changedFiles: scope.changedFileCount,
+            outOfScope: scope.outOfScope,
+          },
+        }
+      : {}),
   };
 }
 
@@ -281,6 +323,37 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);
     }
+
+    // Manifest hygiene: one low-confidence hotspot per manifest that has no
+    // lockfile next to it. This reuses the inventory detection that already
+    // produces the "no matching lockfile found" warning.
+    const lockfileHotspots: Finding[] = builtinEnabled
+      ? manifestLockfileIssues(inv).map((issue) =>
+          createFinding({
+            ruleId: "dep-missing-lockfile",
+            title: "Manifest has no lockfile next to it",
+            category: "config",
+            severity: "low",
+            confidence: "low",
+            kind: "hotspot",
+            cwe: "CWE-1104",
+            owasp: "A06:2021",
+            language: issue.manifest === "package.json" ? "json" : "yaml",
+            file: issue.file,
+            startLine: issue.line,
+            evidence: `no lockfile next to ${issue.manifest}`,
+            message:
+              "A manifest without a lockfile resolves floating versions, so builds are not reproducible.",
+            remediation:
+              "Commit a lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock, poetry.lock or requirements.txt) and install with it.",
+            provenance: {
+              engine: "builtin-rules",
+              rule: "dep-missing-lockfile",
+              version: TOOL_VERSION,
+            },
+          }),
+        )
+      : [];
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
     if (ruleScan.suppressed.length > 0) {
@@ -544,11 +617,131 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     ]);
     const merged = dedupeFindings([...mergedSastSecrets, ...mergedSca]);
     const sorted = sortFindings(merged);
-    const findings = assignFindingIds(sorted, started.getUTCFullYear());
-    const hotspots = assignHotspotIds(
-      sortFindings(dedupeFindings(ruleHotspots)),
+    let findings = assignFindingIds(sorted, started.getUTCFullYear());
+    let hotspots = assignHotspotIds(
+      sortFindings(dedupeFindings([...ruleHotspots, ...lockfileHotspots])),
       started.getUTCFullYear(),
     );
+
+    // ---- Ignore file: mark matching findings and hotspots as suppressed ----
+    const ignorePath = resolveIgnoreFile({
+      root: validated.root,
+      ignoreFile: options.ignoreFile,
+      noIgnoreFile: options.noIgnoreFile,
+    });
+    let ignoreEntries: IgnoreEntry[] = [];
+    if (ignorePath) {
+      const loaded = loadIgnoreFile(ignorePath);
+      ignoreEntries = loaded?.entries ?? [];
+      const today = started.toISOString().slice(0, 10);
+      const matchedEntries = new Set<number>();
+      const applySuppression = (finding: Finding): Finding => {
+        const match = matchIgnoreEntry(
+          ignoreEntries,
+          {
+            fingerprint: finding.fingerprint,
+            ruleId: finding.ruleId,
+            file: finding.file,
+            advisoryId: finding.advisoryId,
+            packageName: finding.package,
+          },
+          today,
+        );
+        if (!match) return finding;
+        matchedEntries.add(match.entry);
+        const matchedEntry = ignoreEntries[match.entry];
+        return {
+          ...finding,
+          status: "suppressed",
+          suppression: {
+            source: "ignore-file",
+            entry: match.entry,
+            reason: match.reason,
+            ...(matchedEntry?.expires ? { expires: matchedEntry.expires } : {}),
+          },
+        };
+      };
+      findings = findings.map(applySuppression);
+      hotspots = hotspots.map(applySuppression);
+      for (let index = 0; index < ignoreEntries.length; index += 1) {
+        const entry = ignoreEntries[index];
+        if (!entry) continue;
+        if (entry.expires && entry.expires < today) {
+          warnings.push(`ignore entry #${index} expired on ${entry.expires}`);
+        } else if (!matchedEntries.has(index)) {
+          warnings.push(`ignore entry #${index} matched no finding`);
+        }
+      }
+    }
+
+    // ---- Inline code-audit:ignore hits get the same suppression shape ----
+    const inlineByKey = new Map(
+      ruleScan.suppressed.map((hit) => [
+        `${hit.file}\u0000${hit.ruleId}\u0000${hit.line}`,
+        hit,
+      ]),
+    );
+    const applyInlineSuppression = (finding: Finding): Finding => {
+      if (finding.suppression) return finding;
+      const hit = inlineByKey.get(
+        `${finding.file}\u0000${finding.ruleId}\u0000${finding.startLine}`,
+      );
+      if (!hit) return finding;
+      return {
+        ...finding,
+        status: "suppressed",
+        suppression: { source: "inline", reason: hit.reason },
+      };
+    };
+    findings = findings.map(applyInlineSuppression);
+    hotspots = hotspots.map(applyInlineSuppression);
+
+    // ---- Incremental scope: keep only findings in files changed since <ref> --
+    let changedFiles: Set<string> | undefined;
+    let sinceRef: string | undefined;
+    let outOfScope = 0;
+    if (options.since) {
+      const scope = await listChangedFiles(validated.root, options.since, {
+        pathEnv,
+      });
+      sinceRef = scope.ref;
+      warnings.push(...scope.warnings);
+      changedFiles = new Set(scope.files);
+      const inScope = (file: string): boolean =>
+        changedFiles?.has(file) ?? true;
+      const beforeFindings = findings.length;
+      const beforeHotspots = hotspots.length;
+      findings = findings.filter((finding) => inScope(finding.file));
+      hotspots = hotspots.filter((hotspot) => inScope(hotspot.file));
+      outOfScope =
+        beforeFindings - findings.length + (beforeHotspots - hotspots.length);
+    }
+
+    // ---- Baseline: mark new/existing and compute fixed ----
+    let baselineDoc: BaselineDocument | undefined;
+    let baselinePath: string | undefined;
+    let baselineCounts: BaselineComparison | undefined;
+    let baselineFixed: BaselineEntry[] = [];
+    if (!options.noBaseline) {
+      const explicit = options.baseline
+        ? path.isAbsolute(options.baseline)
+          ? path.resolve(options.baseline)
+          : path.resolve(validated.root, options.baseline)
+        : undefined;
+      const defaultPath = path.join(validated.root, ".code-audit-baseline.json");
+      const resolved = explicit ?? (fs.existsSync(defaultPath) ? defaultPath : undefined);
+      if (resolved) {
+        baselineDoc = readBaseline(resolved);
+        baselinePath = resolved;
+        const comparison = compareBaseline(baselineDoc, findings);
+        baselineCounts = comparison.counts;
+        baselineFixed = comparison.fixed;
+        findings = findings.map((finding) => {
+          const state = comparison.states.get(finding.fingerprint);
+          return state ? { ...finding, baselineState: state } : finding;
+        });
+      }
+    }
 
     const coverage = buildCoverage(
       inv,
@@ -558,6 +751,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       engines,
       warnings,
       ruleScan.suppressed,
+      { outOfScope, sinceRef, changedFileCount: changedFiles?.size ?? 0 },
     );
 
     const finished = new Date();
@@ -605,7 +799,23 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       findingCounts,
       confidenceCounts: countConfidences(findings),
       hotspotCount: hotspots.length,
-      suppressedCount: ruleScan.suppressed.length,
+      suppressedCount:
+        findings.filter((finding) => finding.status === "suppressed").length +
+        hotspots.filter((hotspot) => hotspot.status === "suppressed").length,
+      ...(baselineDoc && baselinePath && baselineCounts
+        ? {
+            baseline: {
+              path: baselinePath,
+              entries: baselineDoc.entries.length,
+              new: baselineCounts.new,
+              existing: baselineCounts.existing,
+              fixed: baselineCounts.fixed,
+            },
+          }
+        : {}),
+      ...(sinceRef
+        ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
+        : {}),
       warnings,
     };
 
@@ -625,6 +835,21 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       hotspots,
       coverage,
       warnings,
+      ...(baselineCounts
+        ? {
+            baseline: {
+              path: baselinePath as string,
+              entries: baselineDoc?.entries.length ?? 0,
+              new: baselineCounts.new,
+              existing: baselineCounts.existing,
+              fixed: baselineCounts.fixed,
+            },
+            baselineFixed,
+          }
+        : {}),
+      ...(sinceRef
+        ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
+        : {}),
     };
 
     fs.writeFileSync(
@@ -654,6 +879,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           findingCounts,
           confidenceCounts: run.confidenceCounts,
           suppressedCount: run.suppressedCount,
+          ...(run.baseline ? { baseline: run.baseline } : {}),
+          ...(run.scope ? { scope: run.scope } : {}),
           warnings,
         },
         findings,
@@ -674,6 +901,21 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         renderSarif(reportContext),
         "utf8",
       );
+    }
+
+    // --latest-link: plain copies (never a symlink) of the produced report
+    // files under `<out>/latest/`, so CI can reference a stable path.
+    if (options.latestLink) {
+      const latestDir = options.out
+        ? path.join(path.resolve(options.out), "latest")
+        : path.join(validated.root, ".audit", "latest");
+      fs.mkdirSync(latestDir, { recursive: true });
+      const produced = ["findings.json"];
+      if (formats.includes("md")) produced.push("report.md");
+      if (formats.includes("sarif")) produced.push("results.sarif");
+      for (const name of produced) {
+        fs.copyFileSync(path.join(runDir, name), path.join(latestDir, name));
+      }
     }
 
     const completedState = {

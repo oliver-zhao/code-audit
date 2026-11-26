@@ -7,6 +7,7 @@ import {
   type Severity,
 } from "./finding.js";
 import type { CoverageReport } from "./coverage.js";
+import type { BaselineEntry } from "./baseline.js";
 import { localizeRule, type LoadedRule } from "./rules.js";
 import { compareVersions } from "./sca.js";
 
@@ -38,6 +39,18 @@ export interface ReportContext {
   reviewers?: string[];
   /** True when verdicts or agent-added findings exist for this run. */
   agentReviewed?: boolean;
+  /** Present when a baseline was used for this run. */
+  baseline?: {
+    path: string;
+    entries: number;
+    new: number;
+    existing: number;
+    fixed: number;
+  };
+  /** Baseline entries that are no longer present in this run. */
+  baselineFixed?: BaselineEntry[];
+  /** Present when --since limited the report to changed files. */
+  scope?: { since: string; changedFiles: number };
 }
 
 const LABELS = {
@@ -130,6 +143,13 @@ const LABELS = {
     unreviewed: "未复核",
     reviewNote: "复核进度",
     falsePositiveExcluded: "条误报已排除",
+    baselineSummary: "基线对比",
+    suppressed: "被抑制的发现",
+    suppressedNote: "以下发现被 .code-audit-ignore 或行内 code-audit:ignore 抑制，仍保留在 findings.json 中，但不计入统计与退出码。",
+    suppressedColumns: "编号,规则,文件:行,原因,过期",
+    fixedSinceBaseline: "自基线以来已修复",
+    fixedNote: "以下基线条目在本次运行中已不存在。",
+    scopeNote: "范围",
   },
   en: {
     title: "Source Code Security Audit Report",
@@ -220,6 +240,13 @@ const LABELS = {
     unreviewed: "unreviewed",
     reviewNote: "Review progress",
     falsePositiveExcluded: "false positive(s) excluded",
+    baselineSummary: "Baseline",
+    suppressed: "Suppressed findings",
+    suppressedNote: "These findings were suppressed by .code-audit-ignore or an inline code-audit:ignore comment. They remain in findings.json but are excluded from statistics and the exit code.",
+    suppressedColumns: "id,rule,file:line,reason,expires",
+    fixedSinceBaseline: "Fixed since baseline",
+    fixedNote: "These baseline entries are no longer present in this run.",
+    scopeNote: "Scope",
   },
 } as const;
 
@@ -387,11 +414,21 @@ export function renderMarkdown(context: ReportContext): string {
     `- ${modelLine}`,
     `- ${l.scanProfile}: ${escapeMarkdown(context.profile)}`,
     `- ${l.offline}: ${context.offline ? l.yes : l.no}`,
+    ...(context.scope
+      ? [
+          `- ${l.scopeNote}: files changed since ${escapeMarkdown(context.scope.since)} (${context.scope.changedFiles} files)`,
+        ]
+      : []),
     "",
   );
 
   heading(2, `2. ${l.summary}`);
   lines.push(`- ${l.total}: **${actionable.length}**`);
+  if (context.baseline) {
+    lines.push(
+      `- ${l.baselineSummary}: New: ${context.baseline.new} · Existing: ${context.baseline.existing} · Fixed: ${context.baseline.fixed}`,
+    );
+  }
   if (reviewStats) {
     lines.push(
       `- ${l.reviewNote}: ${reviewStats.reviewed} ${l.reviewed} / ${reviewStats.unreviewed} ${l.unreviewed}`,
@@ -515,6 +552,37 @@ export function renderMarkdown(context: ReportContext): string {
     }
   }
 
+  heading(2, `5a. ${l.suppressed}`);
+  lines.push(`> ${l.suppressedNote}`, "");
+  const suppressedFindings = context.findings.filter(
+    (finding) => finding.status === "suppressed",
+  );
+  const suppressedHotspots = (context.hotspots ?? []).filter(
+    (hotspot) => hotspot.status === "suppressed",
+  );
+  const allSuppressed = [...suppressedFindings, ...suppressedHotspots];
+  if (allSuppressed.length === 0) {
+    lines.push(l.noItems, "");
+  } else {
+    lines.push(
+      tableRow(["ID", l.ruleId, l.file, l.line, l.reason, "expires"]),
+      tableRow(["---", "---", "---", "---", "---", "---"]),
+    );
+    for (const finding of allSuppressed) {
+      lines.push(
+        tableRow([
+          escapeMarkdown(finding.id),
+          escapeMarkdown(finding.ruleId),
+          escapeMarkdown(finding.file),
+          String(finding.startLine),
+          escapeMarkdown(finding.suppression?.reason ?? ""),
+          finding.suppression?.expires ?? "—",
+        ]),
+      );
+    }
+    lines.push("");
+  }
+
   const hotspots = (context.hotspots ?? []).filter(isActionable);
   heading(2, `6. ${l.hotspots}`);
   lines.push(`> ${l.hotspotsNote}`, "");
@@ -625,6 +693,26 @@ export function renderMarkdown(context: ReportContext): string {
       `> ${uniqueAdvisories.size} ${l.uniqueAdvisories}`,
       "",
     );
+  }
+
+  if (context.baselineFixed && context.baselineFixed.length > 0) {
+    heading(2, `7a. ${l.fixedSinceBaseline}`);
+    lines.push(`> ${l.fixedNote}`, "");
+    lines.push(
+      tableRow([l.ruleId, l.file, l.severity, "Title"]),
+      tableRow(["---", "---", "---", "---"]),
+    );
+    for (const entry of context.baselineFixed) {
+      lines.push(
+        tableRow([
+          escapeMarkdown(entry.ruleId),
+          escapeMarkdown(entry.file),
+          escapeMarkdown(entry.severity),
+          escapeMarkdown(entry.title),
+        ]),
+      );
+    }
+    lines.push("");
   }
 
   heading(2, `8. ${l.coverage}`);
@@ -821,6 +909,12 @@ export function renderSarif(context: ReportContext): string {
       kind: finding.kind,
       category: finding.category,
       fingerprint: finding.fingerprint,
+      ...(finding.baselineState
+        ? {
+            baselineState:
+              finding.baselineState === "new" ? "new" : "unchanged",
+          }
+        : {}),
       ...(finding.cwe ? { cwe: finding.cwe } : {}),
       ...(finding.owasp ? { owasp: finding.owasp } : {}),
     },

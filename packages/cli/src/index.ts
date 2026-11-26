@@ -5,6 +5,7 @@ import {
   CONFIDENCES,
   SEVERITIES,
   TOOL_VERSION,
+  buildBaseline,
   confidenceAtLeast,
   defaultOpengrepRulesDir,
   defaultRulesDir,
@@ -12,14 +13,21 @@ import {
   isActionable,
   loadOpengrepRules,
   loadRules,
+  renderStepSummaryMarkdown,
+  renderAnnotations,
+  renderWarningAnnotations,
   scanProject,
+  serializeBaseline,
   severityAtLeast,
+  type BaselineComparison,
   type Confidence,
   type EngineName,
   type ReportFormat,
   type Severity,
 } from "@code-audit/core";
 import { runMcpServer } from "@code-audit/mcp";
+import fs from "node:fs";
+import path from "node:path";
 import { INSTALL_HOSTS, installAdapter, type InstallHost } from "./install.js";
 import { isQueryCommand, runQueryCommand } from "./query.js";
 
@@ -33,7 +41,10 @@ Usage:
                         [--engines builtin,opengrep,semgrep,osv-scanner,gitleaks]
                         [--fail-on low|medium|high|critical]
                         [--min-confidence low|medium|high] [--lang en|zh]
-                        [--rules <dir>]
+                        [--rules <dir>] [--ignore-file <path>] [--no-ignore-file]
+                        [--baseline <file>] [--no-baseline] [--fail-on-existing]
+                        [--since <git-ref>] [--ci] [--latest-link]
+  code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
                         [--severity <s>] [--status <s>] [--language <l>]
@@ -112,6 +123,14 @@ interface ScanArgs {
   lang: "zh" | "en";
   rulesDir?: string;
   engines?: EngineName[];
+  ignoreFile?: string;
+  noIgnoreFile: boolean;
+  baseline?: string;
+  noBaseline: boolean;
+  failOnExisting: boolean;
+  since?: string;
+  ci: boolean;
+  latestLink: boolean;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -125,6 +144,14 @@ function parseScanArgs(args: string[]): ScanArgs {
   let lang: "zh" | "en" = "en";
   let rulesDir: string | undefined;
   let engines: EngineName[] | undefined;
+  let ignoreFile: string | undefined;
+  let noIgnoreFile = false;
+  let baseline: string | undefined;
+  let noBaseline = false;
+  let failOnExisting = false;
+  let since: string | undefined;
+  let ci = false;
+  let latestLink = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -199,6 +226,25 @@ function parseScanArgs(args: string[]): ScanArgs {
         }
       }
       engines = [...new Set(parsed)] as EngineName[];
+    } else if (arg === "--ignore-file") {
+      ignoreFile = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--no-ignore-file") {
+      noIgnoreFile = true;
+    } else if (arg === "--baseline") {
+      baseline = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--no-baseline") {
+      noBaseline = true;
+    } else if (arg === "--fail-on-existing") {
+      failOnExisting = true;
+    } else if (arg === "--since") {
+      since = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--ci") {
+      ci = true;
+    } else if (arg === "--latest-link") {
+      latestLink = true;
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -220,6 +266,14 @@ function parseScanArgs(args: string[]): ScanArgs {
     lang,
     rulesDir,
     engines,
+    ignoreFile,
+    noIgnoreFile,
+    baseline,
+    noBaseline,
+    failOnExisting,
+    since,
+    ci,
+    latestLink,
   };
 }
 
@@ -236,6 +290,13 @@ async function runScan(args: string[]): Promise<number> {
     lang: parsed.lang,
     rulesDir: parsed.rulesDir,
     engines: parsed.engines,
+    ignoreFile: parsed.ignoreFile,
+    noIgnoreFile: parsed.noIgnoreFile,
+    baseline: parsed.baseline,
+    noBaseline: parsed.noBaseline,
+    failOnExisting: parsed.failOnExisting,
+    since: parsed.since,
+    latestLink: parsed.latestLink,
   });
 
   const counts = {
@@ -251,34 +312,119 @@ async function runScan(args: string[]): Promise<number> {
     }
   }
 
-  process.stdout.write(
-    [
-      `code-audit scan completed: ${result.runId}`,
-      `Files: ${result.coverage.stats.scannedFiles} scanned / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
-      `Rules: ${result.coverage.rulesCount}`,
-      `Findings: ${result.findings.length} (critical ${counts.critical}, high ${counts.high}, medium ${counts.medium}, low ${counts.low}, info ${counts.info})`,
-      `Hotspots: ${result.hotspots.length}`,
-      `Duration: ${result.durationMs} ms`,
-      `Report directory: ${result.runDir}`,
-      "",
-    ].join("\n"),
-  );
-  for (const warning of result.warnings.slice(0, 20)) {
-    process.stderr.write(`warning: ${warning}\n`);
-  }
-  if (result.warnings.length > 20) {
-    process.stderr.write(
-      `warning: ${result.warnings.length - 20} more warnings; see run.json\n`,
+  const run = result.run as {
+    baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
+    scope?: { since: string; changedFiles: number };
+  };
+  const baseline = run.baseline;
+  const scope = run.scope;
+
+  if (parsed.ci) {
+    // CI mode: no colour, no progress lines, compact summary at the end.
+    const annotations = renderAnnotations(result.findings);
+    for (const line of annotations) process.stdout.write(`${line}\n`);
+    const warningAnnotations = renderWarningAnnotations(result.warnings);
+    for (const line of warningAnnotations) process.stdout.write(`${line}\n`);
+    const reportPaths = [
+      path.join(result.runDir, "report.md"),
+      path.join(result.runDir, "results.sarif"),
+      path.join(result.runDir, "findings.json"),
+    ];
+    const summary = renderStepSummaryMarkdown({
+      findingCounts: counts,
+      total: result.findings.filter(isActionable).length,
+      hotspots: result.hotspots.length,
+      ...(baseline
+        ? { baseline: { new: baseline.new, existing: baseline.existing, fixed: baseline.fixed } }
+        : {}),
+      reportPaths,
+      warnings: result.warnings,
+    });
+    process.stdout.write(summary);
+    const stepSummary = process.env.GITHUB_STEP_SUMMARY;
+    if (stepSummary) {
+      try {
+        fs.appendFileSync(stepSummary, summary, "utf8");
+      } catch {
+        // A read-only or missing step-summary path must not fail the run.
+      }
+    }
+  } else {
+    process.stdout.write(
+      [
+        `code-audit scan completed: ${result.runId}`,
+        `Files: ${result.coverage.stats.scannedFiles} scanned / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
+        `Rules: ${result.coverage.rulesCount}`,
+        ...(baseline
+          ? [`Baseline: New: ${baseline.new} · Existing: ${baseline.existing} · Fixed: ${baseline.fixed}`]
+          : []),
+        ...(scope ? [`Scope: files changed since ${scope.since} (${scope.changedFiles} files)`] : []),
+        `Findings: ${result.findings.length} (critical ${counts.critical}, high ${counts.high}, medium ${counts.medium}, low ${counts.low}, info ${counts.info})`,
+        `Hotspots: ${result.hotspots.length}`,
+        `Duration: ${result.durationMs} ms`,
+        `Report directory: ${result.runDir}`,
+        "",
+      ].join("\n"),
     );
+    for (const warning of result.warnings.slice(0, 20)) {
+      process.stderr.write(`warning: ${warning}\n`);
+    }
+    if (result.warnings.length > 20) {
+      process.stderr.write(
+        `warning: ${result.warnings.length - 20} more warnings; see run.json\n`,
+      );
+    }
   }
 
-  const failing = result.findings.some(
-    (finding) =>
-      isActionable(finding) &&
-      severityAtLeast(finding.severity, parsed.failOn) &&
-      confidenceAtLeast(finding.confidence, parsed.minConfidence),
-  );
+  const baselineActive = Boolean(baseline) && !parsed.failOnExisting;
+  const failing = result.findings.some((finding) => {
+    if (!isActionable(finding)) return false;
+    if (!severityAtLeast(finding.severity, parsed.failOn)) return false;
+    if (!confidenceAtLeast(finding.confidence, parsed.minConfidence)) return false;
+    if (baselineActive && finding.baselineState === "existing") return false;
+    return true;
+  });
   return failing ? 1 : 0;
+}
+
+async function runBaselineCommand(args: string[]): Promise<number> {
+  let ref = "";
+  let output: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--help" || arg === "-h") {
+      process.stdout.write(USAGE);
+      process.exit(0);
+    } else if (arg === "--output") {
+      output = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg.startsWith("-")) {
+      throw new CliError(`baseline unknown argument: ${arg}`);
+    } else if (!ref) {
+      ref = arg;
+    } else {
+      throw new CliError(`baseline unexpected positional argument: ${arg}`);
+    }
+  }
+  if (!ref) throw new CliError("baseline requires a run id or run directory");
+
+  const { loadRun, resolveRunDir } = await import("@code-audit/core");
+  const runDir = resolveRunDir(ref);
+  const loaded = loadRun(runDir);
+  const baseline = buildBaseline(
+    loaded.findings,
+    new Date().toISOString(),
+    `code-audit ${TOOL_VERSION}`,
+  );
+  const target =
+    output ??
+    path.join(loaded.root, ".code-audit-baseline.json");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, serializeBaseline(baseline), "utf8");
+  process.stdout.write(
+    `baseline written to ${target} (${baseline.entries.length} entries)\n`,
+  );
+  return 0;
 }
 
 async function runDoctor(args: string[]): Promise<number> {
@@ -458,6 +604,10 @@ async function main(): Promise<void> {  const argv = process.argv.slice(2);
     }
     if (command === "scan") {
       process.exitCode = await runScan(argv.slice(1));
+      return;
+    }
+    if (command === "baseline") {
+      process.exitCode = await runBaselineCommand(argv.slice(1));
       return;
     }
     if (command === "doctor") {
