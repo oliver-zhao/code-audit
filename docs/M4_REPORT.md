@@ -61,3 +61,12 @@ A last independent review of the whole repository confirmed four defects and one
 Final verification: macOS 644 tests passed (6 real-tool tests skipped); Linux with the three real scanners 647 passed. Package tarballs install and run (`pnpm run pack:verify`). End-to-end audits through MCP tools were re-run on this build with the real Codex CLI (macOS) and OpenCode (Linux). Findings that count toward the exit code with all engines: flask 6, httpie 6, pygoat 379.
 
 Known consequences of the last fixes: with a user-level `safe.directory` no longer read, `--since` fails with a clear error in a repository owned by another user; a host that starts the MCP server outside the project directory must configure the base directory; on checkouts with line-ending conversion or LFS most files count as changed for `--since`.
+
+## Claude Code verification (after 0.2.0 was prepared)
+
+With a logged-in Claude Code 2.1.183 on macOS, both installation styles ran a full audit through the MCP tools with a small model:
+
+- project install (`.mcp.json`, `.claude/skills`, `.claude/commands`), headless `claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and all eight tools were found; 42 tool calls, none failed, no permission denial; verdicts, two agent-added findings and the report (including the "Dismissed by review" section) were written; the installed adapter files were skipped by the scan as byte-identical adapter files;
+- standalone plugin (`--plugin-dir adapters/claude-code`, `/code-audit:audit`): 29 tool calls, none failed.
+
+This supersedes the "Claude Code … needs a logged-in CLI" item under "Not verified" above. Still not exercised: interactive approval of the project MCP server and installation through the plugin marketplace.

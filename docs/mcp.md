@@ -10,7 +10,8 @@ in [skills/code-audit/SKILL.md](../skills/code-audit/SKILL.md).
 - Server name `code-audit`; the version is the tool version.
 - Protocol messages use stdout; diagnostics go to stderr.
 - Hosts prefix the tool names: `mcp__code-audit__audit_start` (Claude Code,
-  DSH), `mcp__code_audit__audit_start` (Codex), `code-audit_audit_start`
+  DSH; `mcp__plugin_code-audit_code-audit__audit_start` when the server comes
+  from the Claude Code plugin), `mcp__code_audit__audit_start` (Codex), `code-audit_audit_start`
   (OpenCode).
 - `code-audit install --host <host>` writes the server entry for a host; a
   manual entry is `{"command": "code-audit-mcp", "args": []}`.

@@ -83,19 +83,25 @@ The plugin's `.mcp.json` uses the bare command `code-audit-mcp`; it must be on
 
 ## Verification level
 
-Checked with Claude Code 2.1.183 on macOS, without model calls:
+Run with Claude Code 2.1.183 on macOS:
 
+- **Project install, headless.** After `code-audit install --host claude-code
+  --absolute`, `claude -p "/audit" --mcp-config .mcp.json --allowedTools
+  "mcp__code-audit__*"` found the `code-audit` skill, the `/audit` command and
+  the eight `mcp__code-audit__audit_*` tools, and ran a full audit (start,
+  status, findings, read, search, verdict, add-finding, report): every tool
+  call succeeded and nothing was denied.
+- **Plugin.** `claude -p "/code-audit:audit" --plugin-dir adapters/claude-code
+  --allowedTools "mcp__plugin_code-audit_code-audit__*"` with `code-audit-mcp`
+  on `PATH` ran a full audit the same way. Note the different tool prefix when
+  the server comes from the plugin: `mcp__plugin_code-audit_code-audit__audit_*`.
 - `claude plugin validate --strict adapters/claude-code` and
   `claude plugin validate --strict .` (marketplace) pass.
-- The plugin's MCP server connects: `claude --plugin-dir adapters/claude-code
-  mcp list` lists `code-audit` as connected.
-- After a project install, `claude mcp list` in the project lists `code-audit`
-  from `.mcp.json` (pending approval until the user approves it).
 
-**Not verified** (everything that needs a logged-in Claude Code): approving
-the project server and running `/audit` end to end, the headless command line
-above, skill discovery from `.claude/skills` or from the plugin, and
-installing the plugin through the marketplace.
+**Not verified:** approving the project MCP server in an interactive session
+(headless runs pass `--mcp-config` instead), and installing the plugin through
+the marketplace (`claude plugin marketplace add`, `claude plugin install`),
+which changes the user's Claude Code configuration.
 
 ## Which directory is audited
 

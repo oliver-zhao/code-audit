@@ -199,7 +199,7 @@ where the host supports it, an `/audit` command. It never touches `~/.claude`,
 | OpenCode 2.4.1 | `opencode.json`, `.opencode/skills/code-audit/SKILL.md`, `.opencode/commands/audit.md` | A full audit through the MCP tools, on Linux, with this version of the code. |
 | Codex CLI 0.166 | `.codex/config.toml`, `.agents/skills/code-audit/SKILL.md`, `AGENTS.md` (managed blocks) | A full audit through the MCP tools, on macOS (`codex exec` with the overrides that `install` prints). |
 | DSH 0.2.2-rc.5 | `dsh/cordis.patch.yml` (managed block), `.dsh/skills/code-audit/SKILL.md` | The patch composes and the MCP server starts under real DSH. **A full agent run was not possible** (no model credential on the test host). |
-| Claude Code 2.1.183 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | The plugin and marketplace manifests pass `claude plugin validate --strict`, and the plugin's MCP server connects (`claude --plugin-dir ... mcp list`). **Nothing that needs a logged-in CLI was run**: no `/audit` end to end, no skill discovery check. |
+| Claude Code 2.1.183 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | A full audit through the MCP tools, on macOS, both ways: after a project install (`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and the 8 tools were found) and through the standalone plugin (`--plugin-dir`, `/code-audit:audit`). Not exercised: approving the project server interactively, installing the plugin through the marketplace. |
 
 Per-host details, including what the installer does with existing
 configuration, are in `adapters/<host>/README.md`. `adapters/claude-code/` is
