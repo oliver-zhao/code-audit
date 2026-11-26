@@ -64,7 +64,7 @@ rules:
     languages:
       - c
       - cpp
-    pattern: \bsystem\s*\([^)\n]*(?:argv|getenv|input|user|\+)
+    pattern: \bsystem\s*\([^)\n]{0,600}(?:argv|getenv|input|user|\+)
     group: cpp-command
     message: system executes through a shell, so concatenated external input enables command injection.
     message_zh: system 经 shell 执行命令，拼接外部输入可导致命令注入。

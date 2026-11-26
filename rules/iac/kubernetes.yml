@@ -101,7 +101,7 @@ rules:
     owasp: A06:2021
     languages:
       - yaml
-    pattern: 'image\s*:\s*\S+:latest\s*$|image\s*:\s*(?!.*@)(?:[^:\s/]+(?::\d+)?/)*[^:\s/]+\s*$'
+    pattern: 'image\s*:\s*\S+:latest\s*$|image\s*:\s*(?!\S*@)(?:[^:\s/]+(?::\d+)?/)*[^:\s/]+\s*$'
     pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
     filePattern: 'image\s*:'
     message: An image with the latest tag (or no tag) is not reproducible and may pull unaudited changes.
@@ -123,7 +123,10 @@ rules:
       - yaml
     # The built-in engine cannot correlate a value with the preceding name:
     # line, so a long value alone is only a low-confidence hotspot.
-    pattern: value\s*:\s*["']?[A-Za-z0-9_\-]{12,}
+    # The secret group takes the whole value, not only its leading run of
+    # word characters, so nothing after a special character stays visible.
+    pattern: value\s*:\s*["']?(?<secret>[A-Za-z0-9_\-]{12,}[^\s"']*)
+    redactEvidence: true
     pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
     message: A credential value is embedded directly in a pod env, exposing it to anyone who can read the manifest.
     message_zh: 凭据值直接写入 Pod env，任何能读取清单的人都能看到。

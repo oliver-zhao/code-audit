@@ -9,7 +9,7 @@ rules:
     owasp: A03:2021
     languages:
       - csharp
-    pattern: new\s+SqlCommand\(\s*[^;]*\+
+    pattern: new\s+SqlCommand\([^;]{0,600}\+
     group: cs-sql
     message: User input is concatenated into SQL text, letting attackers change query semantics.
     message_zh: 用户输入被拼接到 SQL 文本中，攻击者可改变查询语义。
@@ -27,7 +27,7 @@ rules:
     owasp: A03:2021
     languages:
       - csharp
-    pattern: Process\.Start\([^)]*\+
+    pattern: Process\.Start\([^)]{0,600}\+
     group: cs-command
     message: Untrusted input reaches Process.Start arguments and may execute arbitrary commands.
     message_zh: 外部输入进入 Process.Start 参数，可能执行任意命令。
@@ -62,7 +62,7 @@ rules:
     owasp: A01:2021
     languages:
       - csharp
-    pattern: Path\.Combine\([^)]*(?:name|request|input|user|filename|args)
+    pattern: Path\.Combine\([^)]{0,600}(?:name|request|input|user|filename|args)
     group: cs-path
     message: Untrusted input participates in a file path and can escape the intended directory.
     message_zh: 不可信输入参与路径拼接，未校验时可读写根目录外文件。

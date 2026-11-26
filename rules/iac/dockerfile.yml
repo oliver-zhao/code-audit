@@ -46,7 +46,7 @@ rules:
     owasp: A08:2021
     languages:
       - dockerfile
-    pattern: curl[^|\n]*\|\s*(?:ba|z)?sh\b
+    pattern: curl[^|\n]{0,600}\|\s*(?:ba|z)?sh\b
     pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
     message: Executing a remote script hands the build to uncontrolled content and creates supply-chain risk.
     message_zh: 直接执行远程脚本会把构建过程交给不受控内容，存在供应链风险。

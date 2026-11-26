@@ -27,7 +27,7 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: curl[^|\n]*\|\s*(?:ba|z)?sh\b
+    pattern: curl[^|\n]{0,600}\|\s*(?:ba|z)?sh\b
     pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|\.claude/settings\.json)$
     message: Executing a remote script from agent configuration is a severe supply-chain risk.
     message_zh: Agent 配置中直接执行远程脚本，存在严重供应链风险。

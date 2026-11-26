@@ -38,42 +38,90 @@ interface RawOpengrep {
     check_id: string;
     path: string;
     start?: { line?: number };
-    extra?: { metadata?: { confidence?: string } };
+    extra?: {
+      message?: string;
+      severity?: string;
+      metadata?: { confidence?: string; cwe?: string | string[] };
+    };
   }>;
   errors: unknown[];
 }
 
+const OPENGREP_RULES_DIR = path.join(REPO_ROOT, "rules/opengrep");
+
 async function runOpengrep(root: string): Promise<RawOpengrep> {
+  // Same arguments as the adapter (sastArgs in src/external/semgrep.ts).
   const result = await runTool(opengrep as string, [
     "scan",
     "--json",
     "--quiet",
     "--disable-version-check",
     "--config",
-    path.join(REPO_ROOT, "rules/opengrep"),
+    OPENGREP_RULES_DIR,
     root,
   ], { cwd: root, timeoutMs: 60_000 });
   const document = JSON.parse(result.stdout) as Partial<RawOpengrep>;
   return { results: document.results ?? [], errors: document.errors ?? [] };
 }
 
+interface Hit {
+  file: string;
+  line: number;
+  ruleId: string;
+  confidence: string;
+}
+
+/** Normalize raw results to root-relative POSIX paths and bare rule ids. */
+function toHits(raw: RawOpengrep, root: string, knownIds: Set<string>): Hit[] {
+  return raw.results.map((entry) => ({
+    file: path
+      .relative(root, path.resolve(root, entry.path))
+      .split(path.sep)
+      .join("/"),
+    line: entry.start?.line ?? 0,
+    ruleId: resolveRuleId(entry.check_id, knownIds),
+    confidence: (entry.extra?.metadata?.confidence ?? "").toLowerCase(),
+  }));
+}
+
+const hitKey = (hit: { file: string; line: number; ruleId: string }): string =>
+  `${hit.file}:${hit.line}:${hit.ruleId}`;
+
+/** The fixture files that hold the taint seeds (and nothing else). */
+const isTaintFixture = (file: string): boolean =>
+  /^python\/taint_[a-z0-9_]+\.py$/.test(file);
+
+const TAINT_RULE_IDS = [
+  "py-taint-sql",
+  "py-taint-command",
+  "py-taint-path",
+  "py-taint-ssrf",
+  "py-taint-template",
+  "py-taint-redirect",
+  "py-taint-deserialization",
+  "py-taint-eval",
+];
+
 describe.skipIf(!hasAll)("real external tools", () => {
-  it("opengrep reports 0 rule errors, matches every rule on the vulnerable fixture and nothing medium+ on clean", async () => {
+  it("opengrep reports 0 rule errors, every expected hit on the vulnerable fixture and nothing medium+ on clean", async () => {
     const vulnerable = await runOpengrep(VULNERABLE);
     expect(vulnerable.errors).toEqual([]);
-    const knownIds = new Set(
-      loadOpengrepRules(path.join(REPO_ROOT, "rules/opengrep")).rules.map(
-        (rule) => rule.id,
-      ),
-    );
-    const ids = new Set(
-      vulnerable.results.map((entry) => resolveRuleId(entry.check_id, knownIds)),
-    );
+    const ruleSet = loadOpengrepRules(OPENGREP_RULES_DIR);
+    expect(ruleSet.errors).toEqual([]);
+    const knownIds = new Set(ruleSet.rules.map((rule) => rule.id));
+    const hits = toHits(vulnerable, VULNERABLE, knownIds);
+    const byKey = new Map(hits.map((hit) => [hitKey(hit), hit]));
     const expected = loadExpected().opengrep ?? [];
     expect(expected.length).toBeGreaterThanOrEqual(12);
+    // Every expected entry is matched on file, line, rule id and confidence.
+    const missing = expected.filter((hit) => !byKey.has(hitKey(hit)));
+    expect(missing).toEqual([]);
     for (const hit of expected) {
-      expect(ids.has(hit.ruleId)).toBe(true);
+      expect(byKey.get(hitKey(hit))?.confidence).toBe(hit.confidence.toLowerCase());
     }
+    // Every rule that ships in rules/opengrep has at least one expected hit.
+    const expectedIds = new Set(expected.map((hit) => hit.ruleId));
+    expect([...knownIds].filter((id) => !expectedIds.has(id))).toEqual([]);
 
     const clean = await runOpengrep(CLEAN);
     expect(clean.errors).toEqual([]);
@@ -83,7 +131,59 @@ describe.skipIf(!hasAll)("real external tools", () => {
       ),
     );
     expect(mediumPlus).toEqual([]);
-  });
+  }, 120_000);
+
+  it("taint rules report exactly the seeded flows and stay silent on clean", async () => {
+    const ruleSet = loadOpengrepRules(OPENGREP_RULES_DIR);
+    const knownIds = new Set(ruleSet.rules.map((rule) => rule.id));
+    const taintRules = ruleSet.rules.filter((rule) => rule.id.includes("taint"));
+    expect(taintRules.map((rule) => rule.id).sort()).toEqual([...TAINT_RULE_IDS].sort());
+    for (const rule of taintRules) {
+      expect(rule.languages).toEqual(["python"]);
+      expect(rule.cwe).toMatch(/^CWE-\d+$/);
+    }
+
+    const root = path.join(VULNERABLE, "python");
+    const vulnerable = await runOpengrep(root);
+    expect(vulnerable.errors).toEqual([]);
+    for (const entry of vulnerable.results) {
+      if (!entry.check_id.includes("py-taint-")) continue;
+      expect(entry.extra?.metadata?.cwe).toMatch(/^CWE-\d+$/);
+      expect(["HIGH", "MEDIUM"]).toContain(entry.extra?.metadata?.confidence);
+      expect(["ERROR", "WARNING"]).toContain(entry.extra?.severity);
+      expect((entry.extra?.message ?? "").length).toBeGreaterThan(40);
+    }
+
+    // In the taint seed files the real results and EXPECTED.json agree in
+    // both directions: no seeded flow is missed and nothing else is reported.
+    const actual = toHits(vulnerable, root, knownIds)
+      .map((hit) => ({ ...hit, file: `python/${hit.file}` }))
+      .filter((hit) => isTaintFixture(hit.file));
+    const expected = (loadExpected().opengrep ?? []).filter((hit) =>
+      isTaintFixture(hit.file),
+    );
+    expect(actual.map(hitKey).sort()).toEqual(expected.map(hitKey).sort());
+
+    // Every taint rule is seeded with at least one flow in each of the three
+    // framework files (Flask, Django, FastAPI/Starlette).
+    for (const file of ["python/taint_app.py", "python/taint_django.py", "python/taint_fastapi.py"]) {
+      const ids = new Set(actual.filter((hit) => hit.file === file).map((hit) => hit.ruleId));
+      for (const id of TAINT_RULE_IDS) {
+        expect(ids.has(id), `${id} in ${file}`).toBe(true);
+      }
+    }
+
+    // The clean counterparts read the same request data but are sanitized,
+    // parameterized or constant: no taint rule may report anywhere under
+    // clean/python, and no rule of any kind in the clean taint files.
+    const cleanRoot = path.join(CLEAN, "python");
+    const clean = await runOpengrep(cleanRoot);
+    expect(clean.errors).toEqual([]);
+    const cleanTaint = toHits(clean, cleanRoot, knownIds).filter(
+      (hit) => hit.ruleId.includes("taint") || isTaintFixture(`python/${hit.file}`),
+    );
+    expect(cleanTaint).toEqual([]);
+  }, 120_000);
 
   it("osv-scanner parses real vulnerabilities and lockfile paths", async () => {
     const result = await runOsvScanner({

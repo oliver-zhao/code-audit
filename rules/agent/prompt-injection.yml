@@ -27,7 +27,7 @@ rules:
     owasp: A01:2021
     languages:
       - markdown
-    pattern: exfiltrat|send\s+(?:the\s+)?(?:secrets?|credentials|\.env)|upload\s+[^\n]*(?:\.env|secrets?)
+    pattern: exfiltrat|send\s+(?:the\s+)?(?:secrets?|credentials|\.env)|upload\s[^\n]{0,300}(?:\.env|secrets?)
     pathInclude: (?:^|/)(?:AGENTS|SKILL|CLAUDE)\.md$
     message: Documentation asks to send secrets or credentials out, a common prompt-injection and supply-chain pattern.
     message_zh: 文档要求外传密钥或凭据，是典型的提示注入/供应链攻击特征。

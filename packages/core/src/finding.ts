@@ -114,6 +114,7 @@ export const FindingSchema = z
     aliases: z.array(z.string()).optional(),
     dependencyPath: z.string().optional(),
     reachable: z.enum(["yes", "no", "unknown"]).optional(),
+    dependencyScope: z.enum(["runtime", "optional", "dev", "unknown"]).optional(),
   })
   .passthrough();
 
@@ -153,12 +154,22 @@ export interface FindingInit {
   aliases?: string[];
   dependencyPath?: string;
   reachable?: "yes" | "no" | "unknown";
+  dependencyScope?: "runtime" | "optional" | "dev" | "unknown";
 }
 
 /**
  * Fingerprint = sha256(ruleId + relative path + whitespace-free evidence).
  * Line numbers are intentionally absent, so moving code does not create a new
  * finding.
+ *
+ * Evidence is redacted before it gets here, and the mask depends only on the
+ * length of a secret (plus its first and last 2 characters when it is 16
+ * characters or longer). Consequences, both intended:
+ * - two different secrets of the same length assigned to the same name have
+ *   the same base fingerprint; `disambiguateFingerprints` keeps them apart by
+ *   occurrence;
+ * - a rotated secret of the same length keeps its fingerprint, so a baseline
+ *   or ignore entry for the old value also covers the new one.
  */
 export function computeFingerprint(
   ruleId: string,
@@ -203,6 +214,50 @@ export function sortFindings(findings: Finding[]): Finding[] {
     if (a.file !== b.file) return a.file.localeCompare(b.file);
     if (a.startLine !== b.startLine) return a.startLine - b.startLine;
     return a.ruleId.localeCompare(b.ruleId);
+  });
+}
+
+/**
+ * Give repeated occurrences of the same weakness in one file distinct
+ * fingerprints.
+ *
+ * The base fingerprint is line-independent (rule + file + evidence), so two
+ * identical vulnerable lines in one file share it and the second would be
+ * dropped by `dedupeFindings`. Occurrences are ordered by line; the first keeps
+ * the base fingerprint (so existing baselines and ignore files stay valid) and
+ * the n-th gets `sha256(base + "#" + n)`. Counting occurrences instead of using
+ * line numbers keeps fingerprints stable when unrelated code moves.
+ *
+ * Entries with the same fingerprint AND the same start line are true
+ * duplicates and are left alone for `dedupeFindings` to collapse.
+ */
+export function disambiguateFingerprints(findings: Finding[]): Finding[] {
+  const groups = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    const group = groups.get(finding.fingerprint);
+    if (group) group.push(finding);
+    else groups.set(finding.fingerprint, [finding]);
+  }
+  const replacement = new Map<Finding, string>();
+  for (const [base, group] of groups) {
+    if (group.length < 2) continue;
+    const lines = [...new Set(group.map((finding) => finding.startLine))].sort(
+      (left, right) => left - right,
+    );
+    if (lines.length < 2) continue;
+    for (const finding of group) {
+      const occurrence = lines.indexOf(finding.startLine);
+      if (occurrence === 0) continue;
+      replacement.set(
+        finding,
+        crypto.createHash("sha256").update(`${base}#${occurrence + 1}`).digest("hex"),
+      );
+    }
+  }
+  if (replacement.size === 0) return findings;
+  return findings.map((finding) => {
+    const fingerprint = replacement.get(finding);
+    return fingerprint ? { ...finding, fingerprint } : finding;
   });
 }
 

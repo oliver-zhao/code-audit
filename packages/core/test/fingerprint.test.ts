@@ -56,3 +56,42 @@ describe("fingerprints", () => {
     expect(fs.existsSync(path.join(result.runDir, "findings.json"))).toBe(true);
   });
 });
+
+describe("repeated identical lines", () => {
+  it("reports every occurrence and keeps fingerprints stable when lines move", async () => {
+    const { scanProject } = await import("../src/scan.js");
+    const fsMod = await import("node:fs");
+    const osMod = await import("node:os");
+    const pathMod = await import("node:path");
+    const temp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "code-audit-repeat-"));
+    const project = pathMod.join(temp, "p");
+    fsMod.mkdirSync(project);
+    const line = '    os.system("ping " + request.args["h"])';
+    const body = (prefix: string) =>
+      `${prefix}import os\nfrom flask import request\ndef a():\n${line}\ndef b():\n${line}\ndef c():\n${line}\n`;
+    const run = async (prefix: string, out: string) => {
+      fsMod.writeFileSync(pathMod.join(project, "x.py"), body(prefix));
+      const result = await scanProject({
+        root: project,
+        out: pathMod.join(temp, out),
+        offline: true,
+        engines: ["builtin"],
+        noBaseline: true,
+        noIgnoreFile: true,
+      } as Parameters<typeof scanProject>[0]);
+      return result.findings.filter((finding) => finding.ruleId === "py-command-injection");
+    };
+    try {
+      const first = await run("", "o1");
+      expect(first.map((finding) => finding.startLine)).toEqual([4, 6, 8]);
+      expect(new Set(first.map((finding) => finding.fingerprint)).size).toBe(3);
+      const moved = await run("\n\n# moved\n", "o2");
+      expect(moved.map((finding) => finding.startLine)).toEqual([7, 9, 11]);
+      expect(moved.map((finding) => finding.fingerprint)).toEqual(
+        first.map((finding) => finding.fingerprint),
+      );
+    } finally {
+      fsMod.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+});

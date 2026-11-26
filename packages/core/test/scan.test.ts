@@ -154,9 +154,9 @@ describe("secret handling", () => {
         finding.file === "secrets/secrets.txt",
     );
     expect(aws).toBeDefined();
-    expect(aws?.evidence).toContain("AKIA");
-    expect(aws?.evidence).toContain("0000");
-    expect(aws?.evidence).toContain("*");
+    // The public AKIA prefix stays; of the key itself only the last 2
+    // characters do.
+    expect(aws?.evidence).toMatch(/AKIA\*{14}[0-9A-Z]{2}(?![0-9A-Z])/);
     expect(aws?.evidence).not.toContain("FAKEFIXTURE");
   });
 

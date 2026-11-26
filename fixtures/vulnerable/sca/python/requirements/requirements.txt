@@ -1,0 +1,10 @@
+-r base.txt
+-c ../constraints.txt
+--hash=sha256:0000000000000000000000000000000000000000000000000000000000000000
+Django==3.2.0 \
+    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111
+requests==2.19.0 ; python_version < "3.9"
+flask[async]==2.0.0
+uvicorn===0.11.0
+git+https://github.com/example/repo.git
+mypkg @ https://example.invalid/pkg.whl

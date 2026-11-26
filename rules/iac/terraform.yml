@@ -13,7 +13,7 @@ rules:
     # The built-in engine matches line by line and cannot correlate a from_port
     # with a cidr_blocks in the same resource block. Flagging either one alone
     # is noisy, so this is a low-confidence hotspot for an open CIDR only.
-    pattern: cidr_blocks\s*=\s*\[[^\]]*0\.0\.0\.0/0
+    pattern: cidr_blocks\s*=\s*\[[^\]]{0,600}0\.0\.0\.0/0
     pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
     message: A security group exposes 0.0.0.0/0; review whether the port is meant to be internet-facing.
     message_zh: 安全组对 0.0.0.0/0 开放，请确认端口是否确实需要对公网开放。
@@ -68,7 +68,8 @@ rules:
     languages:
       - yaml
     pattern: (?:access_key|secret_key|token|password)\s*=\s*"[^"]{8,}"
-    notPattern: \$\{|\b(?:var|local|data)\.|\bchangeme\b|<[^>]*>|x{3,}
+    notPattern: \$\{|\b(?:var|local|data)\.|\bchangeme\b|<[^<>]*>|x{3,}
+    redactEvidence: true
     pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
     message: A credential is embedded in a provider block, leaking it to anyone who reads the source.
     message_zh: 凭据直接写入 provider 块，任何能读取源码的人都能获取。
@@ -86,7 +87,7 @@ rules:
     owasp: A01:2021
     languages:
       - yaml
-    pattern: actions?\s*=\s*\[[^\]]*"\*"[^\]]*\]|resources?\s*=\s*\[[^\]]*"\*"[^\]]*\]
+    pattern: actions?\s*=\s*\[[^\]]{0,600}"\*"|resources?\s*=\s*\[[^\]]{0,600}"\*"
     pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
     message: An IAM policy with Action "*" and Resource "*" grants unrestricted access.
     message_zh: Action 与 Resource 均为 "*" 的 IAM 策略授予不受限的访问权限。

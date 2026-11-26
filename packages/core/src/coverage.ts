@@ -26,6 +26,8 @@ export interface CoverageReport {
   stats: {
     files: number;
     scannedFiles: number;
+    /** Subset of scannedFiles analysed only partially (generated lockfiles). */
+    partialFiles?: number;
     skippedFiles: number;
     loc: number;
   };

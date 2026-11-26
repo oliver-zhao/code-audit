@@ -11,7 +11,9 @@ rules:
       - javascript
       - python
       - dockerfile
-    pattern: (?:pip\s+install[^\n]*--index-url\s+http://|npm\s+install[^\n]*http://|git\+https?://(?!.*#[0-9a-f]{7,}))\S*
+    # A user:password@ part of the URL is masked in the evidence.
+    pattern: (?:pip\s+install\s[^\n]{0,600}--index-url\s+http://|npm\s+install\s[^\n]{0,600}http://|git\+https?://(?!\S*#[0-9a-f]{7,}))(?:(?<secret>[^\s/@]{1,200})@)?\S*
+    redactEvidence: true
     pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt|json))$
     message: Installing from a plain HTTP URL or an unpinned git URL allows a man-in-the-middle or moving target to swap the code.
     message_zh: 通过明文 HTTP 或未固定提交的 git URL 安装依赖，中间人或可变目标可替换代码。
@@ -29,7 +31,7 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: "['\"]?postinstall['\"]?\\s*:\\s*\"[^\"]*(?:curl|wget)[^\"]*\\|\\s*(?:ba|z)?sh"
+    pattern: "['\"]?postinstall['\"]?\\s*:\\s*\"[^\"]{0,600}(?:curl|wget)[^\"]{0,600}\\|\\s*(?:ba|z)?sh"
     pathInclude: (?:^|/)package\.json$
     message: A postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
     message_zh: postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
@@ -48,7 +50,8 @@ rules:
     languages:
       - python
       - dockerfile
-    pattern: pip\s+install[^\n]*(?:--trusted-host|--index-url\s+http://)
+    pattern: pip\s+install\s[^\n]{0,600}(?:--trusted-host|--index-url\s+http://(?:(?<secret>[^\s/@]{1,200})@)?)
+    redactEvidence: true
     pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt))$
     message: --trusted-host or an HTTP index disables TLS verification, allowing package substitution.
     message_zh: --trusted-host 或 HTTP 索引会关闭 TLS 校验，允许替换软件包。

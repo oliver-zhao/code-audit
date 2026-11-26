@@ -10,7 +10,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: (?:query|execute)\(\s*[^;]*\+
+    pattern: (?:query|execute)\([^;]{0,600}\+
     group: js-sql
     message: Request values are concatenated into SQL text and can change query semantics.
     message_zh: 请求参数被拼接到 SQL 文本中，可能造成 SQL 注入。
@@ -29,7 +29,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: \bexec\(\s*[^;]*\+
+    pattern: \bexec\([^;]{0,600}\+
     group: js-command
     message: External input is concatenated into a shell command.
     message_zh: 外部输入被拼接到 shell 命令中。
@@ -84,7 +84,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: (?:readFile|sendFile|createReadStream)\(\s*[^;]*\+
+    pattern: (?:readFile|sendFile|createReadStream)\([^;]{0,600}\+
     group: js-path
     message: Request values participate in a file path and may read files outside the intended directory.
     message_zh: 请求参数参与文件路径拼接，可能读取目录外文件。
@@ -121,7 +121,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=\s*[^;]*Math\.random\(
+    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=[^;]{0,600}Math\.random\(
     message: Math.random is not a cryptographically secure random source.
     message_zh: Math.random 不是密码学安全的随机源。
     remediation: Use crypto.randomBytes or crypto.randomUUID for tokens.

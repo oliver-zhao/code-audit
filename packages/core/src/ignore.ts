@@ -121,6 +121,7 @@ interface MatchInput {
   ruleId: string;
   file: string;
   advisoryId?: string;
+  aliases?: readonly string[];
   packageName?: string;
 }
 
@@ -143,7 +144,7 @@ export function matchIgnoreEntry(
       return { source: "ignore-file", entry: index, reason: entry.reason };
     }
     if (entry.rule) {
-      if (entry.rule !== input.ruleId) continue;
+      if (entry.rule !== input.ruleId && !scaRuleAliasMatches(entry.rule, input)) continue;
       const paths = entry.paths ?? [];
       if (paths.length === 0 || anyGlobMatches(paths, input.file)) {
         return { source: "ignore-file", entry: index, reason: entry.reason };
@@ -152,9 +153,9 @@ export function matchIgnoreEntry(
     }
     if (entry.advisory) {
       if (
-        input.advisoryId &&
-        advisoryMatches(entry.advisory, input.advisoryId) &&
-        (!entry.package || entry.package === input.packageName)
+        advisoryMatches(entry.advisory, input.advisoryId, input.aliases) &&
+        (!entry.package ||
+          normalizePackage(entry.package) === normalizePackage(input.packageName ?? ""))
       ) {
         return { source: "ignore-file", entry: index, reason: entry.reason };
       }
@@ -167,10 +168,38 @@ export function matchIgnoreEntry(
   return undefined;
 }
 
-/** An advisory entry matches when its id or alias equals the finding advisory. */
-function advisoryMatches(entryAdvisory: string, advisoryId: string): boolean {
-  if (entryAdvisory === advisoryId) return true;
-  return false;
+/**
+ * The rule id of an SCA finding embeds its advisory id (`sca-ghsa-...`), and
+ * which of an advisory's names is used can change (a finding once reported as
+ * `sca-pysec-2018-28` is now `sca-ghsa-x84v-xcm2-53pg`). A `rule:` entry
+ * written for any of those names keeps matching: `sca-<id>` is accepted when
+ * `<id>` is the finding's advisory id or one of its aliases.
+ */
+function scaRuleAliasMatches(entryRule: string, input: MatchInput): boolean {
+  if (!/^sca-/i.test(input.ruleId)) return false;
+  const match = /^sca-(.+)$/i.exec(entryRule.trim());
+  if (!match) return false;
+  return advisoryMatches(match[1] ?? "", input.advisoryId, input.aliases);
+}
+
+/**
+ * An advisory entry matches when it equals the finding's advisory id or any of
+ * its aliases (GHSA / CVE / PYSEC ...), compared case-insensitively.
+ */
+function advisoryMatches(
+  entryAdvisory: string,
+  advisoryId: string | undefined,
+  aliases: readonly string[] | undefined,
+): boolean {
+  const wanted = entryAdvisory.trim().toUpperCase();
+  if (!wanted) return false;
+  if (advisoryId && advisoryId.toUpperCase() === wanted) return true;
+  return (aliases ?? []).some((alias) => alias.toUpperCase() === wanted);
+}
+
+/** Package names compare case-insensitively with `-`, `_`, `.` treated alike. */
+function normalizePackage(name: string): string {
+  return name.trim().toLowerCase().replace(/[-_.]+/g, "-");
 }
 
 /**

@@ -88,6 +88,20 @@ the `code-audit` CLI. The scan engines are deterministic and never call an LLM;
 - Prefer one targeted search over many broad ones; narrow with `glob`.
 - Keep responses small enough for the host context. Summarize long evidence.
 
+## Python
+
+The scanner covers Python with 70+ built-in rules and 8 Opengrep taint rules.
+It detects code execution, template injection, deserialization, SQL/command
+injection, path traversal, SSRF, weak crypto, JWT misconfiguration, and Django/
+Flask settings issues. The taint engine follows multi-step flows within a
+function from Flask/Django/FastAPI request sources to sinks.
+
+What the scanner cannot see: cross-file data flow, ORM misuse, authorization
+logic, and framework configuration spread across files. When reviewing Python
+code, trace request data to sinks across functions, check decorators for
+authentication, review Django settings and middleware, and treat hotspots as
+a reading list rather than confirmed findings.
+
 ## CLI equivalents
 
 When MCP tools are unavailable, run the same operations through the CLI. All

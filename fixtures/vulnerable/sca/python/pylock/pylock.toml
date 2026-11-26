@@ -1,0 +1,23 @@
+lock-version = "1.0"
+created-by = "pip"
+requires-python = ">=3.9"
+
+[[packages]]
+name = "requests"
+version = "2.19.0"
+index = "https://pypi.org/simple"
+
+[[packages.wheels]]
+name = "requests-2.19.0-py3-none-any.whl"
+url = "https://files.pythonhosted.org/packages/00/00/requests-2.19.0-py3-none-any.whl"
+
+[packages.wheels.hashes]
+sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+
+[[packages]]
+name = "urllib3"
+version = "1.24.1"
+index = "https://pypi.org/simple"
+wheels = [
+    { name = "urllib3-1.24.1-py3-none-any.whl", url = "https://files.pythonhosted.org/packages/00/00/urllib3-1.24.1-py3-none-any.whl", hashes = { sha256 = "8888888888888888888888888888888888888888888888888888888888888888" } },
+]

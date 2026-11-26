@@ -1,0 +1,48 @@
+version = 1
+revision = 2
+requires-python = ">=3.9"
+
+[[package]]
+name = "jinja2"
+version = "2.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/00/00/jinja2-2.10.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 100000, upload-time = "2020-01-01T00:00:00.000Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/00/jinja2-2.10-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 100000, upload-time = "2020-01-01T00:00:00.000Z" },
+]
+
+[[package]]
+name = "markupsafe"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/00/markupsafe-1.1.1.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 20000, upload-time = "2020-01-01T00:00:00.000Z" }
+
+[[package]]
+name = "myapp"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "jinja2" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "jinja2", specifier = ">=2.10" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=5.0.0" }]
+
+[[package]]
+name = "pytest"
+version = "5.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/00/pytest-5.0.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 300000, upload-time = "2020-01-01T00:00:00.000Z" },
+]

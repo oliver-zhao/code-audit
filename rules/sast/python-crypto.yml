@@ -1,0 +1,274 @@
+version: 1
+# Built-in Python rules: TLS, cryptography, JWT and XML parsing.
+# Written for code-audit (Apache-2.0). See python.yml for the conventions.
+definitions:
+  TESTPATH: '(?:^|/)(?:tests?|testing)/|(?:^|/)(?:test_[^/]*|[^/]*_tests?|conftest)\.py$'
+rules:
+  # ---- TLS ----
+  - id: py-tls-disabled
+    title: Python TLS certificate validation disabled
+    title_zh: Python 关闭 TLS 证书校验
+    severity: high
+    confidence: medium
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<!\w)(?:verify|verify_ssl|ssl_verify|verify_tls|verify_certs?)\s*=\s*False\b'
+    group: py-verify-false
+    message: verify=False disables TLS certificate validation for the connection and enables man-in-the-middle attacks.
+    message_zh: verify=False 会关闭该连接的 TLS 证书校验，易受中间人攻击。
+    remediation: Remove verify=False and configure a trusted CA bundle or a custom certificate path.
+    remediation_zh: 移除 verify=False，配置可信 CA 或自定义证书路径。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: py-ssl-unverified
+    title: Python SSL context without certificate verification
+    title_zh: Python SSL 上下文不校验证书
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bssl\._create_unverified_context\b'
+    message: ssl._create_unverified_context accepts any certificate and enables man-in-the-middle attacks.
+    message_zh: ssl._create_unverified_context 接受任意证书，易受中间人攻击。
+    remediation: Use ssl.create_default_context() with certificate verification enabled.
+    remediation_zh: 使用启用证书校验的 ssl.create_default_context()。
+  - id: py-ssl-cert-none
+    title: Python SSL verification mode set to CERT_NONE
+    title_zh: Python SSL 校验模式设为 CERT_NONE
+    severity: high
+    confidence: medium
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:verify_mode|cert_reqs)["\x27]?\s*[=:]\s*(?:ssl\.)?CERT_NONE\b|[(,]\s*cert_reqs\s*=\s*["\x27]CERT_NONE["\x27]|["\x27]cert_reqs["\x27]\s*:\s*["\x27]CERT_NONE["\x27]'
+    notPattern: '[=!]=\s*(?:ssl\.)?CERT_NONE|\bif\b[^\n]{0,300}\belse\b'
+    message: CERT_NONE disables certificate validation for the SSL context or connection pool.
+    message_zh: CERT_NONE 会关闭 SSL 上下文或连接池的证书校验。
+    remediation: Use ssl.CERT_REQUIRED and verify the hostname.
+    remediation_zh: 使用 ssl.CERT_REQUIRED 并校验主机名。
+  - id: py-ssl-check-hostname
+    title: Python SSL hostname check disabled
+    title_zh: Python SSL 关闭主机名校验
+    severity: high
+    confidence: medium
+    cwe: CWE-297
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bcheck_hostname\s*=\s*False\b'
+    message: Disabling hostname checking allows a valid certificate for another host to be accepted.
+    message_zh: 关闭主机名校验会接受其他主机的有效证书。
+    remediation: Keep check_hostname=True and verify the certificate chain.
+    remediation_zh: 保持 check_hostname=True 并校验证书链。
+  - id: py-paramiko-auto-add
+    title: Paramiko accepts unknown SSH host keys
+    title_zh: Paramiko 接受未知 SSH 主机密钥
+    severity: medium
+    confidence: medium
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pattern: '\bset_missing_host_key_policy\s*\([^)\n]{0,300}\b(?:AutoAddPolicy|WarningPolicy)\b'
+    message: AutoAddPolicy / WarningPolicy trust any host key on first contact, which enables man-in-the-middle attacks.
+    message_zh: AutoAddPolicy / WarningPolicy 在首次连接时信任任意主机密钥，易受中间人攻击。
+    remediation: Load known_hosts and keep the default RejectPolicy, or pin the expected key.
+    remediation_zh: 加载 known_hosts 并保持默认的 RejectPolicy，或固定预期密钥。
+
+  # ---- Ciphers, hashes, randomness ----
+  - id: py-weak-cipher
+    title: Python weak cipher (DES, RC2, RC4, Blowfish)
+    title_zh: Python 使用弱加密算法（DES、RC2、RC4、Blowfish）
+    severity: high
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pattern: '(?<![\w.])(?:DES|ARC2|ARC4|Blowfish)\.new\s*\(|\balgorithms\.(?:ARC4|Blowfish|IDEA|CAST5|SEED)\s*\('
+    message: DES, RC2, RC4 and Blowfish are obsolete and unsafe for new designs.
+    message_zh: DES、RC2、RC4 和 Blowfish 已过时，不适合新设计。
+    remediation: Use AES-GCM or ChaCha20-Poly1305 from a maintained library.
+    remediation_zh: 使用维护中的库提供的 AES-GCM 或 ChaCha20-Poly1305。
+  - id: py-aes-ecb
+    title: Block cipher in ECB mode
+    title_zh: 分组密码使用 ECB 模式
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pattern: '\.new\s*\([^)\n]{0,300}\bMODE_ECB\b|\bmodes\.ECB\s*\('
+    message: ECB mode encrypts identical blocks identically and leaks the structure of the plaintext.
+    message_zh: ECB 模式对相同块产生相同密文，泄露明文结构。
+    remediation: Use an authenticated mode such as AES-GCM.
+    remediation_zh: 使用 AES-GCM 等带认证的模式。
+  - id: py-static-iv
+    title: Literal key, IV or nonce passed to a cipher
+    title_zh: 向加密算法传入字面量密钥、IV 或 nonce
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-329
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\b(?:AES|DES3?|ARC4|Blowfish|ChaCha20(?:_Poly1305)?|Salsa20)\.new|\b(?:Fernet|AESGCM|ChaCha20Poly1305)|\bmodes\.(?:CBC|CTR|GCM|CFB|OFB)|\balgorithms\.\w+)\s*\([^)\n]{0,300}b?["\x27][^"\x27\n]{8,400}["\x27]|^\s*(?:self\.)?(?:iv|IV|nonce|aes_key|enc_key|encryption_key|cipher_key)\s*=\s*b?["\x27][^"\x27\n]{8,400}["\x27]'
+    redactEvidence: true
+    message: A key, IV or nonce is a literal in the source; confirm it is not a production secret and that IVs/nonces are not reused.
+    message_zh: 密钥、IV 或 nonce 是源码中的字面量；需确认它不是生产密钥，且 IV/nonce 不会被重复使用。
+    remediation: Generate a random IV/nonce per message and load keys from a secret store.
+    remediation_zh: 每条消息生成随机 IV/nonce，并从密钥存储加载密钥。
+  - id: py-hash-password
+    title: Python MD5/SHA1 applied to a password
+    title_zh: Python 对口令使用 MD5/SHA1
+    severity: high
+    confidence: medium
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [python]
+    pattern: '\bhashlib\.(?:md5|sha1)\s*\([^)\n]{0,300}(?:password|passwd|pwd)'
+    group: py-hash
+    message: A fast, unsalted hash (MD5/SHA1) is computed over a value named like a password; such hashes are cheap to brute-force.
+    message_zh: 对名称像口令的值计算快速、无盐的哈希（MD5/SHA1）；这类哈希很容易被暴力破解。
+    remediation: Hash passwords with argon2, scrypt or bcrypt.
+    remediation_zh: 使用 argon2、scrypt 或 bcrypt 存储口令。
+  - id: py-weak-hash
+    title: Python weak hash algorithm (MD5/SHA1)
+    title_zh: Python 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bhashlib\.(?:md5|sha1)\s*\(|\bhashlib\.new\s*\(\s*["\x27](?:md5|sha1)["\x27]'
+    notPattern: 'usedforsecurity\s*=\s*False'
+    group: py-hash
+    message: MD5/SHA1 are unsuitable for signatures, integrity protection or password storage; confirm this use is not security-sensitive.
+    message_zh: MD5/SHA1 不适合签名、完整性保护或口令存储；需确认此处用途与安全无关。
+    remediation: Use hashlib.sha256 or stronger; pass usedforsecurity=False for non-security checksums.
+    remediation_zh: 使用 hashlib.sha256 及以上；非安全用途的校验和可传入 usedforsecurity=False。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: py-weak-random
+    title: Python random module used for a secret value
+    title_zh: Python 使用 random 模块生成机密值
+    severity: medium
+    confidence: medium
+    cwe: CWE-338
+    owasp: A02:2021
+    languages: [python]
+    pattern: '(?:token|secret|passw(?:or)?d|otp|api_?key|nonce|salt|csrf|session_?id|reset_code|verification_code)\w{0,40}\s*=(?!=)[^\n]{0,300}\brandom\.(?:random|randint|choice|choices|randrange|getrandbits|sample|randbytes)\s*\('
+    notPattern: 'SystemRandom|\bsecrets\.'
+    message: A value named like a token, password or key is generated with the random module, which is predictable.
+    message_zh: 名称像令牌、口令或密钥的值由 random 模块生成，其输出可预测。
+    remediation: Use secrets.token_urlsafe, secrets.token_hex or secrets.choice.
+    remediation_zh: 使用 secrets.token_urlsafe、secrets.token_hex 或 secrets.choice。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+
+  # ---- JWT ----
+  - id: py-jwt-verify-false
+    title: JWT decoded with verify=False
+    title_zh: JWT 使用 verify=False 解码
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [python]
+    pattern: '\bjwt\.decode\s*\([^)]{0,600}\bverify\s*=\s*False\b'
+    group: py-verify-false
+    message: verify=False makes jwt.decode return the claims without checking the signature, so tokens can be forged.
+    message_zh: verify=False 使 jwt.decode 不校验签名就返回声明，令牌可被伪造。
+    remediation: Verify the signature with the expected key and a fixed algorithms list.
+    remediation_zh: 使用预期密钥和固定的 algorithms 列表校验签名。
+  - id: py-jwt-options
+    title: JWT signature verification disabled through options
+    title_zh: 通过 options 禁用 JWT 签名校验
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [python]
+    pattern: '["\x27]verify_signature["\x27]\s*:\s*False\b'
+    message: verify_signature False lets an attacker forge tokens.
+    message_zh: verify_signature 为 False 时攻击者可伪造令牌。
+    remediation: Keep verify_signature enabled and pin the algorithm.
+    remediation_zh: 保持 verify_signature 启用并固定算法。
+  - id: py-jwt-alg-none
+    title: JWT handled with the none algorithm
+    title_zh: JWT 使用 none 算法
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [python]
+    pattern: '\bjwt\.(?:decode|encode)\s*\([^)]{0,600}\balgorithms?\s*=\s*\[?[^\])]{0,200}["\x27]none["\x27]'
+    message: Accepting or issuing tokens with the none algorithm removes signature verification entirely.
+    message_zh: 接受或签发 none 算法的令牌会完全移除签名校验。
+    remediation: Allow only a fixed asymmetric or HMAC algorithm.
+    remediation_zh: 仅允许固定的非对称或 HMAC 算法。
+
+  # ---- XML ----
+  - id: py-xml-external-entities
+    title: XML parser with external entities enabled
+    title_zh: XML 解析器启用外部实体
+    severity: high
+    confidence: medium
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    pattern: '\bXMLParser\s*\([^)]{0,600}\b(?:resolve_entities\s*=\s*True|no_network\s*=\s*False|load_dtd\s*=\s*True)\b|\.setFeature\s*\(\s*(?:[\w.]+\.)?feature_external_[gp]es\s*,\s*(?:True|1)\s*\)'
+    group: py-lxml
+    message: The parser is explicitly configured to resolve external entities, load DTDs or fetch network resources (lxml XMLParser options or xml.sax feature_external_ges/pes), which enables XXE when the document is untrusted.
+    message_zh: 解析器被显式配置为解析外部实体、加载 DTD 或访问网络资源（lxml XMLParser 选项或 xml.sax 的 feature_external_ges/pes）；文档不可信时可造成 XXE。
+    remediation: Use resolve_entities=False, no_network=True, do not load DTDs, and leave the xml.sax external-entity features off.
+    remediation_zh: 设置 resolve_entities=False、no_network=True，不加载 DTD，并保持 xml.sax 外部实体特性关闭。
+  - id: py-lxml-parser-default
+    title: lxml parser without explicit entity protection
+    title_zh: lxml 解析器未显式防护实体
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    filePattern: '\blxml\b'
+    pattern: '\bXMLParser\s*\('
+    notPattern: 'resolve_entities\s*=\s*False'
+    group: py-lxml
+    message: lxml resolves internal entities by default (and external ones before lxml 5); confirm the parser is not used on untrusted XML or pass resolve_entities=False.
+    message_zh: lxml 默认解析内部实体（lxml 5 之前还解析外部实体）；需确认解析器不用于不可信 XML，或传入 resolve_entities=False。
+    remediation: Pass resolve_entities=False explicitly.
+    remediation_zh: 显式传入 resolve_entities=False。
+  - id: py-xml-stdlib-parse
+    title: Standard library XML parser on possibly untrusted input
+    title_zh: 标准库 XML 解析器处理可能不可信的输入
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-776
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    filePattern: '^\s*(?:from|import)\s+xml\.(?:etree|dom|sax)\b'
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:ET|ElementTree|cElementTree|etree|minidom|pulldom|xml\.sax|sax)\.(?:parse|parseString|fromstring|XML|iterparse)\s*\('
+    message: The standard library XML parsers (xml.etree, xml.dom.minidom, xml.sax) do not fetch external entities in current Python versions, so classic XXE does not apply; entity-expansion denial of service is still possible on untrusted input.
+    message_zh: 当前 Python 版本的标准库 XML 解析器（xml.etree、xml.dom.minidom、xml.sax）不会获取外部实体，经典 XXE 不适用；但对不可信输入仍可能发生实体扩展拒绝服务。
+    remediation: Use defusedxml for untrusted documents.
+    remediation_zh: 对不可信文档使用 defusedxml。

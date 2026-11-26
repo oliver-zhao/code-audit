@@ -1,21 +1,40 @@
 # Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# These are not copied from the Semgrep registry and are not executed by the
-# test suite; they are validated as YAML only.
+# These are not copied from the Semgrep registry. They are pattern rules: they
+# flag a dangerous API wherever it is called, without knowing where the
+# argument comes from. The data-flow rules that follow request data to these
+# and other sinks are in python-taint.yml. Both files are verified with the
+# real tool by packages/core/test/realtools.test.ts.
 rules:
   - id: py-opengrep-eval
     languages: [python]
     severity: ERROR
-    message: Use of eval() executes arbitrary Python expressions and enables code injection.
+    message: >-
+      eval() is called with a value that is not a string literal. If any part
+      of that value can be influenced from outside, it runs as Python code.
+      Parse the input instead (int(), json.loads(), ast.literal_eval()).
     metadata:
       cwe: "CWE-95"
-      confidence: HIGH
-    pattern: eval($EXPR)
+      confidence: MEDIUM
+      category: security
+    patterns:
+      - pattern: eval($EXPR, ...)
+      - pattern-not: eval("...", ...)
 
   - id: py-opengrep-pickle-loads
     languages: [python]
     severity: ERROR
-    message: pickle.loads() deserializes untrusted data and can execute arbitrary code.
+    message: >-
+      pickle.loads() runs code embedded in the data it is given. Only unpickle
+      data this program produced and kept out of reach of others; use JSON for
+      anything received from outside.
     metadata:
       cwe: "CWE-502"
       confidence: MEDIUM
-    pattern: pickle.loads($DATA)
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: pickle.loads($DATA, ...)
+          - pattern: cPickle.loads($DATA, ...)
+      # A round trip of an object this process just pickled is not a risk.
+      - pattern-not: pickle.loads(pickle.dumps(...), ...)
+      - pattern-not: cPickle.loads(cPickle.dumps(...), ...)

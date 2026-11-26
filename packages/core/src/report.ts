@@ -10,6 +10,7 @@ import type { CoverageReport } from "./coverage.js";
 import type { BaselineEntry } from "./baseline.js";
 import { localizeRule, type LoadedRule } from "./rules.js";
 import { compareVersions } from "./sca.js";
+import { comparePypiVersions } from "./pypi.js";
 
 export type ReportLang = "zh" | "en";
 
@@ -102,6 +103,7 @@ const LABELS = {
     reachable: "可达性",
     unknown: "未知",
     scanned: "已扫描文件",
+    partialFiles: "部分分析：生成的锁文件仅用于依赖分析和高置信度密钥检测",
     skipped: "跳过文件",
     languages: "语言",
     loc: "LOC",
@@ -121,7 +123,7 @@ const LABELS = {
     reachabilityNote: "可达性未通过运行时验证，统一标记为未知。",
     confidenceNote: "置信度反映匹配行中可见的输入控制程度；低置信度的仅 API 命中需要人工复核。",
     externalNote: "未运行外部扫描器（M0 无 Opengrep/OSV-Scanner/Gitleaks 适配）",
-    lockfileNote: "锁文件只用于 SCA，不进入源码规则扫描",
+    lockfileNote: "生成的锁文件只用于 SCA 和高置信度密钥检测，不进入源码规则扫描",
     files: "文件数",
     count: "数量",
     reason: "原因",
@@ -199,6 +201,8 @@ const LABELS = {
     reachable: "Reachability",
     unknown: "unknown",
     scanned: "Scanned files",
+    partialFiles:
+      "partially: generated lockfiles are read for dependencies and high-confidence secrets only",
     skipped: "Skipped files",
     languages: "Languages",
     loc: "LOC",
@@ -218,7 +222,7 @@ const LABELS = {
     reachabilityNote: "Reachability is not verified at runtime and is reported as unknown.",
     confidenceNote: "Confidence reflects how much input control is visible on the matched line; low-confidence API-only hits need manual review.",
     externalNote: "External scanners not run (M0 has no Opengrep/OSV-Scanner/Gitleaks adapters)",
-    lockfileNote: "Lockfiles are used for SCA only and skipped by source rules",
+    lockfileNote: "Generated lockfiles are used for SCA and high-confidence secret detection only; source rules skip them",
     files: "Files",
     count: "Count",
     reason: "Reason",
@@ -309,14 +313,22 @@ function truncate(value: string, max: number): string {
 }
 
 function majorOf(version: string): number {
-  const match = /^(\d+)/.exec(version.trim());
+  // Skip a leading "v" and a PEP 440 epoch ("1!2.0" has major 2).
+  const match = /^[vV]?(?:\d+!)?(\d+)/.exec(version.trim());
   return match?.[1] ? Number(match[1]) : Number.NaN;
 }
 
-function maxVersion(versions: string[]): string | undefined {
+function versionComparator(ecosystem: string | undefined): (a: string, b: string) => number {
+  return ecosystem === "PyPI" ? comparePypiVersions : compareVersions;
+}
+
+function maxVersion(
+  versions: string[],
+  compare: (a: string, b: string) => number = compareVersions,
+): string | undefined {
   let best: string | undefined;
   for (const version of versions) {
-    if (!best || compareVersions(version, best) > 0) best = version;
+    if (!best || compare(version, best) > 0) best = version;
   }
   return best;
 }
@@ -327,16 +339,21 @@ function maxVersion(versions: string[]): string | undefined {
  * stays in the same major version as the installed release; otherwise both the
  * best same-major fix and the version that fixes everything are shown.
  */
-export function recommendUpgrade(installed: string, fixes: string[]): string {
+export function recommendUpgrade(
+  installed: string,
+  fixes: string[],
+  ecosystem?: string,
+): string {
+  const compare = versionComparator(ecosystem);
   const valid = fixes.filter((version) => !Number.isNaN(majorOf(version)));
   if (valid.length === 0) return "—";
-  const overall = maxVersion(valid) as string;
+  const overall = maxVersion(valid, compare) as string;
   const installedMajor = majorOf(installed);
   if (majorOf(overall) === installedMajor) return overall;
   const sameMajor = valid.filter((version) => majorOf(version) === installedMajor);
-  const sameBest = maxVersion(sameMajor);
+  const sameBest = maxVersion(sameMajor, compare);
   if (!sameBest) return `${overall} (fixes all; no same-major fix)`;
-  const open = valid.filter((version) => compareVersions(version, sameBest) > 0).length;
+  const open = valid.filter((version) => compare(version, sameBest) > 0).length;
   const sameLabel =
     open > 0 ? `${sameBest} (same major, ${open} open)` : `${sameBest} (same major)`;
   return `${sameLabel} / ${overall} (fixes all)`;
@@ -466,7 +483,10 @@ export function renderMarkdown(context: ReportContext): string {
   }
   lines.push("");
   lines.push(
-    `- ${l.scanned}: ${context.coverage.stats.scannedFiles}`,
+    `- ${l.scanned}: ${context.coverage.stats.scannedFiles}` +
+      ((context.coverage.stats.partialFiles ?? 0) > 0
+        ? ` (${context.coverage.stats.partialFiles} ${l.partialFiles})`
+        : ""),
     `- ${l.skipped}: ${context.coverage.stats.skippedFiles}`,
     `- ${l.loc}: ${context.coverage.stats.loc}`,
     `- ${l.excludeNote}`,
@@ -565,8 +585,8 @@ export function renderMarkdown(context: ReportContext): string {
     lines.push(l.noItems, "");
   } else {
     lines.push(
-      tableRow(["ID", l.ruleId, l.file, l.line, l.reason, "expires"]),
-      tableRow(["---", "---", "---", "---", "---", "---"]),
+      tableRow(["ID", l.ruleId, l.file, l.line, "source", l.reason, "expires"]),
+      tableRow(["---", "---", "---", "---", "---", "---", "---"]),
     );
     for (const finding of allSuppressed) {
       lines.push(
@@ -575,7 +595,11 @@ export function renderMarkdown(context: ReportContext): string {
           escapeMarkdown(finding.ruleId),
           escapeMarkdown(finding.file),
           String(finding.startLine),
-          escapeMarkdown(finding.suppression?.reason ?? ""),
+          // "inline" is a comment in the audited repository itself.
+          finding.suppression?.source === "inline"
+            ? "inline comment"
+            : (finding.suppression?.source ?? "—"),
+          escapeMarkdown(finding.suppression?.reason || "no reason given"),
           finding.suppression?.expires ?? "—",
         ]),
       );
@@ -645,9 +669,10 @@ export function renderMarkdown(context: ReportContext): string {
       }
       const advisoryId = finding.advisoryId ?? finding.ruleId;
       const fixed = finding.fixedVersion;
-      if (fixed && group.installed !== "—" && compareVersions(fixed, group.installed) > 0) {
+      const compare = versionComparator(group.ecosystem);
+      if (fixed && group.installed !== "—" && compare(fixed, group.installed) > 0) {
         const previous = group.advisoryFixes.get(advisoryId);
-        if (!previous || compareVersions(fixed, previous) < 0) {
+        if (!previous || compare(fixed, previous) < 0) {
           group.advisoryFixes.set(advisoryId, fixed);
         }
       }
@@ -677,7 +702,11 @@ export function renderMarkdown(context: ReportContext): string {
           String(group.count),
           escapeMarkdown(group.maxSeverity),
           escapeMarkdown(
-            recommendUpgrade(group.installed, [...group.advisoryFixes.values()]),
+            recommendUpgrade(
+              group.installed,
+              [...group.advisoryFixes.values()],
+              group.ecosystem,
+            ),
           ),
           escapeMarkdown(group.file),
         ]),

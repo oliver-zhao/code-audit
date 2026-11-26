@@ -1,217 +1,603 @@
 version: 1
+# Built-in Python rules: injection, code execution, templates, deserialization
+# and file handling. Written for code-audit (Apache-2.0).
+#
+# Conventions used by all python*.yml files:
+# - Python files are matched on logical lines (a call that spans several
+#   physical lines is one unit) with comments and docstrings removed. The
+#   header of a def / class statement and import statements are not matched;
+#   a body on the same line is. Every match in a unit is reported.
+# - Regex cost: whitespace is consumed by exactly one quantifier (never two
+#   adjacent \s* or a \s* next to a class that also matches blanks), and gaps
+#   such as [^)]* carry an upper bound. rules.test.ts runs every pattern
+#   against pathological input, and the engine matches a line longer than
+#   2000 characters in windows of that size.
+# - `codeOnly: true` (API-call rules) ignores a match that starts inside the
+#   text of a string literal: `s = "os.system(cmd)"` is not a call. Code in an
+#   f-string replacement field is still matched. Rules that read literals
+#   (SQL text, URLs, hosts) do not set it.
+# - `kind: finding` with confidence medium or high requires that the matched
+#   statement itself shows request data or a string built at runtime reaching
+#   the sink, or an explicitly dangerous option, or is a well-known dangerous
+#   form whatever the origin of the data (a non-literal command with
+#   shell=True). Any other sink whose argument is an unknown variable is a
+#   `kind: hotspot` (a reading list for the reviewer).
+# - Broad hotspots skip test code (TESTPATH).
+definitions:
+  # A value read from an HTTP request (Flask, Django, FastAPI/Starlette,
+  # aiohttp, Bottle, Tornado).
+  REQ: '\brequest\.(?:args|form|forms|values|json|data|files|cookies|headers|GET|POST|COOKIES|META|FILES|body|query|query_params|path_params|get_json|params|query_string|view_args|match_info|get_data)\b|\bself\.get_(?:query_|body_)?arguments?\('
+  # REQ inside the first argument of a call. Written directly after the "\("
+  # of the sink with no \s* in between: the fragment consumes leading blanks
+  # itself (at most four wrappers such as str( or base64.b64decode( ).
+  FIRSTREQ: '(?:\s*[\w.]{1,100}\(){0,4}[^,()]{0,200}?(?:{{REQ}})'
+  # REQ at the very start of the first argument (wrappers such as str( allowed):
+  # the request decides the whole value, not only a suffix of it. Also written
+  # directly after the "\(".
+  STARTREQ: '(?:\s*[\w.]{1,100}\(){0,4}\s*(?:{{REQ}})'
+  # A plain (non f-) string literal on one line.
+  STR: '[rbu]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27)'
+  # The start of an f-string up to its first placeholder.
+  FSTR: '(?:f|fr|rf)(?:"(?:"")?[^"\n]{0,400}\{|\x27(?:\x27\x27)?[^\x27\n]{0,400}\{)'
+  # A string built at runtime: f-string with a placeholder, literal followed
+  # by + / % / .format(, or a name combined with a literal the same way.
+  DYN: '(?:(?:{{STR}}\s*){0,20}{{FSTR}}|(?:{{STR}}\s*){1,20}(?:\+|%\s*[\w(\[{]|\.format\()|[\w.\[\]]{1,200}\s*(?:\+\s*[rbuf]{0,2}["\x27]|%\s*[\w(]|\.format\())'
+  # The first argument of a sink is built at runtime or holds request data.
+  # Written directly after the "\(" of the sink.
+  DYNARG: '(?:\s*(?:{{DYN}})|{{FIRSTREQ}})'
+  # First argument that starts with a name or an f-string (a variable, an
+  # attribute, a call), or is " ".join(...): a value computed at runtime. A
+  # plain string literal and a list are not matched.
+  RUNTIMEARG: '\s*(?:(?![rbu]{0,2}["\x27])[A-Za-z_]|{{STR}}\.join\()'
+  # First argument that is neither a plain string literal nor absent.
+  NONLIT: '(?!\s*(?:[rbu]{0,2}["\x27]|\)))'
+  # A placeholder, %s or concatenation in value position of a SQL statement
+  # (after =, <, >, LIKE, IN ( or VALUES (),
+  # or wrapped in SQL quotes. Values must be bound parameters, so this is never
+  # legitimate; a dynamic table or column name is not matched.
+  SQLVALUE: '(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*(?:\\?[\x27"]?%?(?:\{[^{}:\n]{0,80}\}|%(?:\(\w{1,40}\))?s)|(?:\\?[\x27"]%?\s*)?["\x27]\s*\+)|\x27%?(?:%(?:\(\w{1,40}\))?s|\{[^{}:\n]{0,80}\})%?\x27'
+  SQLWORD: '\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM|VALUES|DROP|CREATE|ALTER|PRAGMA|UNION|ORDER\s+BY)\b|sql|query|stmt|statement'
+  SUBPROCESS: '(?:\bsubprocess\.(?:run|call|Popen|check_output|check_call)|(?<![\w.])(?:Popen|check_output|check_call))\s*\('
+  TESTPATH: '(?:^|/)(?:tests?|testing)/|(?:^|/)(?:test_[^/]*|[^/]*_tests?|conftest)\.py$'
+  # An ALL_CAPS module constant as the first argument.
+  CONSTARG: '\s*[A-Z][A-Z0-9_]{0,80}\s*[,)]'
 rules:
+  # ---- SQL injection ----
   - id: py-sql-injection
-    title: Python SQL built with concatenation or an f-string
-    title_zh: Python SQL 字符串拼接或 f-string
+    title: Python SQL statement built with string formatting
+    title_zh: Python SQL 语句由字符串拼接或格式化构造
     severity: critical
     confidence: high
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - python
-    pattern: execute\(\s*(?:f["\x27]|["\x27][^;\n]*["\x27]\s*(?:\+|%))
+    languages: [python]
+    patterns:
+      - '\.(?:execute|executemany|executescript|read_sql|read_sql_query)\s*\({{DYNARG}}'
+      - '{{SQLVALUE}}|{{REQ}}'
+      - '{{SQLWORD}}|{{REQ}}'
     group: py-sql
-    message: Request values are concatenated into SQL text.
-    message_zh: 请求参数被直接拼接到 SQL 中。
-    remediation: Use DB-API placeholders (? / %s) with a parameter tuple; with an ORM use bound parameters.
-    remediation_zh: 使用 DB-API 参数占位符（? / %s）并传入参数元组；ORM 使用绑定参数。
+    message: A value is formatted into the SQL text (f-string, concatenation, % or .format() in value position), or the statement comes straight from the request.
+    message_zh: 值被格式化进 SQL 文本（f-string、拼接、% 或 .format() 出现在取值位置），或语句直接来自请求。
+    remediation: Keep the SQL text constant and pass values as bound parameters (? / %s placeholders with a parameter tuple).
+    remediation_zh: 保持 SQL 文本为常量，并通过绑定参数（? / %s 占位符加参数元组）传值。
     references:
       - CWE-89
       - OWASP A03:2021
-  - id: py-command-injection
-    title: Python os.system with a dynamic command
-    title_zh: Python os.system 命令执行
+  - id: py-django-raw-sql
+    title: Django raw(), extra() or RawSQL with a formatted query
+    title_zh: Django raw()、extra() 或 RawSQL 使用格式化查询
     severity: critical
     confidence: high
-    cwe: CWE-78
+    cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - python
-    pattern: os\.system\s*\([^)\n]*(?:\+|%\s|\{[^}]*\}|f["'])
-    group: py-command
-    message: External input is concatenated into a shell command executed by os.system.
-    message_zh: os.system 经 shell 执行且常与拼接输入一起出现。
-    remediation: Use subprocess.run with an argument array and shell=False, and allowlist inputs.
-    remediation_zh: 使用 subprocess.run 参数数组并设置 shell=False；对输入做白名单校验。
-    references:
-      - CWE-78
-      - OWASP A03:2021
-  - id: py-subprocess-shell
-    title: Python subprocess invoked with shell=True
-    title_zh: Python subprocess 使用 shell=True
+    languages: [python]
+    patterns:
+      - '(?:\.raw|\bRawSQL)\s*\({{DYNARG}}|\.extra\s*\([^)\n]{0,300}?(?:{{FSTR}}|{{STR}}\s*(?:\+|%\s*[\w(\[{]|\.format\())'
+      - '{{SQLVALUE}}|{{REQ}}'
+      - '{{SQLWORD}}|{{REQ}}|\.extra\s*\(\s*(?:where|select|tables|order_by)\s*='
+    group: py-sql
+    message: A value is formatted into a raw SQL fragment given to the Django ORM (f-string, concatenation, % or .format() in value position).
+    message_zh: 值被格式化进传给 Django ORM 的原始 SQL 片段（f-string、拼接、% 或 .format() 出现在取值位置）。
+    remediation: Pass values through the params argument of raw() / extra() / RawSQL, or use ORM expressions.
+    remediation_zh: 通过 raw() / extra() / RawSQL 的 params 参数传值，或改用 ORM 表达式。
+  - id: py-sqlalchemy-text
+    title: SQLAlchemy text() with a formatted string
+    title_zh: SQLAlchemy text() 使用格式化字符串
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '\bsqlalchemy\b'
+    patterns:
+      - '(?:(?<![\w.])|\b(?:sa|sqlalchemy|db)\.)text\s*\({{DYNARG}}'
+      - '{{SQLVALUE}}|{{REQ}}'
+    group: py-sql
+    message: A value is formatted into the string given to SQLAlchemy text() (f-string, concatenation, % or .format() in value position), which bypasses bound parameters.
+    message_zh: 值被格式化进传给 SQLAlchemy text() 的字符串（f-string、拼接、% 或 .format() 出现在取值位置），绕过了绑定参数。
+    remediation: Use text() with :name placeholders and bind the values with bindparams() or the execute() parameters.
+    remediation_zh: 使用带 :name 占位符的 text()，并通过 bindparams() 或 execute() 参数绑定值。
+  - id: py-sql-string-built
+    title: Python SQL statement string built with a formatted value
+    title_zh: Python SQL 语句字符串由格式化的值构造
     severity: high
     confidence: medium
-    cwe: CWE-78
+    cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - python
-    pattern: subprocess\.(?:run|call|Popen)\([^)]*shell\s*=\s*True
-    message: shell=True hands arguments to a shell and increases command injection risk.
-    message_zh: shell=True 会把参数交给 shell 解析，增加命令注入风险。
-    remediation: Use an argument list with shell=False; never build shell strings from untrusted input.
-    remediation_zh: 使用参数列表并保持 shell=False；不要用 shell 拼接不可信输入。
-    references:
-      - CWE-78
-      - OWASP A03:2021
-  - id: py-insecure-deserialization
-    title: Python pickle deserialization
-    title_zh: Python pickle 反序列化
-    severity: high
-    confidence: low
-    cwe: CWE-502
-    owasp: A08:2021
-    languages:
-      - python
-    pattern: \bpickle\.loads?\(
-    message: Unpickling untrusted data can execute arbitrary code.
-    message_zh: pickle 反序列化不可信数据可执行任意代码。
-    remediation: Use JSON or a restricted format; if pickle is unavoidable, verify integrity and restrict the source.
-    remediation_zh: 改用 JSON 或受限格式；如必须使用 pickle，需做完整性校验并限制来源。
-    references:
-      - CWE-502
-      - OWASP A08:2021
-  - id: py-yaml-load
-    title: Python yaml.load without a safe loader
-    title_zh: Python yaml.load 未使用安全加载器
-    severity: high
-    confidence: low
-    cwe: CWE-502
-    owasp: A08:2021
-    languages:
-      - python
-    pattern: \byaml\.load\(
-    notPattern: SafeLoader|safe_load
-    message: The default yaml.load loader can construct arbitrary Python objects.
-    message_zh: yaml.load 默认 Loader 可构造任意 Python 对象。
-    remediation: Use yaml.safe_load or pass yaml.SafeLoader explicitly.
-    remediation_zh: 使用 yaml.safe_load，或显式传入 yaml.SafeLoader。
-    references:
-      - CWE-502
-      - OWASP A08:2021
-  - id: py-path-traversal
-    title: Python file path built from untrusted input
-    title_zh: Python 路径拼接可能穿越目录
-    severity: high
-    confidence: high
-    cwe: CWE-22
-    owasp: A01:2021
-    languages:
-      - python
-    pattern: open\(\s*os\.path\.join\([^)]*(?:request|name|user|input|filename)
-    group: py-path
-    message: Request values participate in a path join and may read files outside the intended directory.
-    message_zh: 请求参数参与路径拼接，可能读取目录外文件。
-    remediation: Use os.path.basename or an allowlist, and verify the realpath stays inside the allowed directory.
-    remediation_zh: 使用 os.path.basename 或白名单，并校验 realpath 位于允许目录内。
-    references:
-      - CWE-22
-      - OWASP A01:2021
-  - id: py-weak-hash
-    title: Python weak hash algorithm (MD5/SHA1)
-    title_zh: Python 使用 MD5/SHA1
-    severity: medium
-    confidence: low
-    cwe: CWE-328
-    owasp: A02:2021
-    languages:
-      - python
-    pattern: hashlib\.(?:md5|sha1)\(
-    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
-    message_zh: MD5/SHA1 不适合安全用途。
-    remediation: Use hashlib.sha256 or stronger; hash passwords with bcrypt/scrypt/argon2.
-    remediation_zh: 使用 hashlib.sha256 及以上；口令使用 bcrypt/scrypt/argon2。
-    references:
-      - CWE-328
-      - OWASP A02:2021
-  - id: py-weak-random
-    title: Python random used for security-sensitive values
-    title_zh: Python 使用 random 生成安全值
-    severity: medium
-    confidence: low
-    cwe: CWE-338
-    owasp: A02:2021
-    languages:
-      - python
-    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=\s*[^;\n]*random\.(?:random|randint|choice|randrange)\(
-    message: The random module is not a cryptographically secure random source.
-    message_zh: random 模块不是密码学安全的随机源。
-    remediation: Use secrets.token_urlsafe or secrets.token_hex for tokens.
-    remediation_zh: 使用 secrets.token_urlsafe / secrets.token_hex 生成令牌。
-    references:
-      - CWE-338
-      - OWASP A02:2021
-  - id: py-ssrf
-    title: Python server-side request to a dynamic URL
-    title_zh: Python 服务端请求 URL 可控
-    severity: high
-    confidence: low
-    cwe: CWE-918
-    owasp: A10:2021
-    languages:
-      - python
-    pattern: requests\.(?:get|post|put)\(\s*(?:name|url|target|request\.)
-    message: External input is used as the target of a requests call and may reach internal networks.
-    message_zh: 外部输入直接作为 requests 的目标地址，可能访问内网。
-    remediation: Use a URL allowlist and protocol restrictions, and block private/loopback addresses.
-    remediation_zh: 使用 URL 白名单、协议限制，并阻断私网/环回地址。
-    references:
-      - CWE-918
-      - OWASP A10:2021
-  - id: py-tls-disabled
-    title: Python requests certificate validation disabled
-    title_zh: Python requests 关闭证书校验
-    severity: high
-    confidence: low
-    cwe: CWE-295
-    owasp: A02:2021
-    languages:
-      - python
-    pattern: verify\s*=\s*False
-    message: verify=False disables TLS certificate validation and enables man-in-the-middle attacks.
-    message_zh: verify=False 会关闭 TLS 证书校验，易受中间人攻击。
-    remediation: Remove verify=False and configure a trusted CA or a custom certificate path.
-    remediation_zh: 移除 verify=False，配置可信 CA 或自定义证书路径。
-    references:
-      - CWE-295
-      - OWASP A02:2021
-  - id: py-sql-api
-    title: Python executes a dynamic SQL statement
-    title_zh: Python 执行动态 SQL 语句
+    languages: [python]
+    patterns:
+      - '^\s*[\w.\[\]"\x27]{1,200}\s*\+?=\s*(?:\(\s*)?{{DYN}}'
+      - '{{SQLVALUE}}'
+      - '\b(?:SELECT\b[^\n]{0,400}\bFROM|INSERT\s+INTO|UPDATE\s+[\w."\x27`]{1,100}\s+SET|DELETE\s+FROM)\b'
+    message: A SQL statement is assigned to a variable with a value formatted into it (f-string, concatenation, % or .format() in value position). If that variable is executed, the value can change the query.
+    message_zh: SQL 语句被赋给变量，且其中格式化插入了值（f-string、拼接、% 或 .format() 出现在取值位置）。若该变量被执行，插入的值可改变查询。
+    remediation: Keep the SQL text constant and pass the value as a bound parameter when executing.
+    remediation_zh: 保持 SQL 文本为常量，并在执行时把值作为绑定参数传入。
+  - id: py-sql-dynamic
+    title: Python SQL text assembled at runtime
+    title_zh: Python SQL 文本在运行时拼装
     severity: high
     confidence: low
     kind: hotspot
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - python
-    pattern: \.execute\s*\(
+    languages: [python]
+    patterns:
+      - '(?:\.(?:execute|executemany|executescript|raw|read_sql|read_sql_query)|\bRawSQL|(?:(?<![\w.])|\b(?:sa|sqlalchemy|db)\.)text)\s*\(\s*{{DYN}}'
+      - '{{SQLWORD}}'
     group: py-sql
-    message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
-    message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
+    message: The SQL text is assembled with an f-string, concatenation, % or .format(), but not visibly in value position (for example a table name, a column list or a numeric %d). Confirm every interpolated part is a constant, an allowlisted identifier or a number.
+    message_zh: SQL 文本由 f-string、拼接、% 或 .format() 拼装，但插入位置看起来不是取值位置（例如表名、列清单或数值 %d）。需确认每个插入部分都是常量、白名单内的标识符或数字。
+    remediation: Bind values as parameters and take identifiers from a fixed allowlist.
+    remediation_zh: 值通过参数绑定，标识符取自固定白名单。
+  - id: py-sql-api
+    title: Python executes a SQL statement
+    title_zh: Python 执行 SQL 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.(?:execute|executemany|executescript)\s*\('
+    group: py-sql
+    message: A database execute call is present; confirm the SQL text is constant and values are bound as parameters.
+    message_zh: 出现数据库 execute 调用；需确认 SQL 文本为常量且值通过参数绑定。
     remediation: Use parameter placeholders and keep SQL text constant.
     remediation_zh: 使用参数占位符并保持 SQL 文本为常量。
     references:
       - CWE-89
       - OWASP A03:2021
+
+  # ---- Command execution ----
+  - id: py-command-injection
+    codeOnly: true
+    title: Python shell command built with string formatting
+    title_zh: Python shell 命令由字符串拼接或格式化构造
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [python]
+    pattern: '(?:\bos\.(?:system|popen)|\bsubprocess\.(?:getoutput|getstatusoutput))\s*\({{DYNARG}}'
+    group: py-command
+    message: The command line given to a shell (os.system, os.popen, subprocess.getoutput) is built with an f-string, concatenation, % or .format(), or comes straight from the request.
+    message_zh: 传给 shell（os.system、os.popen、subprocess.getoutput）的命令行由 f-string、拼接、% 或 .format() 构造，或直接来自请求。
+    remediation: Use subprocess.run with an argument list and shell=False, and allowlist inputs.
+    remediation_zh: 使用 subprocess.run 参数列表并保持 shell=False；对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
   - id: py-os-system-api
-    title: Python calls os.system
-    title_zh: Python 调用 os.system
+    codeOnly: true
+    title: Python runs a shell command with os.system or os.popen
+    title_zh: Python 通过 os.system 或 os.popen 执行 shell 命令
     severity: high
     confidence: low
     kind: hotspot
     cwe: CWE-78
     owasp: A03:2021
-    languages:
-      - python
-    pattern: \bos\.system\s*\(
+    languages: [python]
+    pattern: '(?:\bos\.(?:system|popen)|\bsubprocess\.(?:getoutput|getstatusoutput))\s*\('
     group: py-command
-    message: An os.system call is present; confirm the command is not built from untrusted input.
-    message_zh: 出现 os.system 调用；需确认命令不由不可信输入拼接。
-    remediation: Use subprocess.run with an argument array and keep shell=False.
-    remediation_zh: 改用 subprocess.run 参数数组并保持 shell=False。
+    message: A shell command call is present; confirm the command is not built from untrusted input.
+    message_zh: 出现 shell 命令调用；需确认命令不由不可信输入拼接。
+    remediation: Use subprocess.run with an argument list and keep shell=False.
+    remediation_zh: 改用 subprocess.run 参数列表并保持 shell=False。
     references:
       - CWE-78
       - OWASP A03:2021
+  - id: py-subprocess-shell
+    codeOnly: true
+    title: Python subprocess with shell=True and a command computed at runtime
+    title_zh: Python subprocess 使用 shell=True 且命令在运行时计算
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [python]
+    patterns:
+      - '{{SUBPROCESS}}(?:{{DYNARG}}|{{RUNTIMEARG}})'
+      - '\bshell\s*=\s*True\b'
+    group: py-subprocess
+    message: A command that is not a string literal (a variable, an f-string, a concatenation, % or .format(), or request data) is run through a shell. Whatever reaches that value is parsed by the shell, so this form is reported even when the statement does not show where the value comes from.
+    message_zh: 非字符串字面量的命令（变量、f-string、拼接、% 或 .format()，或请求数据）经 shell 执行。到达该值的任何内容都会被 shell 解析，因此即使语句本身未显示其来源也会报告。
+    remediation: Pass an argument list and keep shell=False; never build shell strings from untrusted input.
+    remediation_zh: 传入参数列表并保持 shell=False；不要用不可信输入拼接 shell 字符串。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: py-subprocess-shell-api
+    codeOnly: true
+    title: Python subprocess with shell=True
+    title_zh: Python subprocess 使用 shell=True
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [python]
+    patterns:
+      - '{{SUBPROCESS}}'
+      - '\bshell\s*=\s*True\b'
+    group: py-subprocess
+    message: A literal command (or an argument list) is run with shell=True. Nothing is interpolated here, so this is a review item rather than a finding; confirm the command text is constant.
+    message_zh: 字面量命令（或参数列表）以 shell=True 执行。此处没有插值，因此是待复核项而非发现；需确认命令文本为常量。
+    remediation: Use an argument list with shell=False.
+    remediation_zh: 使用参数列表并保持 shell=False。
+  - id: py-subprocess-concat
+    codeOnly: true
+    title: Python subprocess command string built with formatting
+    title_zh: Python subprocess 命令字符串由格式化构造
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-88
+    owasp: A03:2021
+    languages: [python]
+    pattern: '{{SUBPROCESS}}\s*{{DYN}}'
+    group: py-subprocess
+    message: A command string is built with an f-string, concatenation, % or .format() before it reaches subprocess. Without shell=True this is an argument-injection risk rather than shell injection; confirm how the string is split.
+    message_zh: 命令字符串在传给 subprocess 前由 f-string、拼接、% 或 .format() 构造。未使用 shell=True 时属于参数注入风险而非 shell 注入；需确认字符串如何拆分。
+    remediation: Pass an argument list and validate each argument.
+    remediation_zh: 传入参数列表并校验每个参数。
+
+  # ---- Dynamic code ----
+  - id: py-eval-dynamic
+    codeOnly: true
+    title: Python eval on request data
+    title_zh: Python eval 处理请求数据
+    severity: critical
+    confidence: high
+    cwe: CWE-95
+    owasp: A03:2021
+    languages: [python]
+    pattern: '(?<![\w.])eval\s*\({{FIRSTREQ}}'
+    group: py-eval
+    message: eval() evaluates a value read from the request, which allows arbitrary code execution.
+    message_zh: eval() 对来自请求的值求值，可导致任意代码执行。
+    remediation: Parse the value with ast.literal_eval or a dedicated parser instead of eval.
+    remediation_zh: 改用 ast.literal_eval 或专用解析器，不要使用 eval。
+  - id: py-exec-dynamic
+    codeOnly: true
+    title: Python exec on request data
+    title_zh: Python exec 执行请求数据
+    severity: critical
+    confidence: high
+    cwe: CWE-95
+    owasp: A03:2021
+    languages: [python]
+    pattern: '(?<![\w.])exec\s*\({{FIRSTREQ}}'
+    group: py-eval
+    message: exec() executes a value read from the request, which allows arbitrary code execution.
+    message_zh: exec() 执行来自请求的值，可导致任意代码执行。
+    remediation: Avoid exec; dispatch to explicit functions or use a restricted evaluator.
+    remediation_zh: 避免使用 exec，改为显式分派函数或使用受限求值器。
+  - id: py-eval-api
+    codeOnly: true
+    title: Python eval or exec with a non-literal argument
+    title_zh: Python eval 或 exec 使用非字面量参数
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-95
+    owasp: A03:2021
+    languages: [python]
+    pattern: '(?:(?<![\w.])(?:eval|exec)|\bImageMath\.(?:eval|unsafe_eval))\s*\({{NONLIT}}'
+    group: py-eval
+    message: eval/exec runs a value computed at runtime; confirm it cannot be influenced by untrusted input.
+    message_zh: eval/exec 执行运行时计算的值；需确认其不受不可信输入影响。
+    remediation: Replace eval/exec with ast.literal_eval, a parser, or explicit dispatch.
+    remediation_zh: 用 ast.literal_eval、解析器或显式分派替代 eval/exec。
+  - id: py-importlib-dynamic
+    codeOnly: true
+    title: Python dynamic import from a runtime value
+    title_zh: Python 运行时动态导入
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-470
+    owasp: A03:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\bimportlib\.import_module|(?<![\w.])__import__)\s*\({{NONLIT}}'
+    notPattern: '\(\s*__name__\s*[,)]'
+    message: A module name is chosen at runtime; confirm it cannot be influenced by a request.
+    message_zh: 模块名在运行时决定；需确认不受请求影响。
+    remediation: Import modules explicitly or map the name through a fixed allowlist.
+    remediation_zh: 显式导入模块，或通过固定白名单映射名称。
+
+  # ---- Template injection and HTML output ----
+  - id: py-render-template-string
+    title: Flask render_template_string with a template built at runtime
+    title_zh: Flask render_template_string 使用运行时构造的模板
+    severity: critical
+    confidence: medium
+    cwe: CWE-1336
+    owasp: A03:2021
+    languages: [python]
+    pattern: '\brender_template_string\s*\({{DYNARG}}'
+    group: py-ssti
+    message: The template source is built with an f-string, concatenation, % or .format(), or comes from the request, so user data is compiled as Jinja code (server-side template injection).
+    message_zh: 模板源码由 f-string、拼接、% 或 .format() 构造，或来自请求，用户数据会被当作 Jinja 代码编译（服务端模板注入）。
+    remediation: Keep the template text constant and pass data as context variables, or use render_template with a file.
+    remediation_zh: 保持模板文本为常量，把数据作为上下文变量传入，或使用 render_template 加载文件。
+  - id: py-jinja-template-var
+    title: Jinja2 template compiled from request data
+    title_zh: Jinja2 模板由请求数据编译
+    severity: critical
+    confidence: high
+    cwe: CWE-1336
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pattern: '(?:(?:(?<![\w.])|\bjinja2\.)Template|\.from_string)\s*\({{FIRSTREQ}}'
+    group: py-ssti
+    message: A Jinja template is compiled from a value read from the request, which allows server-side template injection.
+    message_zh: Jinja 模板由来自请求的值编译，可造成服务端模板注入。
+    remediation: Load templates from files with a fixed loader and pass untrusted data as context.
+    remediation_zh: 使用固定加载器从文件加载模板，不可信数据仅作为上下文传入。
+  - id: py-template-string-api
+    title: Template compiled from a non-literal string
+    title_zh: 模板由非字面量字符串编译
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1336
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    filePattern: '\b(?:jinja2|flask|mako)\b'
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\brender_template_string|(?:(?<![\w.])|\bjinja2\.)Template|\.from_string)\s*\((?!{{CONSTARG}}){{NONLIT}}'
+    group: py-ssti
+    message: A template is compiled from a runtime string; confirm the template source is not influenced by untrusted input.
+    message_zh: 模板由运行时字符串编译；需确认模板源码不受不可信输入影响。
+    remediation: Keep template sources constant and pass data as context.
+    remediation_zh: 保持模板源码为常量，并把数据作为上下文传入。
+  - id: py-jinja-autoescape-false
+    title: Jinja2 autoescape disabled
+    title_zh: Jinja2 关闭自动转义
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pattern: '(?:(?<![\w.])|\bjinja2\.)Environment\s*\([^)]{0,600}\bautoescape\s*=\s*False\b|\.autoescape\s*=\s*False\b'
+    group: py-autoescape
+    message: autoescape=False makes every template variable render as raw HTML, which enables cross-site scripting when templates produce HTML.
+    message_zh: autoescape=False 使所有模板变量按原始 HTML 输出；模板生成 HTML 时可造成跨站脚本。
+    remediation: Keep autoescape enabled (select_autoescape for HTML templates).
+    remediation_zh: 保持自动转义开启（HTML 模板使用 select_autoescape）。
+  - id: py-jinja-autoescape-missing
+    title: Jinja2 Environment without an autoescape setting
+    title_zh: Jinja2 Environment 未设置自动转义
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    filePattern: '^\s*(?:from|import)\s+jinja2\b'
+    pattern: '(?:(?<![\w.])|\bjinja2\.)Environment\s*\('
+    notPattern: 'autoescape'
+    group: py-autoescape
+    message: jinja2.Environment defaults to autoescape=False; confirm the templates do not render HTML with untrusted values.
+    message_zh: jinja2.Environment 默认 autoescape=False；需确认模板不会用不可信值渲染 HTML。
+    remediation: Pass autoescape=select_autoescape() explicitly.
+    remediation_zh: 显式传入 autoescape=select_autoescape()。
+  - id: py-mark-safe-dynamic
+    title: Django mark_safe on HTML built with string formatting
+    title_zh: Django mark_safe 作用于格式化构造的 HTML
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    pattern: '\bmark_safe\s*\({{DYNARG}}'
+    group: py-html-safe
+    message: mark_safe marks a string built with an f-string, concatenation, % or .format() (or request data) as trusted HTML, so interpolated values are not escaped.
+    message_zh: mark_safe 把由 f-string、拼接、% 或 .format() 构造的字符串（或请求数据）标记为可信 HTML，插入的值不会被转义。
+    remediation: Use format_html() so that arguments are escaped, or escape each value first.
+    remediation_zh: 使用 format_html() 使参数被转义，或先转义每个值。
+  - id: py-markup-dynamic
+    title: Markup on HTML built with string formatting
+    title_zh: Markup 作用于格式化构造的 HTML
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pattern: '(?<!\w)Markup\s*\({{DYNARG}}'
+    group: py-html-safe
+    message: Markup wraps a string built with an f-string, concatenation, % or .format() (or request data), so interpolated values are treated as trusted HTML.
+    message_zh: Markup 包装由 f-string、拼接、% 或 .format() 构造的字符串（或请求数据），插入的值被视为可信 HTML。
+    remediation: Format after wrapping (Markup("<b>%s</b>") % value or Markup("...").format(value)) so that values are escaped.
+    remediation_zh: 先包装再格式化（Markup("<b>%s</b>") % value 或 Markup("...").format(value)），使值被转义。
+  - id: py-html-safe-api
+    title: mark_safe or Markup on a non-literal value
+    title_zh: mark_safe 或 Markup 作用于非字面量值
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\bmark_safe|(?<!\w)Markup)\s*\({{NONLIT}}'
+    notPattern: '\bescape\s*\('
+    group: py-html-safe
+    message: A runtime value is marked as trusted HTML; confirm it is escaped or constant.
+    message_zh: 运行时值被标记为可信 HTML；需确认其已转义或为常量。
+    remediation: Escape untrusted values before marking them safe.
+    remediation_zh: 在标记为安全之前先转义不可信值。
+
+  # ---- Deserialization ----
+  - id: py-insecure-deserialization
+    codeOnly: true
+    title: Python unpickles request data
+    title_zh: Python 反序列化请求数据
+    severity: critical
+    confidence: high
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [python]
+    pattern: '(?:\b(?:c?pickle|_pickle|dill|marshal|cloudpickle)\.loads?|\bjsonpickle\.decode)\s*\({{FIRSTREQ}}'
+    group: py-deser
+    message: pickle, dill, marshal or jsonpickle deserializes a value read from the request, which lets the sender execute arbitrary code.
+    message_zh: pickle、dill、marshal 或 jsonpickle 反序列化来自请求的值，发送方可执行任意代码。
+    remediation: Use JSON or another data-only format for anything that crosses a trust boundary.
+    remediation_zh: 跨信任边界的数据改用 JSON 等纯数据格式。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: py-deserialization-api
+    codeOnly: true
+    title: Python pickle-based deserialization
+    title_zh: Python 基于 pickle 的反序列化
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:c?pickle|_pickle|dill|marshal|cloudpickle)\.loads?\s*\(|\bpickle\.Unpickler\s*\(|\bjsonpickle\.decode\s*\(|\bshelve\.open\s*\(|\bjoblib\.load\s*\('
+    group: py-deser
+    message: pickle, dill, marshal, jsonpickle, shelve and joblib can run code while loading; confirm the data comes from a trusted source.
+    message_zh: pickle、dill、marshal、jsonpickle、shelve 和 joblib 在加载时可执行代码；需确认数据来源可信。
+    remediation: Use JSON or a restricted format; if pickle is unavoidable, verify integrity (HMAC) and restrict the source.
+    remediation_zh: 改用 JSON 或受限格式；如必须使用 pickle，需做完整性校验（HMAC）并限制来源。
+  - id: py-yaml-load
+    codeOnly: true
+    title: Python yaml.load with an unsafe loader
+    title_zh: Python yaml.load 使用不安全的加载器
+    severity: high
+    confidence: medium
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [python]
+    # Case-sensitive: "SafeLoader" must not match inside "unsafe_load",
+    # "UnsafeLoader" or a variable such as unsafe_body.
+    flags: ''
+    fileAbsentPattern: '\bruamel\b'
+    pattern: '\byaml\.(?:load|load_all)\s*\(|\byaml\.(?:unsafe_load|full_load)(?:_all)?\s*\('
+    notPattern: '\bC?(?:Safe|Base)Loader\b|\bLoader\s*=\s*(?!(?:yaml\.)?C?(?:Unsafe|Full)?Loader\b)'
+    message: yaml.load without SafeLoader (or yaml.unsafe_load / full_load) can construct arbitrary Python objects from the document.
+    message_zh: 未使用 SafeLoader 的 yaml.load（或 yaml.unsafe_load / full_load）可根据文档构造任意 Python 对象。
+    remediation: Use yaml.safe_load or pass Loader=yaml.SafeLoader.
+    remediation_zh: 使用 yaml.safe_load，或传入 Loader=yaml.SafeLoader。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: py-torch-load
+    codeOnly: true
+    title: PyTorch torch.load without weights_only=True
+    title_zh: PyTorch torch.load 未设置 weights_only=True
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [python]
+    pattern: '\btorch\.load\s*\('
+    notPattern: 'weights_only\s*=\s*True'
+    message: torch.load unpickles the checkpoint unless weights_only=True (the default only from PyTorch 2.6); confirm the file is trusted.
+    message_zh: 除非 weights_only=True（PyTorch 2.6 起才是默认值），torch.load 会反序列化检查点；需确认文件可信。
+    remediation: Pass weights_only=True or load a safetensors file.
+    remediation_zh: 传入 weights_only=True，或加载 safetensors 文件。
+  - id: py-numpy-load-pickle
+    title: NumPy load with allow_pickle=True
+    title_zh: NumPy load 启用 allow_pickle
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [python]
+    pattern: '\b(?:np|numpy)\.load\s*\([^)]{0,600}\ballow_pickle\s*=\s*True\b'
+    message: allow_pickle=True lets numpy.load unpickle objects; confirm the file is trusted.
+    message_zh: allow_pickle=True 使 numpy.load 反序列化对象；需确认文件可信。
+    remediation: Keep allow_pickle=False and load plain arrays.
+    remediation_zh: 保持 allow_pickle=False，仅加载普通数组。
+
+  # ---- Files and paths ----
+  - id: py-path-traversal
+    title: Python file access with a path from the request
+    title_zh: Python 使用来自请求的路径访问文件
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    pattern: '(?:(?<![\w.])(?:open|send_file|FileResponse)|\b(?:io|codecs|flask)\.(?:open|send_file)|\bos\.(?:remove|unlink|rmdir|listdir|makedirs)|\bshutil\.(?:copy|copy2|copyfile|move|rmtree))\s*\((?:[^)\n]|\([^()\n]{0,200}\)){0,400}?(?:{{REQ}})'
+    notPattern: 'secure_filename|\bbasename\s*\(|\bsafe_join\s*\('
+    group: py-path
+    message: A value read from the request is used in a file path, so ../ sequences or absolute paths can reach files outside the intended directory.
+    message_zh: 来自请求的值被用于文件路径，../ 序列或绝对路径可访问预期目录之外的文件。
+    remediation: Use werkzeug.utils.secure_filename or os.path.basename, and verify the resolved path stays inside the allowed directory.
+    remediation_zh: 使用 werkzeug.utils.secure_filename 或 os.path.basename，并校验解析后的路径位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: py-upload-filename
+    title: Client-supplied file name used in a path
+    title_zh: 客户端提供的文件名被用于路径
+    severity: high
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    filePattern: '\brequest\.(?:files|FILES)\b'
+    pattern: '\bos\.path\.join\s*\([^)\n]{0,300},\s*\w{1,80}\.filename\b|\.save\s*\((?:[^)\n]{0,300}[+/,])?\s*\w{1,80}\.filename\b'
+    notPattern: 'secure_filename|\bbasename\s*\('
+    group: py-path
+    message: The file name sent by the client (.filename of an upload) is joined into a path without sanitizing, so it can contain ../ or an absolute path.
+    message_zh: 客户端发送的文件名（上传对象的 .filename）未经清理就拼入路径，可包含 ../ 或绝对路径。
+    remediation: Pass the name through werkzeug.utils.secure_filename (or generate the stored name yourself).
+    remediation_zh: 用 werkzeug.utils.secure_filename 处理文件名（或自行生成存储文件名）。
+  - id: py-send-file-api
+    title: send_file with a non-literal path
+    title_zh: send_file 使用非字面量路径
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<!\w)send_file\s*\({{NONLIT}}'
+    notPattern: '__file__|BytesIO|StringIO'
+    group: py-path
+    message: send_file serves a path computed at runtime and does not confine it to a directory; confirm the path is not influenced by the request.
+    message_zh: send_file 提供运行时计算的路径且不限制目录；需确认路径不受请求影响。
+    remediation: Use send_from_directory with a fixed directory, or validate the resolved path.
+    remediation_zh: 使用带固定目录的 send_from_directory，或校验解析后的路径。
   - id: py-path-api
     title: Python joins a runtime path with os.path.join
     title_zh: Python 使用 os.path.join 拼接路径
@@ -220,14 +606,155 @@ rules:
     kind: hotspot
     cwe: CWE-22
     owasp: A01:2021
-    languages:
-      - python
-    pattern: os\.path\.join\s*\(
+    languages: [python]
+    pathExclude: '{{TESTPATH}}|(?:^|/)(?:setup|conf|noxfile|manage)\.py$|(?:^|/)docs?/'
+    pattern: '\bos\.path\.join\s*\('
+    notPattern: '\bos\.path\.join\s*\((?!\s*["\x27])(?:[^,()\n]|\([^()\n]{0,200}\)){1,200}(?:,\s*[rbu]?["\x27][^"\x27\n]{0,200}["\x27]\s*){1,20}(?:,\s*)?\)'
     group: py-path
-    message: A path is joined from runtime segments; confirm it stays inside the allowed directory after normalization.
-    message_zh: 路径由运行时片段拼接；需确认规范化后仍位于允许目录内。
+    message: A path is joined from segments; confirm no segment is influenced by untrusted input and the result stays inside the allowed directory. A join of a base directory with only literal segments is not reported.
+    message_zh: 路径由片段拼接；需确认各片段不受不可信输入影响，且结果位于允许目录内。基目录仅与字面量片段拼接时不报告。
     remediation: Use basename or an allowlist, and verify the realpath.
     remediation_zh: 使用 basename 或白名单，并校验 realpath。
     references:
       - CWE-22
       - OWASP A01:2021
+  - id: py-tar-extractall
+    title: tarfile extractall without a filter
+    title_zh: tarfile extractall 未设置 filter
+    severity: medium
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    filePattern: '\btarfile\b'
+    pattern: '\.extractall\s*\('
+    notPattern: '\bfilter\s*=|zip\w{0,40}\.extractall|\bzf?\.extractall'
+    group: py-extractall
+    message: tarfile.extractall without filter= follows the member names and links in the archive (before Python 3.14), so a crafted archive can write outside the destination directory.
+    message_zh: 未设置 filter= 的 tarfile.extractall 会按归档中的成员名和链接解压（Python 3.14 之前），恶意归档可写到目标目录之外。
+    remediation: Pass filter="data" (Python 3.12+) or validate member paths before extracting.
+    remediation_zh: 传入 filter="data"（Python 3.12+），或在解压前校验成员路径。
+  - id: py-zip-extractall
+    title: zipfile extractall
+    title_zh: zipfile extractall
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    filePattern: '\bzipfile\b'
+    pattern: '\.extractall\s*\('
+    notPattern: 'tar\w{0,40}\.extractall'
+    group: py-extractall
+    message: zipfile.extractall strips ../ and absolute paths itself, but archive size and overwritten files still need review when the archive is untrusted.
+    message_zh: zipfile.extractall 自身会去除 ../ 和绝对路径，但归档不可信时仍需检查解压体积和被覆盖的文件。
+    remediation: Check member names and total uncompressed size before extracting untrusted archives.
+    remediation_zh: 解压不可信归档前检查成员名和解压后总大小。
+  - id: py-tempfile-mktemp
+    codeOnly: true
+    title: tempfile.mktemp is race-prone
+    title_zh: tempfile.mktemp 存在竞态
+    severity: medium
+    confidence: medium
+    cwe: CWE-377
+    owasp: A01:2021
+    languages: [python]
+    pattern: '\btempfile\.mktemp\s*\('
+    message: mktemp returns a name without creating the file, so another local user can create it first (symlink race). The function is deprecated for this reason.
+    message_zh: mktemp 只返回文件名而不创建文件，其他本地用户可抢先创建（符号链接竞态）。该函数因此已被弃用。
+    remediation: Use tempfile.mkstemp, NamedTemporaryFile or TemporaryDirectory.
+    remediation_zh: 使用 tempfile.mkstemp、NamedTemporaryFile 或 TemporaryDirectory。
+  - id: py-chmod-777
+    title: os.chmod with world-writable permissions
+    title_zh: os.chmod 设置全局可写权限
+    severity: medium
+    confidence: medium
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [python]
+    pattern: '\bos\.chmod\s*\([^)\n]{0,300},\s*0o?[0-7]{2,3}[2367]\s*\)'
+    message: The mode grants write access to every local user.
+    message_zh: 该权限模式允许所有本地用户写入。
+    remediation: Use the least privilege mode, typically 0o600 or 0o640.
+    remediation_zh: 使用最小权限，通常为 0o600 或 0o640。
+
+  # ---- Outbound requests, redirects, LDAP ----
+  - id: py-ssrf
+    title: Python server-side request to a URL from the request
+    title_zh: Python 服务端请求的 URL 来自请求
+    severity: high
+    confidence: high
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [python]
+    pattern: '(?:\b(?:requests|httpx|aiohttp)\.(?:get|post|put|delete|patch|head|options)|\b(?:urllib\.request\.|urllib2\.|urllib\.)?urlopen)\s*\((?:{{STARTREQ}}|\s*url\s*=\s*(?:{{REQ}}))'
+    message: The target URL of an outbound HTTP call is read from the request, so a caller can make the server reach internal addresses.
+    message_zh: 出站 HTTP 调用的目标 URL 来自请求，调用方可让服务器访问内部地址。
+    remediation: Use a URL allowlist and protocol restrictions, and block private/loopback addresses.
+    remediation_zh: 使用 URL 白名单、协议限制，并阻断私网/环回地址。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: py-open-redirect
+    title: Redirect to a URL from the request
+    title_zh: 重定向到来自请求的 URL
+    severity: medium
+    confidence: high
+    cwe: CWE-601
+    owasp: A01:2021
+    languages: [python]
+    pattern: '(?<!\w)(?:redirect|HttpResponseRedirect|HttpResponsePermanentRedirect|RedirectResponse)\s*\({{STARTREQ}}'
+    group: py-redirect
+    message: The redirect target is read from the request, so a crafted link can send users to another site (open redirect).
+    message_zh: 重定向目标来自请求，构造的链接可把用户带到其他站点（开放重定向）。
+    remediation: Validate the target against an allowlist or accept only relative paths; use url_for with a fixed endpoint.
+    remediation_zh: 使用白名单校验目标或仅接受相对路径；用 url_for 指向固定端点。
+  - id: py-redirect-api
+    title: Redirect to a URL held in a variable
+    title_zh: 重定向到变量中的 URL
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-601
+    owasp: A01:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<!\w)(?:redirect|HttpResponseRedirect|HttpResponsePermanentRedirect|RedirectResponse)\s*\(\s*(?:\w+\.)*(?:next|next_url|next_page|url|target|target_url|dest|destination|return_to|return_url|redirect_to|redirect_url|redirect_uri|back|back_url|goto|continue_url|referrer|referer|location)\s*(?:[,)]|\bor\b)'
+    group: py-redirect
+    message: The redirect target is a variable with a URL-like name; confirm it cannot be set to an external site by the caller.
+    message_zh: 重定向目标是名称像 URL 的变量；需确认调用方无法将其设为外部站点。
+    remediation: Validate the target against an allowlist or accept only relative paths.
+    remediation_zh: 使用白名单校验目标，或仅接受相对路径。
+  - id: py-xpath-injection
+    title: XPath expression built with string formatting
+    title_zh: XPath 表达式由字符串拼接或格式化构造
+    severity: high
+    confidence: medium
+    cwe: CWE-643
+    owasp: A03:2021
+    languages: [python]
+    patterns:
+      - '\.(?:xpath|findall|find|iterfind)\s*\(\s*{{DYN}}'
+      - '\[[^\]\n]{0,200}(?:=|\bcontains\s*\()\s*(?:\\?[\x27"]?(?:%s|\{[^{}:\n]{0,80}\})|(?:\\?[\x27"]\s*)?["\x27]\s*\+)'
+    message: A value is formatted into an XPath predicate (f-string, concatenation, % or .format()), so quotes in the value change the query.
+    message_zh: 值被格式化进 XPath 谓词（f-string、拼接、% 或 .format()），值中的引号可改变查询。
+    remediation: Pass values as XPath variables (for example lxml xpath("//user[name=$n]", n=value)).
+    remediation_zh: 通过 XPath 变量传值（例如 lxml 的 xpath("//user[name=$n]", n=value)）。
+  - id: py-ldap-injection
+    title: LDAP search filter built with string formatting
+    title_zh: LDAP 搜索过滤器由字符串拼接或格式化构造
+    severity: high
+    confidence: medium
+    cwe: CWE-90
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '\bldap3?\b'
+    patterns:
+      - '\.search(?:_ext)?(?:_s|_st)?\s*\('
+      - '["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}["\x27]\s*(?:\+|%\s*[\w(]|\.format\()|f["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}\{'
+    notPattern: 'escape_filter_chars|escape_rdn'
+    message: An LDAP filter such as "(cn=" + value + ")" is built with concatenation, % , .format() or an f-string, so filter metacharacters in the value change the query.
+    message_zh: LDAP 过滤器（如 "(cn=" + value + ")"）由拼接、%、.format() 或 f-string 构造，值中的过滤器元字符会改变查询。
+    remediation: Escape values with ldap.filter.escape_filter_chars (or ldap3.utils.conv.escape_filter_chars).
+    remediation_zh: 使用 ldap.filter.escape_filter_chars（或 ldap3.utils.conv.escape_filter_chars）转义值。

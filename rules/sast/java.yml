@@ -9,7 +9,7 @@ rules:
     owasp: A03:2021
     languages:
       - java
-    pattern: execute(?:Query|Update)?\s*\([^;]*\+
+    pattern: execute(?:Query|Update)?\s*\([^;]{0,600}\+
     group: java-sql
     message: User input is concatenated into a Statement SQL query.
     message_zh: 用户输入被拼接到 Statement 执行的 SQL 中。
@@ -27,7 +27,7 @@ rules:
     owasp: A03:2021
     languages:
       - java
-    pattern: Runtime\.getRuntime\(\)\.exec\([^;\n]*\+|new\s+ProcessBuilder\([^)]*\+
+    pattern: Runtime\.getRuntime\(\)\.exec\([^;\n]{0,600}\+|new\s+ProcessBuilder\([^)]{0,600}\+
     group: java-command
     message: Untrusted input reaches Runtime.exec or ProcessBuilder and may execute arbitrary commands.
     message_zh: 外部输入进入系统命令执行，可能导致任意命令执行。
@@ -62,7 +62,7 @@ rules:
     owasp: A01:2021
     languages:
       - java
-    pattern: new\s+File\([^)]*(?:name|request|input|user|filename|args)
+    pattern: new\s+File\([^)]{0,600}(?:name|request|input|user|filename|args)
     group: java-file
     message: Untrusted input participates in a file path and may escape the intended directory.
     message_zh: 不可信路径参与文件访问，可能穿越到允许目录之外。

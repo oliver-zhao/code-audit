@@ -14,18 +14,52 @@ const repoRoot = path.resolve(here, "..");
 const binDir = path.join(repoRoot, "bin");
 
 const wrappers = {
-  "code-audit": `#!/usr/bin/env sh
+  "code-audit": `#!/bin/sh
 # code-audit CLI wrapper. Resolve the repo root relative to this script so the
 # wrapper works from any directory and contains no absolute paths.
 set -eu
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec node "$SCRIPT_DIR/../packages/cli/dist/index.js" "$@"
+# Follow symlinks so the wrapper also works when it is linked into a PATH
+# directory (ln -s .../bin/code-audit ~/.local/bin/). Plain POSIX sh: \`readlink -f\`
+# and \`realpath\` are not available on every macOS/BSD release.
+SELF=\$0
+HOPS=0
+while [ -L "\$SELF" ]; do
+  HOPS=\$((HOPS + 1))
+  if [ "\$HOPS" -gt 40 ]; then
+    echo "code-audit: too many levels of symbolic links: \$0" >&2
+    exit 2
+  fi
+  LINK=\$(readlink "\$SELF")
+  case \$LINK in
+    /*) SELF=\$LINK ;;
+    *) SELF=\$(dirname -- "\$SELF")/\$LINK ;;
+  esac
+done
+SCRIPT_DIR=\$(CDPATH= cd -- "\$(dirname -- "\$SELF")" && pwd -P)
+exec node "\$SCRIPT_DIR/../packages/cli/dist/index.js" "\$@"
 `,
-  "code-audit-mcp": `#!/usr/bin/env sh
+  "code-audit-mcp": `#!/bin/sh
 # code-audit MCP server wrapper (stdio). No absolute paths.
 set -eu
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec node "$SCRIPT_DIR/../packages/mcp/dist/bin.js" "$@"
+# Follow symlinks so the wrapper also works when it is linked into a PATH
+# directory (ln -s .../bin/code-audit-mcp ~/.local/bin/). Plain POSIX sh: \`readlink -f\`
+# and \`realpath\` are not available on every macOS/BSD release.
+SELF=\$0
+HOPS=0
+while [ -L "\$SELF" ]; do
+  HOPS=\$((HOPS + 1))
+  if [ "\$HOPS" -gt 40 ]; then
+    echo "code-audit: too many levels of symbolic links: \$0" >&2
+    exit 2
+  fi
+  LINK=\$(readlink "\$SELF")
+  case \$LINK in
+    /*) SELF=\$LINK ;;
+    *) SELF=\$(dirname -- "\$SELF")/\$LINK ;;
+  esac
+done
+SCRIPT_DIR=\$(CDPATH= cd -- "\$(dirname -- "\$SELF")" && pwd -P)
+exec node "\$SCRIPT_DIR/../packages/mcp/dist/bin.js" "\$@"
 `,
 };
 

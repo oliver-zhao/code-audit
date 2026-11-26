@@ -1,0 +1,195 @@
+version: 1
+# Built-in Python rules: web framework configuration and miscellaneous checks.
+# Written for code-audit (Apache-2.0). See python.yml for the conventions.
+definitions:
+  TESTPATH: '(?:^|/)(?:tests?|testing)/|(?:^|/)(?:test_[^/]*|[^/]*_tests?|conftest)\.py$'
+  # Example, documentation and test trees, where placeholder settings are normal.
+  SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:examples?|samples?|docs?|tutorials?|demos?)/'
+  SECRETNAME: '(?:SECRET(?:_ACCESS)?_KEY\w{0,40}["\x27]?\]?\s*[=:]\s*|\.secret_key\s*=\s*)'
+rules:
+  # ---- Flask / Django configuration ----
+  - id: py-flask-debug
+    title: Web application run with debug enabled
+    title_zh: Web 应用以调试模式运行
+    severity: high
+    confidence: medium
+    cwe: CWE-489
+    owasp: A05:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<!\b(?:asyncio|anyio|trio|pstats|cProfile|profile))\.run\s*\([^)]{0,600}\bdebug\s*=\s*True\b|\bapp\.debug\s*=\s*True\b|\bapp\.config\[["\x27]DEBUG["\x27]\]\s*=\s*True\b'
+    message: debug=True starts the Werkzeug debugger, which gives anyone who can reach the port an interactive Python console.
+    message_zh: debug=True 会启动 Werkzeug 调试器，任何能访问该端口的人都可获得交互式 Python 控制台。
+    remediation: Take the debug flag from the environment, default it to off, and run production behind a WSGI server.
+    remediation_zh: 从环境变量读取 debug 开关并默认关闭；生产环境使用 WSGI 服务器运行。
+  - id: py-django-debug
+    title: Django DEBUG enabled in a settings file
+    title_zh: Django settings 文件开启 DEBUG
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-489
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    pathInclude: '(?:^|/)settings[^/]*\.py$|(?:^|/)settings/[^/]+\.py$'
+    pattern: '^\s*DEBUG\s*=\s*True\b'
+    message: DEBUG=True leaks settings and tracebacks; confirm this is not a production settings file.
+    message_zh: DEBUG=True 会泄露配置和回溯；需确认这不是生产配置。
+    remediation: Read DEBUG from the environment and default it to False.
+    remediation_zh: 从环境变量读取 DEBUG，并默认设为 False。
+  - id: py-allowed-hosts
+    title: Django ALLOWED_HOSTS wildcard
+    title_zh: Django ALLOWED_HOSTS 通配符
+    severity: medium
+    confidence: medium
+    cwe: CWE-183
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    pattern: '^\s*ALLOWED_HOSTS\s*=\s*[\[(][^\])]{0,600}["\x27]\*["\x27]'
+    message: A wildcard ALLOWED_HOSTS accepts requests for any Host header, which enables Host header poisoning (for example in password-reset links).
+    message_zh: 通配符 ALLOWED_HOSTS 接受任意 Host 头的请求，可造成 Host 头投毒（例如密码重置链接）。
+    remediation: List the exact allowed host names.
+    remediation_zh: 明确列出允许的主机名。
+  - id: py-hardcoded-secret
+    title: Hard-coded SECRET_KEY
+    title_zh: 硬编码 SECRET_KEY
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '{{SECRETNAME}}b?["\x27][^"\x27\n]{16,400}["\x27]'
+    notPattern: '["\x27][^"\x27\n]{0,400}(?:dev|test|chang|example|dummy|placeholder|xxx|your|todo|fake|sample|replace|secret|default)[^"\x27\n]{0,400}["\x27]\s*(?:[,)#]|$)'
+    redactEvidence: true
+    group: py-secret-key
+    message: A literal SECRET_KEY in source lets anyone with the code forge sessions and other signed data.
+    message_zh: 源码中的字面量 SECRET_KEY 使任何拿到代码的人都能伪造会话和其他签名数据。
+    remediation: Load SECRET_KEY from the environment or a secret manager and rotate the committed value.
+    remediation_zh: 从环境变量或密钥管理器加载 SECRET_KEY，并轮换已提交的值。
+  - id: py-secret-key-literal
+    title: SECRET_KEY set to a short or placeholder literal
+    title_zh: SECRET_KEY 被设为短字面量或占位值
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-798
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '{{SECRETNAME}}b?["\x27][^"\x27\n]{1,400}["\x27]'
+    redactEvidence: true
+    group: py-secret-key
+    message: SECRET_KEY is a literal that looks like a development placeholder (or lives in example code); confirm deployments override it.
+    message_zh: SECRET_KEY 是看起来像开发占位值的字面量（或位于示例代码中）；需确认部署时会覆盖它。
+    remediation: Load SECRET_KEY from the environment and fail to start when it is missing.
+    remediation_zh: 从环境变量加载 SECRET_KEY，缺失时拒绝启动。
+  - id: py-csrf-exempt
+    title: CSRF protection disabled for a view
+    title_zh: 视图禁用了 CSRF 防护
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-352
+    owasp: A01:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '^\s*@(?:\w+\.)*(?:csrf_exempt|csrf\.exempt)\b|\bcsrf_exempt\s*\(|\bWTF_CSRF_ENABLED["\x27]?\]?\s*[=:]\s*False\b'
+    message: CSRF protection is switched off here; confirm the endpoint does not rely on cookie authentication (webhooks and token-authenticated APIs are fine).
+    message_zh: 此处关闭了 CSRF 防护；需确认该端点不依赖 Cookie 认证（Webhook 和令牌认证的 API 没有问题）。
+    remediation: Keep CSRF protection for cookie-authenticated, state-changing endpoints.
+    remediation_zh: 对使用 Cookie 认证且会修改状态的端点保留 CSRF 防护。
+  - id: py-session-cookie-insecure
+    title: Cookie explicitly created without Secure or HttpOnly
+    title_zh: Cookie 被显式设为不带 Secure 或 HttpOnly
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '^\s*(?:SESSION_COOKIE_SECURE|SESSION_COOKIE_HTTPONLY|CSRF_COOKIE_SECURE)\s*=\s*False\b|\bset_cookie\s*\([^)]{0,600}\b(?:secure|httponly)\s*=\s*False\b'
+    message: The cookie is explicitly sent without Secure (allowed over plain HTTP) or without HttpOnly (readable by scripts).
+    message_zh: 该 Cookie 被显式设为不带 Secure（可经明文 HTTP 发送）或不带 HttpOnly（可被脚本读取）。
+    remediation: Set Secure and HttpOnly on session cookies.
+    remediation_zh: 为会话 Cookie 设置 Secure 和 HttpOnly。
+  - id: py-cors-wildcard
+    title: CORS wildcard origin with credentials
+    title_zh: CORS 通配源携带凭证
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [python]
+    patterns:
+      - '\b(?:origins|allow_origins)\s*=\s*(?:\[\s*)?["\x27]\*["\x27]'
+      - '\b(?:supports_credentials|allow_credentials)\s*=\s*True\b'
+    message: A wildcard CORS origin combined with credentials exposes authenticated responses to any site.
+    message_zh: 通配 CORS 源与凭证组合会把已认证响应暴露给任意站点。
+    remediation: List trusted origins explicitly and only send credentials to them.
+    remediation_zh: 明确列出可信源，并仅向这些源发送凭证。
+
+  # ---- Misc ----
+  - id: py-assert-auth
+    title: assert used for an authorization check
+    title_zh: 使用 assert 做授权检查
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-617
+    owasp: A01:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '^\s*assert\s[^,\n]{0,300}\b(?:is_admin|is_authenticated|is_staff|is_superuser|is_owner|has_perms?|has_permission|has_role|check_permission|is_authorized|current_user)\b'
+    message: assert statements are removed under python -O, so an authorization check written as an assert may be skipped.
+    message_zh: 使用 python -O 时 assert 会被移除，以 assert 编写的授权检查可能被跳过。
+    remediation: Raise an explicit exception or return a permission error instead of asserting.
+    remediation_zh: 显式抛出异常或返回权限错误，不要用 assert。
+  - id: py-requests-timeout
+    title: requests call without a timeout
+    title_zh: requests 调用未设置超时
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-400
+    owasp: A05:2021
+    languages: [python]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '\brequests\.(?:get|post|put|delete|patch|head|options|request)\s*\('
+    notPattern: '\btimeout\s*=|\*\*'
+    message: A requests call without timeout= can hang a worker indefinitely.
+    message_zh: 未设置 timeout= 的 requests 调用可能使工作线程无限挂起。
+    remediation: Always pass timeout= to requests calls.
+    remediation_zh: 为 requests 调用始终传入 timeout=。
+  - id: py-bind-all
+    title: Service bound to all interfaces
+    title_zh: 服务绑定到所有网卡
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1327
+    owasp: A05:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:host|bind|address|addr|listen)\w*["\x27]?\s*[=:]\s*["\x27](?:0\.0\.0\.0|::)["\x27]|\(\s*["\x27](?:0\.0\.0\.0|::)["\x27]\s*,\s*\w+\s*\)'
+    message: Binding to 0.0.0.0 exposes the service on every interface; confirm it is intended.
+    message_zh: 绑定到 0.0.0.0 会在所有网卡暴露服务；需确认是否有意为之。
+    remediation: Bind to 127.0.0.1 or a specific interface behind a firewall.
+    remediation_zh: 绑定到 127.0.0.1 或指定网卡，并置于防火墙之后。
+  - id: py-logging-secret
+    title: Logging a password, secret or token variable
+    title_zh: 日志记录口令、密钥或令牌变量
+    severity: medium
+    confidence: low
+    cwe: CWE-532
+    owasp: A09:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:logging|logger|log|_logger|_log)\.(?:info|debug|warning|warn|error|critical|exception)\s*\(\s*(?:[rbu]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27)\s*(?:%\s*(?:\(\s*)?|,\s*)(?:[\w.\[\]]{1,80}\s*,\s*){0,8}|f["\x27][^\n]{0,300}\{\s*)(?![\w.]{0,80}(?:_type|_name|_count|_len|_id|_url|_uri|_path|_file|_expir|_ttl|_field|_header|_endpoint|_hash|hashed|_valid|is_|has_|_error|_status))[\w.]{0,80}(?:password|passwd|secret|token|api_?key)\w{0,40}\s*[,)}!:]'
+    message: A variable named like a password, secret or token is written to the log.
+    message_zh: 名称像口令、密钥或令牌的变量被写入日志。
+    remediation: Redact secrets before logging and log identifiers instead.
+    remediation_zh: 记录前脱敏，改为记录标识符。

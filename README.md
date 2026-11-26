@@ -47,6 +47,15 @@ Use `--engines builtin,opengrep,osv-scanner,gitleaks` to select engines
 explicitly, or `--no-external` for Tier 0 only. Opengrep is preferred over
 Semgrep; Semgrep is used only when Opengrep is not installed.
 
+## Python coverage
+
+- **Built-in rules (no extra tools):** 70 Python rules — 44 findings and 26 review hotspots — covering SQL, command and code injection, template injection, deserialization, file handling, SSRF / redirect / LDAP / XPath, TLS and crypto, JWT, XML, Flask / Django configuration. Rules match Python *logical lines* (comments and docstrings are ignored, a multi-line call is one unit). A rule is a finding only when the matched statement itself shows request data or a clearly dangerous setting reaching the sink; a bare sink with an unknown variable is a hotspot (a reading list for the reviewing agent, excluded from totals and the exit code).
+- **Taint rules (need Opengrep):** 8 data-flow rules follow request data from Flask, Django and FastAPI / Starlette handlers to SQL, command, path, SSRF, template, redirect, deserialization and `eval` sinks, across assignments, string formatting and helper functions in the same file. Not followed: flows across files, through class methods (`self.helper(x)`), the database or the file system.
+- **Dependencies:** `requirements*.txt` (including `-r` includes and files in a `requirements/` directory), `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`. Versions are compared with PEP 440 rules, advisories that are aliases of each other (GHSA / CVE / PYSEC) are reported once, and each package is marked direct or transitive and runtime, optional or dev where the lockfile or `pyproject.toml` makes that knowable. Entries without a pinned version (`pkg @ url`, `git+…`, editable installs) cannot be checked and are counted in a warning.
+- **Not covered:** XSS in templates, authorization and business-logic flaws, cross-file data flow. These are left to the reviewing agent (see `skills/code-audit/SKILL.md`).
+
+Measured on public projects (see `docs/PY1_REPORT.md`): 0–2 Python findings at confidence ≥ medium on flask, requests and httpie; the deliberately vulnerable pygoat, Vulnerable-Flask-App and DSVW are reported with their real injection, deserialization and configuration flaws.
+
 ## Host support
 
 | Host | Adapter | Verification status |
@@ -124,8 +133,17 @@ ignore:
 ```
 
 Suppressed findings stay in `findings.json` but are excluded from statistics
-and the exit code. Use `--no-ignore-file` to audit everything. Inline
-suppression with `code-audit:ignore <rule-id> -- <reason>` is also supported.
+and the exit code. Use `--no-ignore-file` to audit everything.
+
+Inline suppression with a `code-audit:ignore <rule-id> -- <reason>` comment on
+the line (or the line before it) is also supported. These comments are part of
+the audited repository, so they are never applied silently: every candidate
+they suppress is listed in the report section "Suppressed findings" (rule,
+file:line and the reason given) and kept in `findings.json` with
+`status: "suppressed"` and `suppression.source: "inline"`, and a warning states
+the count. When the repository is not trusted, pass `--no-inline-ignore`
+(MCP `audit_start`: `noInlineIgnore: true`) to ignore the comments and report
+every candidate as active.
 
 ### Incremental scans
 

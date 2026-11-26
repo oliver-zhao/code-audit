@@ -1,0 +1,529 @@
+# Opengrep taint rules for Python web applications, written for code-audit
+# (Apache-2.0). Not copied from the Semgrep registry or any other project.
+#
+# Verified with Opengrep 1.33.1 (see packages/core/test/realtools.test.ts).
+#
+# Design notes
+# - One rule per sink class. All rules share the same sources through YAML
+#   anchors (&py-sources / &py-options); sanitizers are per rule.
+# - `options.taint_intrafile: true` turns on Opengrep's same-file
+#   interprocedural analysis without a command-line flag. With it a request
+#   value is followed into (and out of) helper functions and methods defined in
+#   the same file. Without it only single-function flows are found.
+# - Not followed (verified): flows that cross files, calls to a method of the
+#   same class (`self.helper(value)`), values stored in an instance attribute in
+#   one method and read in another, values read back from a database or
+#   session, and module-level globals read inside a function.
+# - Allow-list checks (`if value in ALLOWED`) are not understood as sanitizers.
+#   Looking a value up in a mapping (`ALLOWED[value]`, `ALLOWED.get(value)`) is
+#   treated as safe.
+# - Source labels are not used: with a `label:` on a source Opengrep 1.33.1
+#   reported nothing at all.
+rules:
+  - id: py-taint-sql
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data reaches the SQL text of a query without parameterization
+      (SQL injection). Keep the SQL constant and pass the values separately,
+      for example cursor.execute("... WHERE name = %s", (name,)).
+    metadata:
+      cwe: "CWE-89"
+      confidence: HIGH
+      category: security
+    options: &py-options
+      taint_intrafile: true
+      taint_assume_safe_indexes: true
+      taint_assume_safe_comparisons: true
+      taint_assume_safe_booleans: true
+    pattern-sources: &py-sources
+      # Flask / Django / DRF / FastAPI / Starlette request object attributes.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.args
+              - pattern: $REQ.form
+              - pattern: $REQ.values
+              - pattern: $REQ.json
+              - pattern: $REQ.get_json(...)
+              - pattern: $REQ.data
+              - pattern: $REQ.get_data(...)
+              - pattern: $REQ.cookies
+              - pattern: $REQ.headers
+              - pattern: $REQ.files
+              - pattern: $REQ.view_args
+              - pattern: $REQ.GET
+              - pattern: $REQ.POST
+              - pattern: $REQ.body
+              - pattern: $REQ.COOKIES
+              - pattern: $REQ.META
+              - pattern: $REQ.FILES
+              - pattern: $REQ.get_full_path(...)
+              - pattern: $REQ.query_params
+              - pattern: $REQ.path_params
+              - pattern: await $REQ.json()
+              - pattern: await $REQ.body()
+              - pattern: await $REQ.form()
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^((self|flask|bottle|quart)\.)?request$
+          # A local variable that merely happens to be called `request` (for
+          # example an outgoing requests/urllib request object) is not a source.
+          - pattern-not-inside: |
+              $REQ = $LOCALVALUE
+              ...
+          - pattern-not-inside: |
+              with $LOCALVALUE as $REQ:
+                ...
+      # URL-shaped attributes, only on the Flask request proxy (the name
+      # `request.url` is far too common on other objects).
+      - patterns:
+          - pattern: flask.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(url|base_url|full_path|path|query_string|referrer)$
+      # Flask / FastAPI / Starlette route handler parameters (path, query and
+      # body parameters). Dependency-injected parameters are skipped, and so
+      # are parameters annotated with a type that cannot carry an injection
+      # payload (numbers, UUIDs, dates) or that is a framework object.
+      - patterns:
+          - pattern-either:
+              # Annotated parameter: decide by the annotation.
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          @$APP.$METHOD(...)
+                          def $HANDLER(..., $PARAM: $TYPE, ...):
+                            ...
+                      - pattern-inside: |
+                          @$APP.$METHOD(...)
+                          async def $HANDLER(..., $PARAM: $TYPE, ...):
+                            ...
+                  - metavariable-regex:
+                      metavariable: $TYPE
+                      regex: ^(?!(typing\.)?(Optional\[|Annotated\[)?\s*(int|float|bool|complex|uuid\.UUID|UUID|datetime\.\w+|datetime|date|time|Decimal|decimal\.Decimal|Request|Response|Session|AsyncSession|BackgroundTasks|WebSocket|HTTPConnection|SecurityScopes)\b)
+              # Parameter without an annotation.
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          @$APP.$METHOD(...)
+                          def $HANDLER(..., $PARAM, ...):
+                            ...
+                      - pattern-inside: |
+                          @$APP.$METHOD(...)
+                          async def $HANDLER(..., $PARAM, ...):
+                            ...
+                  - pattern-not-inside: |
+                      def $HANDLER(..., $PARAM: $TYPE, ...):
+                        ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(route|get|post|put|delete|patch|head|options|api_route|websocket)$
+          - pattern-not-inside: |
+              def $HANDLER(..., $PARAM = Depends(...), ...):
+                ...
+          - pattern-not-inside: |
+              def $HANDLER(..., $PARAM = fastapi.Depends(...), ...):
+                ...
+          - pattern-not-inside: |
+              def $HANDLER(..., $PARAM: $ANYTYPE = Depends(...), ...):
+                ...
+          - pattern-not-inside: |
+              def $HANDLER(..., $PARAM: $ANYTYPE = fastapi.Depends(...), ...):
+                ...
+          - focus-metavariable: $PARAM
+      # Django view keyword arguments captured from the URL: every parameter
+      # after `request` of a function view or of an HTTP-method handler of a
+      # class-based view.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  def $VIEW(request, ..., $PARAM, ...):
+                    ...
+              - pattern-inside: |
+                  def $VERB(self, request, ..., $PARAM, ...):
+                    ...
+          - pattern-not-inside: |
+              def $ANY(..., $PARAM: int, ...):
+                ...
+          - focus-metavariable: $PARAM
+      # Standard-library http.server handlers.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  class $HANDLERCLASS(..., http.server.BaseHTTPRequestHandler, ...):
+                    ...
+              - pattern-inside: |
+                  class $HANDLERCLASS(..., http.server.SimpleHTTPRequestHandler, ...):
+                    ...
+          - pattern-either:
+              - pattern: self.path
+              - pattern: self.headers
+              - pattern: self.rfile
+    pattern-sanitizers:
+      # Conversions whose result cannot carry an injection payload. They are
+      # not accepted when a sink call is nested inside the converted
+      # expression (`int(eval(code))`, `bool(cursor.execute(sql).fetchall())`):
+      # a sanitizer match would otherwise hide that sink.
+      - &py-safe-conversions
+        patterns:
+          - pattern-either:
+              - pattern: int($VALUE, ...)
+              - pattern: float($VALUE)
+              - pattern: bool($VALUE)
+              - pattern: len($VALUE)
+              - pattern: uuid.UUID($VALUE, ...)
+              - pattern: decimal.Decimal($VALUE, ...)
+          - metavariable-regex:
+              metavariable: $VALUE
+              regex: (?s)^(?!.*(\b(execute|executemany|executescript|raw|extra|RawSQL|text|read_sql|read_sql_query|system|popen|Popen|check_output|check_call|getoutput|getstatusoutput|open|send_file|send_from_directory|FileResponse|urlopen|urlretrieve|render_template_string|Template|from_string|redirect|HttpResponseRedirect|HttpResponsePermanentRedirect|RedirectResponse|eval|exec|compile|unsafe_load|unsafe_load_all|full_load|full_load_all|Unpickler)|\b(subprocess|shutil|pickle|cPickle|_pickle|dill|cloudpickle|marshal|yaml|jsonpickle|requests|httpx|urllib3|ImageMath)\.\w+|\bos\.(exec\w+|remove|unlink|rmdir|listdir|scandir|mkdir|makedirs|rename|replace))\s*\()
+    pattern-sinks:
+      # Only the SQL text (first argument) is a sink; bound parameters passed
+      # as the second argument are what a correct query looks like.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.execute($SQL, ...)
+              - pattern: $DB.executemany($SQL, ...)
+              - pattern: $DB.executescript($SQL, ...)
+              - pattern: $MANAGER.raw($SQL, ...)
+              - pattern: django.db.models.expressions.RawSQL($SQL, ...)
+              - pattern: RawSQL($SQL, ...)
+              - pattern: sqlalchemy.text($SQL, ...)
+              - pattern: sqlalchemy.sql.text($SQL, ...)
+              - pattern: sqlalchemy.sql.expression.text($SQL, ...)
+              - pattern: $QS.extra(..., where=$SQL, ...)
+              - pattern: $QS.extra(..., select=$SQL, ...)
+              - pattern: $QS.extra(..., tables=$SQL, ...)
+              - pattern: $QS.extra(..., order_by=$SQL, ...)
+              - pattern: pandas.read_sql($SQL, ...)
+              - pattern: pandas.read_sql_query($SQL, ...)
+          # text() is itself a sink: do not report the statement a second time
+          # when the variable holding it is executed.
+          - pattern-not-inside: |
+              $SQL = sqlalchemy.text(...)
+              ...
+          - pattern-not-inside: |
+              $SQL = sqlalchemy.sql.text(...)
+              ...
+          - focus-metavariable: $SQL
+
+  - id: py-taint-command
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data reaches an OS command (command injection). Pass a fixed
+      program with an argument list and no shell, for example
+      subprocess.run(["ping", "-c", "1", host]), and validate the argument.
+    metadata:
+      cwe: "CWE-78"
+      confidence: HIGH
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: shlex.quote(...)
+      - pattern: pipes.quote(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.system($CMD)
+              - pattern: os.popen($CMD, ...)
+              - pattern: subprocess.getoutput($CMD, ...)
+              - pattern: subprocess.getstatusoutput($CMD, ...)
+              - pattern: commands.getoutput($CMD)
+              - pattern: asyncio.create_subprocess_shell($CMD, ...)
+              # Any subprocess call that goes through the shell.
+              - pattern: subprocess.$FN($CMD, ..., shell=True, ...)
+              # The program itself, or the script handed to `sh -c`.
+              - pattern: subprocess.$FN([$CMD, ...], ...)
+              - pattern: subprocess.$FN([$SHELL, "-c", $CMD, ...], ...)
+              - pattern: asyncio.create_subprocess_exec($CMD, ...)
+              - pattern: os.execv($CMD, ...)
+              - pattern: os.execvp($CMD, ...)
+              - pattern: os.execl($CMD, ...)
+              - pattern: os.execlp($CMD, ...)
+          - focus-metavariable: $CMD
+      # A command passed as one string (not an argument list), with or without
+      # shell=True.
+      - patterns:
+          - pattern: subprocess.$FN($CMD, ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^(run|call|check_call|check_output|Popen)$
+          - pattern-not: subprocess.$FN([...], ...)
+          - pattern-not: subprocess.$FN((...), ...)
+          - focus-metavariable: $CMD
+
+  - id: py-taint-path
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data is used as a file system path (path traversal). Reduce it
+      to a file name with os.path.basename() or werkzeug's secure_filename(),
+      or resolve it and check that it stays inside the intended directory.
+    metadata:
+      cwe: "CWE-22"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: os.path.basename(...)
+      - pattern: werkzeug.utils.secure_filename(...)
+      - pattern: secure_filename(...)
+      - pattern: werkzeug.security.safe_join(...)
+      - pattern: werkzeug.utils.safe_join(...)
+      - pattern: flask.safe_join(...)
+      - pattern: django.utils.text.get_valid_filename(...)
+      - pattern: django.utils._os.safe_join(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: open($PATH, ...)
+              - pattern: io.open($PATH, ...)
+              - pattern: codecs.open($PATH, ...)
+              - pattern: os.open($PATH, ...)
+              - pattern: flask.send_file($PATH, ...)
+              # send_from_directory() confines the file name itself; only a
+              # request-controlled directory is dangerous.
+              - pattern: flask.send_from_directory($PATH, ...)
+              - pattern: flask.send_from_directory(directory=$PATH, ...)
+              - pattern: django.http.FileResponse(open($PATH, ...), ...)
+              - pattern: starlette.responses.FileResponse($PATH, ...)
+              - pattern: fastapi.responses.FileResponse($PATH, ...)
+              - pattern: os.remove($PATH)
+              - pattern: os.unlink($PATH)
+              - pattern: os.rmdir($PATH)
+              - pattern: os.listdir($PATH)
+              - pattern: os.scandir($PATH)
+              - pattern: os.mkdir($PATH, ...)
+              - pattern: os.makedirs($PATH, ...)
+              - pattern: os.rename($PATH, ...)
+              - pattern: os.rename($OTHER, $PATH)
+              - pattern: os.replace($PATH, ...)
+              - pattern: os.replace($OTHER, $PATH)
+              - pattern: shutil.rmtree($PATH, ...)
+              - pattern: shutil.copy($PATH, ...)
+              - pattern: shutil.copy($OTHER, $PATH)
+              - pattern: shutil.copy2($PATH, ...)
+              - pattern: shutil.copy2($OTHER, $PATH)
+              - pattern: shutil.copyfile($PATH, ...)
+              - pattern: shutil.copyfile($OTHER, $PATH)
+              - pattern: shutil.copytree($PATH, ...)
+              - pattern: shutil.copytree($OTHER, $PATH)
+              - pattern: shutil.move($PATH, ...)
+              - pattern: shutil.move($OTHER, $PATH)
+              - pattern: pathlib.Path($PATH, ...).$IO(...)
+              - pattern: pathlib.Path(..., $PATH).$IO(...)
+              # Saving an upload under its client-supplied name.
+              - pattern: $UPLOAD.save($PATH, ...)
+          - focus-metavariable: $PATH
+
+  - id: py-taint-ssrf
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data controls the destination of a server-side HTTP request
+      (server-side request forgery). Build the URL from a fixed scheme and host
+      and check the host against an allow-list before sending.
+    metadata:
+      cwe: "CWE-918"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+    pattern-sinks:
+      # Only the URL argument is a sink. A URL written at the call site with a
+      # literal scheme and host ("https://api.example.com/items/" + item) is
+      # not reported: the request data can change the path, not the host.
+      - patterns:
+          - pattern-either:
+              - pattern: requests.$VERB($URL, ...)
+              - pattern: requests.request($METHOD, $URL, ...)
+              - pattern: httpx.$VERB($URL, ...)
+              - pattern: httpx.request($METHOD, $URL, ...)
+              - pattern: urllib.request.urlopen($URL, ...)
+              - pattern: urllib.request.Request($URL, ...)
+              - pattern: urllib.request.urlretrieve($URL, ...)
+              - pattern: urllib2.urlopen($URL, ...)
+              - pattern: urllib3.PoolManager(...).request($METHOD, $URL, ...)
+              - pattern: |
+                  $SESSION = requests.Session(...)
+                  ...
+                  $SESSION.$VERB($URL, ...)
+              - pattern: |
+                  with requests.Session(...) as $SESSION:
+                    ...
+                    $SESSION.$VERB($URL, ...)
+              - pattern: |
+                  $SESSION = httpx.Client(...)
+                  ...
+                  $SESSION.$VERB($URL, ...)
+              - pattern: |
+                  with httpx.Client(...) as $SESSION:
+                    ...
+                    $SESSION.$VERB($URL, ...)
+              - pattern: |
+                  async with httpx.AsyncClient(...) as $SESSION:
+                    ...
+                    $SESSION.$VERB($URL, ...)
+              - pattern: |
+                  async with aiohttp.ClientSession(...) as $SESSION:
+                    ...
+                    $SESSION.$VERB($URL, ...)
+          - metavariable-regex:
+              metavariable: $URL
+              regex: ^(?!f?["']https?://[^/{}"'\s]+/)
+          - focus-metavariable: $URL
+
+  - id: py-taint-template
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data becomes part of a template's source (server-side template
+      injection). Keep the template constant and pass the request data as a
+      context variable, for example render_template("page.html", name=name).
+    metadata:
+      cwe: "CWE-1336"
+      confidence: HIGH
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+    pattern-sinks:
+      # Only the template source is a sink, not the context arguments.
+      - patterns:
+          - pattern-either:
+              - pattern: flask.render_template_string($TEMPLATE, ...)
+              - pattern: render_template_string($TEMPLATE, ...)
+              - pattern: jinja2.Template($TEMPLATE, ...)
+              - pattern: jinja2.Environment(...).from_string($TEMPLATE, ...)
+              - pattern: $ENV.from_string($TEMPLATE, ...)
+              - pattern: django.template.Template($TEMPLATE, ...)
+              - pattern: django.template.engines[$ENGINE].from_string($TEMPLATE)
+              - pattern: mako.template.Template($TEMPLATE, ...)
+          - focus-metavariable: $TEMPLATE
+
+  - id: py-taint-redirect
+    mode: taint
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Request data controls a redirect target (open redirect). Redirect only to
+      a fixed path or a URL built with url_for()/reverse(), or check the target
+      against an allow-list of hosts.
+    metadata:
+      cwe: "CWE-601"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: flask.url_for(...)
+      - pattern: url_for(...)
+      - pattern: django.urls.reverse(...)
+      - pattern: reverse(...)
+    pattern-sinks:
+      # A target written at the call site that starts with a literal local path
+      # ("/items/" + item) or a literal scheme and host is not reported.
+      - patterns:
+          - pattern-either:
+              - pattern: flask.redirect($URL, ...)
+              - pattern: django.shortcuts.redirect($URL, ...)
+              - pattern: redirect($URL, ...)
+              - pattern: django.http.HttpResponseRedirect($URL, ...)
+              - pattern: django.http.HttpResponsePermanentRedirect($URL, ...)
+              - pattern: HttpResponseRedirect($URL, ...)
+              - pattern: starlette.responses.RedirectResponse($URL, ...)
+              - pattern: fastapi.responses.RedirectResponse($URL, ...)
+              - pattern: RedirectResponse($URL, ...)
+              - pattern: starlette.responses.RedirectResponse(url=$URL, ...)
+              - pattern: fastapi.responses.RedirectResponse(url=$URL, ...)
+              - pattern: $HANDLER.send_header("Location", $URL)
+          - metavariable-regex:
+              metavariable: $URL
+              regex: ^(?!f?["'](/[^/\\{"']|https?://[^/{}"'\s]+/))
+          - focus-metavariable: $URL
+
+  - id: py-taint-deserialization
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data is deserialized with a format that can construct arbitrary
+      objects (unsafe deserialization, remote code execution). Use JSON, or
+      yaml.safe_load() for YAML.
+    metadata:
+      cwe: "CWE-502"
+      confidence: HIGH
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: pickle.loads($DATA, ...)
+              - pattern: pickle.load($DATA, ...)
+              - pattern: pickle.Unpickler($DATA, ...)
+              - pattern: cPickle.loads($DATA, ...)
+              - pattern: cPickle.load($DATA, ...)
+              - pattern: _pickle.loads($DATA, ...)
+              - pattern: dill.loads($DATA, ...)
+              - pattern: dill.load($DATA, ...)
+              - pattern: cloudpickle.loads($DATA, ...)
+              - pattern: marshal.loads($DATA, ...)
+              - pattern: jsonpickle.decode($DATA, ...)
+              - pattern: yaml.unsafe_load($DATA, ...)
+              - pattern: yaml.unsafe_load_all($DATA, ...)
+              - pattern: yaml.full_load($DATA, ...)
+              - pattern: yaml.full_load_all($DATA, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: yaml.load($DATA, ...)
+                      - pattern: yaml.load_all($DATA, ...)
+                  - pattern-not: yaml.$LOAD(..., Loader=yaml.SafeLoader, ...)
+                  - pattern-not: yaml.$LOAD(..., Loader=yaml.CSafeLoader, ...)
+                  - pattern-not: yaml.$LOAD(..., Loader=yaml.BaseLoader, ...)
+                  - pattern-not: yaml.$LOAD(..., Loader=yaml.CBaseLoader, ...)
+                  - pattern-not: yaml.$LOAD($DATA, yaml.SafeLoader, ...)
+                  - pattern-not: yaml.$LOAD($DATA, yaml.CSafeLoader, ...)
+                  - pattern-not: yaml.$LOAD($DATA, yaml.BaseLoader, ...)
+          - focus-metavariable: $DATA
+
+  - id: py-taint-eval
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data is evaluated as Python code (code injection). Do not pass
+      request data to eval()/exec(); parse it instead (int(), json.loads(),
+      ast.literal_eval()) or map it to a fixed set of operations.
+    metadata:
+      cwe: "CWE-95"
+      confidence: HIGH
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: eval($CODE, ...)
+              - pattern: exec($CODE, ...)
+              - pattern: compile($CODE, ...)
+              - pattern: PIL.ImageMath.eval($CODE, ...)
+              - pattern: PIL.ImageMath.unsafe_eval($CODE, ...)
+          - focus-metavariable: $CODE

@@ -9,7 +9,7 @@ rules:
     owasp: A03:2021
     languages:
       - go
-    pattern: \.(?:Query|Exec)\(\s*[^;\n]*\+
+    pattern: \.(?:Query|Exec)\([^;\n]{0,600}\+
     group: go-sql
     message: Request values are concatenated into SQL text.
     message_zh: 请求参数被拼接到 SQL 文本中。
@@ -27,7 +27,7 @@ rules:
     owasp: A03:2021
     languages:
       - go
-    pattern: exec\.Command\([^)\n]*\+
+    pattern: exec\.Command\([^)\n]{0,600}\+
     group: go-command
     message: External input is concatenated into a command passed to a shell.
     message_zh: 通过 sh -c 执行外部输入会引入命令注入。
@@ -45,7 +45,7 @@ rules:
     owasp: A01:2021
     languages:
       - go
-    pattern: os\.Open\(\s*[^)\n]*(?:\+|r\.|filepath\.Join)
+    pattern: os\.Open\([^)\n]{0,600}(?:\+|r\.|filepath\.Join)
     group: go-path
     message: Untrusted input reaches a file open call and may escape the intended directory.
     message_zh: 不可信路径进入文件打开操作，可能穿越目录。

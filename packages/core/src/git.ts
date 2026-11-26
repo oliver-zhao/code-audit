@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runTool } from "./external/run.js";
-import { resolveInside, toPosixRelative } from "./pathJail.js";
+import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
 
 export class GitScopeError extends Error {
   constructor(message: string) {
@@ -120,11 +120,15 @@ export interface ChangedFilesResult {
  * Never falls back to a full scan.
  */
 export async function listChangedFiles(
-  root: string,
+  rootInput: string,
   refInput: string,
   options: ListChangedFilesOptions = {},
 ): Promise<ChangedFilesResult> {
   const ref = assertSafeRef(refInput);
+  // Work on the canonical real root. resolveInside() returns real paths, so
+  // making them relative to a root reached through a symlinked parent (macOS:
+  // /var -> /private/var, /tmp -> /private/tmp) would yield "../.." paths.
+  const root = validateAuditRoot(rootInput).root;
 
   // Confirm the directory is a git repository and the ref resolves.
   const verify = await runGit(
@@ -210,7 +214,7 @@ export async function listChangedFiles(
   for (const entry of rawFiles) {
     try {
       const resolved = resolveInside(root, entry);
-      files.push(toPosixRelative(root, resolved).split(path.sep).join("/"));
+      files.push(toPosixRelative(root, resolved));
     } catch {
       warnings.add("ignored path outside audit root reported by git");
     }

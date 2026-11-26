@@ -163,10 +163,54 @@ function trackedRoot(runId: string): string | undefined {
   return trackedRuns.get(runId)?.root;
 }
 
-function resolveForTool(runId: string): string {
-  return resolveRunDir(runId, {
-    roots: trackedRoot(runId) ? [trackedRoot(runId) as string] : [],
-  });
+class RunNotReadyError extends Error {
+  readonly code = "RUN_NOT_READY";
+
+  constructor(runId: string, phase: string) {
+    super(
+      phase === "failed"
+        ? `audit run ${runId} failed; call audit_status for the error`
+        : `audit run ${runId} is still running; poll audit_status until phase is complete`,
+    );
+    this.name = "RunNotReadyError";
+  }
+}
+
+/**
+ * A run started by this server has a run directory and a state.json from the
+ * first moment, but run.json (which the run store uses to recognise a run
+ * directory) is only written when the scan finishes. Whenever the scan is
+ * genuinely asynchronous - any external tool on PATH is enough - there is a
+ * window in which the run exists but cannot be resolved by the run store.
+ * Returns the tracked directory of such a run, else undefined.
+ */
+function pendingRunDir(runId: string): string | undefined {
+  const tracked = trackedRuns.get(runId);
+  if (!tracked) return undefined;
+  if (fs.existsSync(path.join(tracked.runDir, "run.json"))) return undefined;
+  return tracked.runDir;
+}
+
+/** Run-store lookup options for a tool that needs a finished run. */
+function lookupOptions(runId: string): { roots?: string[] } {
+  const pending = pendingRunDir(runId);
+  if (pending) {
+    throw new RunNotReadyError(
+      runId,
+      readRunState(pending)?.phase ?? "running",
+    );
+  }
+  const root = trackedRoot(runId);
+  return root ? { roots: [root] } : {};
+}
+
+function resolveForStatus(runId: string): string {
+  return (
+    pendingRunDir(runId) ??
+    resolveRunDir(runId, {
+      roots: trackedRoot(runId) ? [trackedRoot(runId) as string] : [],
+    })
+  );
 }
 
 function compactFinding(finding: {
@@ -271,6 +315,7 @@ async function startAudit(args: Record<string, unknown>): Promise<unknown> {
     lang: args.lang === "zh" ? "zh" : "en",
     baseline: baselinePath,
     noBaseline: args.noBaseline === true,
+    noInlineIgnore: args.noInlineIgnore === true,
   })
     .then((result) => {
       trackedRuns.set(runId, {
@@ -316,7 +361,7 @@ async function startAudit(args: Record<string, unknown>): Promise<unknown> {
 
 function statusTool(args: Record<string, unknown>): unknown {
   const runId = String(args.run_id ?? "");
-  const runDir = resolveForTool(runId);
+  const runDir = resolveForStatus(runId);
   try {
     const status = runStatus(runDir);
     const run = loadRun(runDir);
@@ -381,7 +426,7 @@ function findingsTool(args: Record<string, unknown>): unknown {
     filter,
     cursor,
     limit,
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
   return {
     run_id: runId,
@@ -405,7 +450,7 @@ function readTool(args: Record<string, unknown>): unknown {
     file,
     start,
     end,
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
   return {
     run_id: runId,
@@ -434,7 +479,7 @@ function searchTool(args: Record<string, unknown>): unknown {
           ? Math.trunc(args.maxResults)
           : undefined,
     },
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
   return {
     run_id: runId,
@@ -475,7 +520,7 @@ function verdictTool(args: Record<string, unknown>): unknown {
           ? args.reviewer
           : undefined,
     },
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
 }
 
@@ -516,7 +561,7 @@ function addFindingTool(args: Record<string, unknown>): unknown {
           ? args.reviewer
           : undefined,
     },
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
 }
 
@@ -531,7 +576,7 @@ function reportTool(args: Record<string, unknown>): unknown {
   const report = renderRunReport(
     runId,
     formatValue as ReportOutputFormat,
-    trackedRoot(runId) ? { roots: [trackedRoot(runId) as string] } : {},
+    lookupOptions(runId),
   );
   return {
     run_id: report.runId,
@@ -606,6 +651,12 @@ export function createAuditServer(): McpServer {
           .boolean()
           .optional()
           .describe("Disable the automatic baseline file."),
+        noInlineIgnore: z
+          .boolean()
+          .optional()
+          .describe(
+            "Do not honour inline code-audit:ignore comments found in the audited repository; every candidate is reported as active.",
+          ),
       },
     },
     safeTool(startAudit),

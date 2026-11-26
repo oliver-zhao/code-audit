@@ -7,6 +7,7 @@ import {
   assignHotspotIds,
   createFinding,
   dedupeFindings,
+  disambiguateFingerprints,
   isActionable,
   sortFindings,
   type Confidence,
@@ -18,7 +19,15 @@ import { SOURCE_LANGUAGES, type Language } from "./language.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
 import { validateAuditRoot } from "./pathJail.js";
 import { renderFindingsJson, renderMarkdown, renderSarif, type ReportLang } from "./report.js";
-import { loadRules, scanRules, type LoadedRule, type RuleSet } from "./rules.js";
+import {
+  loadRules,
+  scanRules,
+  type LoadedRule,
+  type RuleHit,
+  type RuleScanResult,
+  type RuleSet,
+} from "./rules.js";
+import { isCredentialFinding, redactText } from "./redact.js";
 import { registerRunIndex, writeRunState } from "./runstore.js";
 import { runSca, manifestLockfileIssues, type HttpClient, type ScaResult } from "./sca.js";
 import { scanSecrets } from "./secrets.js";
@@ -94,6 +103,11 @@ export interface ScanOptions {
   ignoreFile?: string;
   /** Disable the ignore file entirely (audits that must see everything). */
   noIgnoreFile?: boolean;
+  /**
+   * Do not honour inline `code-audit:ignore` comments. The comments come from
+   * the audited repository; an audit that must see everything sets this.
+   */
+  noInlineIgnore?: boolean;
   /** Path to a baseline file; defaults to `<root>/.code-audit-baseline.json`. */
   baseline?: string;
   /** Disable the automatic baseline file. */
@@ -167,11 +181,13 @@ function buildCoverage(
 ): CoverageReport {
   const scannedFiles = inv.files.map((file) => {
     const fileEngines: string[] = [];
-    if (file.isLockfile) {
-      fileEngines.push("sca");
-    } else if (file.scannable) {
+    if (file.isLockfile) fileEngines.push("sca");
+    if (file.scannable) {
       fileEngines.push("builtin-secrets");
       if (file.language !== "unknown") fileEngines.push("builtin-rules");
+    } else if (file.isLockfile) {
+      // Generated lockfile: high-confidence secret detectors only, no rules.
+      fileEngines.push("builtin-secrets:high-confidence");
     }
     return {
       path: file.relPath,
@@ -207,13 +223,15 @@ function buildCoverage(
   };
 }
 
-function emptyRuleScan(): {
-  hits: Array<never>;
-  suppressed: Array<never>;
-  warnings: string[];
-  scannedFiles: number;
-} {
-  return { hits: [], suppressed: [], warnings: [], scannedFiles: 0 };
+function emptyRuleScan(): RuleScanResult {
+  return {
+    hits: [],
+    suppressedHits: [],
+    suppressed: [],
+    warnings: [],
+    scannedFiles: 0,
+    redactions: new Map(),
+  };
 }
 
 function emptySecretScan(): { findings: Finding[]; warnings: string[]; scannedFiles: number } {
@@ -241,6 +259,29 @@ interface ExternalToolRecord {
   name: string;
   path: string;
   version?: string;
+}
+
+/**
+ * Evidence from an external engine is text of the audited repository like any
+ * other: it goes through the shared line redaction. On a line where a
+ * `redactEvidence` rule matched, or for a credential finding, every string
+ * literal is masked (the column ranges of the built-in match cannot be mapped
+ * onto the external tool's snippet).
+ */
+function redactExternalEvidence(finding: Finding, ruleScan: RuleScanResult): Finding {
+  const lines = ruleScan.redactions.get(finding.file);
+  let onRedactedLine = false;
+  if (lines) {
+    for (let line = finding.startLine; line <= finding.endLine; line += 1) {
+      if (lines.has(line)) onRedactedLine = true;
+      if (line - finding.startLine > 50) break;
+    }
+  }
+  const evidence = redactText(finding.evidence, {
+    file: finding.file,
+    maskAllStrings: onRedactedLine || isCredentialFinding(finding),
+  });
+  return evidence === finding.evidence ? finding : { ...finding, evidence };
 }
 
 export async function scanProject(options: ScanOptions): Promise<ScanResult> {
@@ -293,13 +334,17 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
 
   async function executeScan(): Promise<ScanResult> {
     const inv = inventory(validated.root);
-    const ruleScan = builtinEnabled ? scanRules(inv.files, ruleSet) : emptyRuleScan();
-    const secretScan = builtinEnabled ? scanSecrets(inv.files) : emptySecretScan();
+    const ruleScan = builtinEnabled
+      ? scanRules(inv.files, ruleSet, { inlineIgnore: !options.noInlineIgnore })
+      : emptyRuleScan();
+    const secretScan = builtinEnabled
+      ? scanSecrets(inv.files, {
+          lineRedactions: (file) => ruleScan.redactions.get(file),
+        })
+      : emptySecretScan();
 
-    const ruleFindings: Finding[] = [];
-    const ruleHotspots: Finding[] = [];
-    for (const hit of ruleScan.hits) {
-      const finding = createFinding({
+    const findingOfHit = (hit: RuleHit): Finding =>
+      createFinding({
         ruleId: hit.rule.id,
         title: hit.rule.title,
         category: categoryFor(hit.rule, hit.file.language),
@@ -320,8 +365,27 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         ],
         provenance: { engine: "builtin-rules", rule: hit.rule.id, version: TOOL_VERSION },
       });
+
+    const ruleFindings: Finding[] = [];
+    const ruleHotspots: Finding[] = [];
+    for (const hit of ruleScan.hits) {
+      const finding = findingOfHit(hit);
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);
+    }
+    // Candidates that an inline `code-audit:ignore` comment suppressed stay in
+    // the results, marked as suppressed: the comment comes from the audited
+    // repository, so what it hides must remain visible to the reviewer.
+    const inlineSuppressedFindings: Finding[] = [];
+    const inlineSuppressedHotspots: Finding[] = [];
+    for (const hit of ruleScan.suppressedHits) {
+      const finding: Finding = {
+        ...findingOfHit(hit),
+        status: "suppressed",
+        suppression: { source: "inline", reason: hit.suppressedBy ?? "" },
+      };
+      if (hit.rule.kind === "hotspot") inlineSuppressedHotspots.push(finding);
+      else inlineSuppressedFindings.push(finding);
     }
 
     // Manifest hygiene: one low-confidence hotspot per manifest that has no
@@ -358,7 +422,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
     if (ruleScan.suppressed.length > 0) {
       warnings.push(
-        `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore`,
+        `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore comments in the audited repository; they are listed under suppressed findings (use --no-inline-ignore to report them as active)`,
       );
     }
 
@@ -566,14 +630,16 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     const outcomes = await Promise.all(externalTasks.map((task) => task()));
     for (const outcome of outcomes) {
       engines.push(outcome.engine);
-      warnings.push(...outcome.warnings);
+      for (const warning of outcome.warnings) warnings.push(warning);
       if (outcome.tool) externalTools.push(outcome.tool);
       if (outcome.engine.status !== "ok") continue;
       if (outcome.engine.name === "osv-scanner") {
-        externalSca.push(...outcome.findings);
+        for (const finding of outcome.findings) externalSca.push(finding);
         osvReportedFiles = outcome.reportedFiles;
       } else {
-        externalSastSecrets.push(...outcome.findings);
+        for (const finding of outcome.findings) {
+          externalSastSecrets.push(redactExternalEvidence(finding, ruleScan));
+        }
       }
     }
 
@@ -588,7 +654,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           skipLockfiles: osvReportedFiles,
         })
       : emptySca();
-    warnings.push(...scaResult.warnings);
+    for (const warning of scaResult.warnings) warnings.push(warning);
     engines.push({
       name: "osv",
       enabled: builtinEnabled && !offline,
@@ -615,11 +681,25 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       ...secretScan.findings,
       ...externalSastSecrets,
     ]);
-    const merged = dedupeFindings([...mergedSastSecrets, ...mergedSca]);
+    const merged = dedupeFindings(
+      disambiguateFingerprints([
+        ...mergedSastSecrets,
+        ...mergedSca,
+        ...inlineSuppressedFindings,
+      ]),
+    );
     const sorted = sortFindings(merged);
     let findings = assignFindingIds(sorted, started.getUTCFullYear());
     let hotspots = assignHotspotIds(
-      sortFindings(dedupeFindings([...ruleHotspots, ...lockfileHotspots])),
+      sortFindings(
+        dedupeFindings(
+          disambiguateFingerprints([
+            ...ruleHotspots,
+            ...lockfileHotspots,
+            ...inlineSuppressedHotspots,
+          ]),
+        ),
+      ),
       started.getUTCFullYear(),
     );
 
@@ -636,6 +716,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       const today = started.toISOString().slice(0, 10);
       const matchedEntries = new Set<number>();
       const applySuppression = (finding: Finding): Finding => {
+        if (finding.suppression) return finding;
         const match = matchIgnoreEntry(
           ignoreEntries,
           {
@@ -643,6 +724,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
             ruleId: finding.ruleId,
             file: finding.file,
             advisoryId: finding.advisoryId,
+            aliases: finding.aliases,
             packageName: finding.package,
           },
           today,
@@ -674,28 +756,6 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       }
     }
 
-    // ---- Inline code-audit:ignore hits get the same suppression shape ----
-    const inlineByKey = new Map(
-      ruleScan.suppressed.map((hit) => [
-        `${hit.file}\u0000${hit.ruleId}\u0000${hit.line}`,
-        hit,
-      ]),
-    );
-    const applyInlineSuppression = (finding: Finding): Finding => {
-      if (finding.suppression) return finding;
-      const hit = inlineByKey.get(
-        `${finding.file}\u0000${finding.ruleId}\u0000${finding.startLine}`,
-      );
-      if (!hit) return finding;
-      return {
-        ...finding,
-        status: "suppressed",
-        suppression: { source: "inline", reason: hit.reason },
-      };
-    };
-    findings = findings.map(applyInlineSuppression);
-    hotspots = hotspots.map(applyInlineSuppression);
-
     // ---- Incremental scope: keep only findings in files changed since <ref> --
     let changedFiles: Set<string> | undefined;
     let sinceRef: string | undefined;
@@ -705,7 +765,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         pathEnv,
       });
       sinceRef = scope.ref;
-      warnings.push(...scope.warnings);
+      for (const warning of scope.warnings) warnings.push(warning);
       changedFiles = new Set(scope.files);
       const inScope = (file: string): boolean =>
         changedFiles?.has(file) ?? true;
@@ -776,6 +836,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         minConfidence,
         lang,
         engines: [...selected],
+        inlineIgnore: !options.noInlineIgnore,
       },
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
@@ -786,6 +847,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       inventory: {
         files: inv.stats.files,
         scannedFiles: inv.stats.scannedFiles,
+        partialFiles: inv.stats.partialFiles,
         skippedFiles: inv.stats.skippedFiles,
         loc: inv.stats.loc,
       },

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
@@ -145,21 +146,29 @@ describe("--since incremental scan", () => {
 
   it("returns exit 2 for a bad ref", async () => {
     const repo = makeRepo("repo-badref");
+    // If the ref ever reached git as a flag, git would write this file.
+    const marker = path.join(temp, "badref-output");
     await expect(
       scanProject({
         root: repo,
         out: path.join(temp, "out-badref"),
         offline: true,
         engines: ["builtin"],
-        since: "--output=/tmp/x",
+        since: `--output=${marker}`,
       }),
     ).rejects.toThrow(GitScopeError);
-    expect(fs.existsSync("/tmp/x")).toBe(false);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   it("returns exit 2 for a non-repository", async () => {
-    const dir = fs.mkdtempSync(path.join("/tmp/opencode", "nonrepo-"));
+    // Must live outside this checkout (which is a git repository itself), so
+    // use the OS temp directory. On macOS that path sits below a symlink.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-nonrepo-"));
     try {
+      expect(
+        spawnSync("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"])
+          .status,
+      ).not.toBe(0);
       writeFile(dir, "app.py", 'import os\nos.system("ls " + c)\n');
       await expect(
         scanProject({
@@ -172,6 +181,58 @@ describe("--since incremental scan", () => {
       ).rejects.toThrow(GitScopeError);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("works when the repository is reached through a symlinked parent", async () => {
+    // macOS regression: the OS temp dir is below /var -> /private/var. Build
+    // the same shape on every OS: <base>/alias -> <base>/real.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-since-"));
+    try {
+      const real = path.join(base, "real");
+      fs.mkdirSync(real);
+      fs.symlinkSync(real, path.join(base, "alias"), "dir");
+      const realRepo = path.join(real, "repo");
+      fs.cpSync(VULNERABLE, realRepo, { recursive: true });
+      git(["init", "-q"], realRepo);
+      git(["add", "-A"], realRepo);
+      git(["commit", "-qm", "init"], realRepo);
+      fs.appendFileSync(path.join(realRepo, "go", "main.go"), "\n// touched\n");
+      writeFile(realRepo, "python/newapp.py", 'import os\nos.system("ls " + c)\n');
+      // A hostile symlink inside the repo must not widen the scope.
+      writeFile(real, "outside/secret.py", 'import os\nos.system("ls " + c)\n');
+      fs.symlinkSync(path.join(real, "outside"), path.join(realRepo, "escape"), "dir");
+
+      for (const root of [
+        path.join(base, "alias", "repo"),
+        realRepo,
+        fs.realpathSync.native(realRepo),
+      ]) {
+        const changed = await listChangedFiles(root, "HEAD");
+        // The untracked symlink itself is listed by git but points outside the
+        // root, so the jail drops it; nothing below it is ever listed.
+        expect(changed.files).toEqual(["go/main.go", "python/newapp.py"]);
+        expect(changed.warnings).toEqual([
+          "ignored path outside audit root reported by git",
+        ]);
+      }
+
+      const result = await scanProject({
+        root: path.join(base, "alias", "repo"),
+        out: path.join(temp, "out-symlinked"),
+        offline: true,
+        engines: ["builtin"],
+        since: "HEAD",
+        formats: ["json"],
+      });
+      const files = new Set(result.findings.map((f) => f.file));
+      expect(files.has("go/main.go")).toBe(true);
+      expect(files.has("python/newapp.py")).toBe(true);
+      for (const file of files) {
+        expect(["go/main.go", "python/newapp.py"]).toContain(file);
+      }
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 

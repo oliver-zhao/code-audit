@@ -1,14 +1,33 @@
+import { splitLines } from "./redact.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
   createFinding,
+  SEVERITY_ORDER,
   type Finding,
+  type FindingInit,
   type Severity,
 } from "./finding.js";
 import type { InventoryResult, ManifestRef } from "./inventory.js";
+import { isRequirementsLockfilePath } from "./inventory.js";
+import { comparePypiVersions } from "./pypi.js";
+import {
+  PathJailError,
+  resolveInside,
+  toPosixRelative,
+  validateAuditRoot,
+} from "./pathJail.js";
+import { parseTomlSubset, type TomlTable, type TomlValue } from "./toml.js";
 
 export type OsvEcosystem = "npm" | "PyPI" | "Go" | "Maven" | "NuGet";
+
+/**
+ * How a package is used by the project, when the lockfile or manifest makes
+ * that knowable: a runtime dependency, an optional extra, a development /
+ * dependency-group dependency, or unknown.
+ */
+export type DependencyScope = "runtime" | "optional" | "dev" | "unknown";
 
 export interface ScaPackage {
   name: string;
@@ -18,6 +37,10 @@ export interface ScaPackage {
   line: number;
   manager: string;
   direct: boolean;
+  /** Dependency scope; absent means the parser does not determine it. */
+  scope?: DependencyScope;
+  /** True for development-only dependencies (same as `scope === "dev"`). */
+  dev?: boolean;
 }
 
 export interface ParsedDependencies {
@@ -70,16 +93,23 @@ export class HttpError extends Error {
   }
 }
 
-const ECOSYSTEM_BY_MANAGER: Record<string, OsvEcosystem> = {
-  npm: "npm",
-  pnpm: "npm",
-  yarn: "npm",
-  requirements: "PyPI",
-  poetry: "PyPI",
-  go: "Go",
-  maven: "Maven",
-  nuget: "NuGet",
-};
+/**
+ * Upper bounds on what one (untrusted) repository can make the SCA engine
+ * hold in memory. A dependency file with more pins than this is not a real
+ * project; the extra entries are dropped with a warning instead of being
+ * queried.
+ */
+export const MAX_DEPENDENCIES_PER_FILE = 50_000;
+export const MAX_DEPENDENCIES_PER_SCAN = 200_000;
+
+/**
+ * Append `items` to `target` one by one. `target.push(...items)` passes every
+ * element as a call argument and throws "Maximum call stack size exceeded"
+ * once `items` has roughly 100k entries, which an untrusted input can reach.
+ */
+function appendAll<T>(target: T[], items: readonly T[]): void {
+  for (const item of items) target.push(item);
+}
 
 function findLine(content: string, needle: string, fallback = 1): number {
   const index = content.indexOf(needle);
@@ -113,11 +143,28 @@ export function normalizePackageName(name: string, ecosystem?: string): string {
   return name;
 }
 
+function packageKey(pkg: { name: string; version: string; ecosystem: string }): string {
+  return `${pkg.ecosystem}\u0000${normalizePackageName(pkg.name, pkg.ecosystem)}\u0000${pkg.version}`;
+}
+
+/** One entry per (file, ecosystem, name, version). */
+function uniqueOccurrences(packages: ScaPackage[]): ScaPackage[] {
+  const seen = new Set<string>();
+  const result: ScaPackage[] = [];
+  for (const pkg of packages) {
+    const key = `${pkg.file}\u0000${packageKey(pkg)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(pkg);
+  }
+  return result;
+}
+
 function pushUnique(packages: ScaPackage[]): ScaPackage[] {
   const seen = new Set<string>();
   const result: ScaPackage[] = [];
   for (const pkg of packages) {
-    const key = `${pkg.ecosystem}\u0000${normalizePackageName(pkg.name, pkg.ecosystem)}\u0000${pkg.version}`;
+    const key = packageKey(pkg);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(pkg);
@@ -254,41 +301,294 @@ export function parsePnpmLock(content: string, file: string): ParsedDependencies
   return { packages: pushUnique(packages), warnings };
 }
 
+/** Remove a UTF-8 byte order mark. */
+function stripBom(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
+const SCOPE_RANK: Record<DependencyScope, number> = {
+  runtime: 3,
+  optional: 2,
+  dev: 1,
+  unknown: 0,
+};
+
+function betterScope(
+  a: DependencyScope | undefined,
+  b: DependencyScope,
+): DependencyScope {
+  return a !== undefined && SCOPE_RANK[a] >= SCOPE_RANK[b] ? a : b;
+}
+
+function pypiKey(name: string): string {
+  return normalizePackageName(name, "PyPI");
+}
+
+/** Leading distribution name of a PEP 508 requirement string. */
+function requirementName(line: string): string | undefined {
+  return /^\s*([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)/.exec(line)?.[1];
+}
+
+/** Extras of a PEP 508 requirement string (`name[a,b]>=1` -> `["a", "b"]`). */
+function requirementExtras(line: string): string[] {
+  const match = /^\s*[A-Za-z0-9][A-Za-z0-9_.-]*\s*\[([^\]]*)\]/.exec(line);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part.length > 0);
+}
+
+/** Files larger than this are not followed as `-r` includes or manifests. */
+const MAX_SIDE_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_INCLUDE_DEPTH = 32;
+
+/**
+ * Read a text file that is referenced from inside the audit root (an `-r`
+ * include or a sibling manifest). The target must resolve, after following
+ * symbolic links, to a regular file inside the root.
+ */
+function readJailedFile(
+  root: string,
+  relPath: string,
+): { rel: string; content: string } | { error: string } {
+  let abs: string;
+  let realRoot: string;
+  try {
+    realRoot = validateAuditRoot(root).root;
+    abs = resolveInside(realRoot, relPath);
+  } catch (error) {
+    return {
+      error:
+        error instanceof PathJailError
+          ? "outside the audit root"
+          : error instanceof Error
+            ? error.message
+            : String(error),
+    };
+  }
+  try {
+    const stat = fs.statSync(abs);
+    if (!stat.isFile()) return { error: "not a regular file" };
+    if (stat.size > MAX_SIDE_FILE_BYTES) return { error: "file is too large" };
+    return {
+      rel: toPosixRelative(realRoot, abs),
+      content: fs.readFileSync(abs, "utf8"),
+    };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { error: code ?? (error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+/**
+ * Resolve the target of a `-r` include relative to the including file.
+ * Absolute paths, drive letters, URLs and anything that leaves the audit root
+ * are refused without touching the filesystem outside the root.
+ */
+function includeTargetPath(file: string, target: string): string | undefined {
+  if (!target || target.includes("\u0000")) return undefined;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return undefined; // URL or C:\
+  const posixTarget = target.split("\\").join("/");
+  if (posixTarget.startsWith("/") || posixTarget.startsWith("~")) return undefined;
+  const baseDir = path.posix.dirname(file.split(path.sep).join("/"));
+  const joined = path.posix.normalize(path.posix.join(baseDir, posixTarget));
+  if (joined === ".." || joined.startsWith("../") || path.posix.isAbsolute(joined)) {
+    return undefined;
+  }
+  return joined;
+}
+
+export interface RequirementsOptions {
+  /** Audit root, required to resolve `-r` includes through the path jail. */
+  root?: string;
+  /** Already-visited files, used to break include cycles and double counts. */
+  visited?: Set<string>;
+  /** Include nesting depth (internal). */
+  depth?: number;
+}
+
+/** Strip a pip inline comment: `#` at the start or preceded by whitespace. */
+function stripRequirementComment(line: string): string {
+  for (let index = line.indexOf("#"); index >= 0; index = line.indexOf("#", index + 1)) {
+    if (index === 0 || /\s/.test(line[index - 1] ?? "")) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+/** Value of a pip option written as `-r x`, `-rx`, `--requirement x` or `--requirement=x`. */
+function pipOptionValue(
+  line: string,
+  short: string,
+  long: string,
+): string | undefined {
+  let rest: string | undefined;
+  if (line === long || line.startsWith(`${long} `) || line.startsWith(`${long}\t`)) {
+    rest = line.slice(long.length);
+  } else if (line.startsWith(`${long}=`)) {
+    rest = line.slice(long.length + 1);
+  } else if (line.startsWith(short) && !line.startsWith("--")) {
+    rest = line.slice(short.length);
+  }
+  if (rest === undefined) return undefined;
+  let value = rest.trim();
+  const quoted = /^(["'])(.*)\1$/.exec(value);
+  if (quoted) value = quoted[2] ?? "";
+  return value;
+}
+
+type RequirementLine =
+  | { kind: "pinned"; name: string; version: string }
+  | { kind: "unpinned" }
+  | { kind: "url" }
+  | { kind: "other" };
+
+const REQUIREMENT_HEAD =
+  /^([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*/;
+
+function classifyRequirement(line: string): RequirementLine {
+  if (/^(?:[A-Za-z][A-Za-z0-9+.-]*:|\.{0,2}[\\/]|~)/.test(line)) return { kind: "url" };
+  const head = REQUIREMENT_HEAD.exec(line);
+  if (!head) return { kind: "other" };
+  const name = head[1] ?? "";
+  let rest = line.slice(head[0].length);
+  if (rest.startsWith("@")) return { kind: "url" };
+  // A bare local archive such as `./pkg.whl` was handled above; `pkg.whl`
+  // and `dir/pkg` are paths too.
+  if (/^[\\/]/.test(rest) || /\.(?:whl|tar\.gz|zip|tgz)$/i.test(name)) return { kind: "url" };
+  const markerIndex = rest.indexOf(";");
+  if (markerIndex >= 0) rest = rest.slice(0, markerIndex);
+  const optionIndex = rest.search(/\s--?[A-Za-z]/);
+  if (optionIndex >= 0) rest = rest.slice(0, optionIndex);
+  rest = rest.trim();
+  if (rest.startsWith("(") && rest.endsWith(")")) rest = rest.slice(1, -1).trim();
+  if (rest === "") return { kind: "unpinned" };
+  if (!/^(?:===|==|~=|!=|<=|>=|<|>)/.test(rest)) return { kind: "other" };
+  for (const clause of rest.split(",")) {
+    const pinned = /^\s*(===|==)\s*([^\s,;]+)\s*$/.exec(clause);
+    if (!pinned) continue;
+    const version = pinned[2] ?? "";
+    if (!version || version.includes("*") || version.length > 128) continue;
+    return { kind: "pinned", name, version };
+  }
+  return { kind: "unpinned" };
+}
+
 export function parseRequirements(
   content: string,
   file: string,
+  options: RequirementsOptions = {},
 ): ParsedDependencies {
   const warnings: string[] = [];
   const packages: ScaPackage[] = [];
   let unpinned = 0;
+  let urlEntries = 0;
+  const root = options.root;
+  const visited = options.visited ?? new Set<string>();
+  const depth = options.depth ?? 0;
 
-  const lines = content.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index] ?? "";
-    const line = raw.replace(/#.*$/, "").trim();
-    if (!line || line.startsWith("-")) continue;
-    const match = /^([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?\s*==\s*([^;\s]+)/.exec(line);
-    if (!match) {
-      if (/^[A-Za-z0-9_.-]+\s*(?:[<>=!~]|$)/.test(line)) unpinned += 1;
+  if (root && visited.has(file)) return { packages: [], warnings };
+  if (root) visited.add(file);
+
+  // Join backslash line continuations, remembering the first physical line.
+  // A comment line never continues (pip behaves the same way).
+  const logical: Array<{ text: string; line: number }> = [];
+  let acc = "";
+  let accLine = 1;
+  const physical = splitLines(stripBom(content));
+  for (let index = 0; index < physical.length; index += 1) {
+    const raw = (physical[index] ?? "").trimEnd();
+    const isComment = raw.trimStart().startsWith("#");
+    if (raw.endsWith("\\") && !isComment) {
+      if (acc.length === 0) accLine = index + 1;
+      acc += `${raw.slice(0, -1)} `;
       continue;
     }
-    const name = match[1] ?? "";
-    const version = match[2] ?? "";
-    if (!name || !version || version.includes("*")) {
+    if (acc.length > 0) {
+      logical.push({ text: isComment ? acc : acc + raw, line: accLine });
+      acc = "";
+    } else {
+      logical.push({ text: raw, line: index + 1 });
+    }
+  }
+  if (acc.length > 0) logical.push({ text: acc, line: accLine });
+
+  for (const entry of logical) {
+    const line = stripRequirementComment(entry.text).trim();
+    if (!line) continue;
+
+    if (line.startsWith("-")) {
+      const target = pipOptionValue(line, "-r", "--requirement");
+      if (target !== undefined) {
+        if (!target || !root) continue;
+        const candidate = includeTargetPath(file, target);
+        if (!candidate) {
+          warnings.push(
+            `${file}: include ${target} is outside the audit root and was not read`,
+          );
+          continue;
+        }
+        if (visited.has(candidate)) continue;
+        if (depth >= MAX_INCLUDE_DEPTH) {
+          warnings.push(`${file}: include ${target} is nested too deeply and was not read`);
+          continue;
+        }
+        const included = readJailedFile(root, candidate);
+        if ("error" in included) {
+          warnings.push(
+            included.error === "outside the audit root"
+              ? `${file}: include ${target} is outside the audit root and was not read`
+              : `${file}: cannot read include ${target} (${included.error})`,
+          );
+          continue;
+        }
+        if (visited.has(included.rel)) continue;
+        if (included.rel !== candidate) visited.add(candidate);
+        const nested = parseRequirements(included.content, included.rel, {
+          root,
+          visited,
+          depth: depth + 1,
+        });
+        appendAll(packages, nested.packages);
+        appendAll(warnings, nested.warnings);
+        continue;
+      }
+      // Editable installs point at a path or VCS URL and carry no version.
+      if (pipOptionValue(line, "-e", "--editable") !== undefined) {
+        urlEntries += 1;
+        continue;
+      }
+      // Constraints only restrict versions; other pip options (--hash,
+      // --index-url, --find-links, ...) carry no package at all.
+      continue;
+    }
+
+    const classified = classifyRequirement(line);
+    if (classified.kind === "url") {
+      urlEntries += 1;
+    } else if (classified.kind === "unpinned") {
       unpinned += 1;
-      continue;
+    } else if (classified.kind === "pinned") {
+      packages.push({
+        name: classified.name,
+        version: classified.version,
+        ecosystem: "PyPI",
+        file,
+        line: entry.line,
+        manager: "requirements",
+        direct: true,
+        scope: "unknown",
+      });
     }
-    packages.push({
-      name,
-      version,
-      ecosystem: "PyPI",
-      file,
-      line: index + 1,
-      manager: "requirements",
-      direct: true,
-    });
   }
 
+  if (urlEntries > 0) {
+    warnings.push(
+      `${file}: ${urlEntries} direct URL/VCS entries cannot be checked against OSV`,
+    );
+  }
   if (unpinned > 0) {
     warnings.push(
       `${file}: ${unpinned} unpinned entries not parsed (unresolved transitive dependencies)`,
@@ -297,44 +597,599 @@ export function parseRequirements(
   return { packages: pushUnique(packages), warnings };
 }
 
+/** Dependencies declared by a project manifest (pyproject.toml or Pipfile). */
+export interface ManifestDependencies {
+  /** Normalized names of every declared dependency, in any group. */
+  names: Set<string>;
+  /** Normalized name -> strongest scope it is declared with. */
+  scopes: Map<string, DependencyScope>;
+  /** Names of optional-dependency (extras) groups. */
+  optionalGroups: Set<string>;
+  warning?: string;
+}
+
+/** Either plain direct names (legacy) or full manifest information. */
+export type DirectInfo = Set<string> | ManifestDependencies;
+
+function manifestOf(info: DirectInfo | undefined): ManifestDependencies | undefined {
+  if (!info) return undefined;
+  if (info instanceof Set) {
+    return { names: info, scopes: new Map(), optionalGroups: new Set() };
+  }
+  return info;
+}
+
+function asTable(value: TomlValue | undefined): TomlTable | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as TomlTable)
+    : undefined;
+}
+
+function asString(value: TomlValue | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+type TomlLockManager = "poetry" | "uv" | "pdm" | "pylock";
+
+interface PackageBlockOptions {
+  manager: TomlLockManager;
+  manifest?: ManifestDependencies;
+  /** Table name inside `[[...]]`; defaults to `package`. */
+  header?: string;
+}
+
+interface DependencyRef {
+  key: string;
+  extras: string[];
+}
+
+/** Dependency references of a lock entry, for every supported lock shape. */
+function dependencyRefs(value: TomlValue | undefined): DependencyRef[] {
+  const refs: DependencyRef[] = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string") {
+        // pdm: PEP 508 strings.
+        const name = requirementName(item);
+        if (name) refs.push({ key: pypiKey(name), extras: requirementExtras(item) });
+        continue;
+      }
+      const table = asTable(item);
+      const name = asString(table?.name);
+      if (!name) continue;
+      const extra = table?.extra;
+      refs.push({
+        key: pypiKey(name),
+        extras: Array.isArray(extra)
+          ? extra.filter((x): x is string => typeof x === "string").map((x) => x.toLowerCase())
+          : [],
+      });
+    }
+    return refs;
+  }
+  // poetry: a table keyed by dependency name.
+  const table = asTable(value);
+  if (table) for (const key of Object.keys(table)) refs.push({ key: pypiKey(key), extras: [] });
+  return refs;
+}
+
+/** True for the project itself or a local workspace member: not a PyPI release. */
+function isLocalProject(table: TomlTable, manager: TomlLockManager): boolean {
+  const source = asTable(table.source);
+  if (source) {
+    if (
+      typeof source.virtual === "string" ||
+      typeof source.editable === "string" ||
+      typeof source.directory === "string"
+    ) {
+      return true;
+    }
+    // poetry: [package.source] type = "directory"
+    if (source.type === "directory") return true;
+  }
+  if (manager === "pylock" && asTable(table.directory)) return true;
+  if (manager === "pdm") {
+    if (table.editable === true) return true;
+    const localPath = asString(table.path);
+    if (localPath !== undefined && !/\.(?:whl|tar\.gz|zip|tgz)$/i.test(localPath)) return true;
+  }
+  return false;
+}
+
+/** Scope stated by the lock entry itself, when the format records one. */
+function explicitScope(
+  table: TomlTable,
+  manager: TomlLockManager,
+  manifest: ManifestDependencies | undefined,
+): DependencyScope | undefined {
+  if (manager === "poetry") {
+    const optional = table.optional === true;
+    const category = asString(table.category);
+    if (category === "dev") return "dev";
+    if (category === "main") return optional ? "optional" : "runtime";
+    if (Array.isArray(table.groups)) {
+      const groups = table.groups.filter((g): g is string => typeof g === "string");
+      if (groups.includes("main")) return optional ? "optional" : "runtime";
+      if (groups.length > 0) return "dev";
+    }
+    return optional ? "optional" : undefined;
+  }
+  if (manager === "pdm" && Array.isArray(table.groups)) {
+    const groups = table.groups.filter((g): g is string => typeof g === "string");
+    if (groups.includes("default")) return "runtime";
+    if (groups.length === 0 || !manifest) return undefined;
+    return groups.some((group) => manifest.optionalGroups.has(group.toLowerCase()))
+      ? "optional"
+      : "dev";
+  }
+  return undefined;
+}
+
+/**
+ * Line-based scan used only when the TOML reader rejects a lockfile. It finds
+ * `name` / `version` directly below each `[[package]]` header so a file with
+ * one unreadable construct still yields its packages.
+ */
+function scanPackageBlocks(
+  content: string,
+  file: string,
+  options: PackageBlockOptions,
+): ScaPackage[] {
+  const header = `[[${options.header ?? "package"}]]`;
+  const packages: ScaPackage[] = [];
+  const lines = splitLines(stripBom(content));
+  let current: { line: number; name?: string; version?: string; local: boolean } | undefined;
+  let inHead = false;
+  const flush = (): void => {
+    if (current?.name && current.version && !current.local) {
+      packages.push({
+        name: current.name,
+        version: current.version,
+        ecosystem: "PyPI",
+        file,
+        line: current.line,
+        manager: options.manager,
+        direct: options.manifest
+          ? options.manifest.names.has(pypiKey(current.name))
+          : true,
+        scope: "unknown",
+      });
+    }
+    current = undefined;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = (lines[index] ?? "").trim();
+    if (text.startsWith("[")) {
+      if (text.startsWith(header)) {
+        flush();
+        current = { line: index + 1, local: false };
+        inHead = true;
+      } else if (/^\[{1,2}[A-Za-z0-9_."'-]+\]{1,2}/.test(text)) {
+        inHead = false;
+      }
+      continue;
+    }
+    if (!current || !inHead || text.length > 4096) continue;
+    const pair = /^(name|version)\s*=\s*(?:"([^"\\]*)"|'([^']*)')/.exec(text);
+    if (pair) {
+      const value = pair[2] ?? pair[3] ?? "";
+      if (pair[1] === "name") current.name ??= value;
+      else current.version ??= value;
+    } else if (/^source\s*=\s*\{\s*(?:virtual|editable|directory)\s*=/.test(text)) {
+      current.local = true;
+    }
+  }
+  flush();
+  return packages;
+}
+
+const NO_MANIFEST_WARNING =
+  "no pyproject.toml found; all dependencies are treated as direct (unresolved transitive dependencies)";
+
+function parsePackageBlocks(
+  content: string,
+  file: string,
+  options: PackageBlockOptions,
+): ParsedDependencies {
+  const warnings: string[] = [];
+  const manager = options.manager;
+  const manifest = options.manifest;
+  const parsed = parseTomlSubset(content, file);
+
+  if (parsed.error) {
+    const scanned = pushUnique(scanPackageBlocks(content, file, options));
+    warnings.push(
+      `${parsed.error}; used a line-based fallback (${scanned.length} packages, dependency scope unknown)`,
+    );
+    if (scanned.length === 0) {
+      warnings.push(`${file}: no parseable ${manager} dependencies found`);
+    }
+    return { packages: scanned, warnings };
+  }
+
+  interface Entry {
+    table: TomlTable;
+    name: string;
+    key: string;
+    version?: string;
+    line: number;
+    local: boolean;
+  }
+  const entries: Entry[] = [];
+  const rawEntries = parsed.data[options.header ?? "package"];
+  if (Array.isArray(rawEntries)) {
+    for (const raw of rawEntries) {
+      const table = asTable(raw);
+      const name = asString(table?.name);
+      if (!table || !name) continue;
+      entries.push({
+        table,
+        name,
+        key: pypiKey(name),
+        version: asString(table.version),
+        line: parsed.lineOf(table) ?? 1,
+        local: isLocalProject(table, manager),
+      });
+    }
+  }
+
+  // Seeds: what the project itself declares, from the lockfile's own root
+  // entries (uv) and from the sibling manifest.
+  const seeds = new Map<string, DependencyScope>();
+  const seedExtras = new Map<string, Set<string>>();
+  const addSeed = (ref: DependencyRef, scope: DependencyScope): void => {
+    seeds.set(ref.key, betterScope(seeds.get(ref.key), scope));
+    if (ref.extras.length > 0) {
+      const set = seedExtras.get(ref.key) ?? new Set<string>();
+      for (const extra of ref.extras) set.add(extra);
+      seedExtras.set(ref.key, set);
+    }
+  };
+  const groupRefs = (value: TomlValue | undefined): DependencyRef[] => {
+    const table = asTable(value);
+    if (!table) return [];
+    return Object.keys(table).flatMap((group) => dependencyRefs(table[group]));
+  };
+  for (const entry of entries) {
+    if (!entry.local) continue;
+    for (const ref of dependencyRefs(entry.table.dependencies)) addSeed(ref, "runtime");
+    for (const ref of groupRefs(entry.table["optional-dependencies"])) addSeed(ref, "optional");
+    for (const ref of groupRefs(entry.table["dev-dependencies"])) addSeed(ref, "dev");
+  }
+  if (manifest) {
+    for (const key of manifest.names) {
+      addSeed({ key, extras: [] }, manifest.scopes.get(key) ?? "unknown");
+    }
+  }
+  const localKeys = new Set(entries.filter((e) => e.local).map((e) => e.key));
+  for (const key of localKeys) seeds.delete(key);
+
+  // Propagate scopes through the dependency graph: runtime first, so a
+  // package reachable from a runtime dependency is never labelled dev.
+  const byKey = new Map<string, Entry[]>();
+  for (const entry of entries) {
+    const list = byKey.get(entry.key) ?? [];
+    list.push(entry);
+    byKey.set(entry.key, list);
+  }
+  const reached = new Map<string, DependencyScope>();
+  const expandedExtras = new Set<string>();
+  for (const scope of ["runtime", "optional", "dev"] as const) {
+    const queue: DependencyRef[] = [];
+    for (const [key, seedScope] of seeds) {
+      if (seedScope === scope) {
+        queue.push({ key, extras: [...(seedExtras.get(key) ?? [])] });
+      }
+    }
+    while (queue.length > 0) {
+      const ref = queue.pop() as DependencyRef;
+      const first = !reached.has(ref.key);
+      if (first) reached.set(ref.key, scope);
+      for (const entry of byKey.get(ref.key) ?? []) {
+        if (first) appendAll(queue, dependencyRefs(entry.table.dependencies));
+        const optional = asTable(entry.table["optional-dependencies"]);
+        for (const extra of ref.extras) {
+          const marker = `${ref.key}\u0000${extra}`;
+          if (expandedExtras.has(marker)) continue;
+          expandedExtras.add(marker);
+          if (!optional) continue;
+          for (const group of Object.keys(optional)) {
+            if (group.toLowerCase() === extra) appendAll(queue, dependencyRefs(optional[group]));
+          }
+        }
+      }
+    }
+  }
+
+  const packages: ScaPackage[] = [];
+  let noVersion = 0;
+  for (const entry of entries) {
+    if (entry.local) continue;
+    if (!entry.version) {
+      noVersion += 1;
+      continue;
+    }
+    const scope =
+      explicitScope(entry.table, manager, manifest) ?? reached.get(entry.key) ?? "unknown";
+    const pkg: ScaPackage = {
+      name: entry.name,
+      version: entry.version,
+      ecosystem: "PyPI",
+      file,
+      line: entry.line,
+      manager,
+      direct: seeds.size > 0 ? seeds.has(entry.key) : true,
+      scope,
+    };
+    if (scope === "dev") pkg.dev = true;
+    packages.push(pkg);
+  }
+
+  if (noVersion > 0) {
+    warnings.push(
+      `${file}: ${noVersion} entries without a version (VCS, URL or directory sources) cannot be checked against OSV`,
+    );
+  }
+  if (packages.length > 0 && seeds.size === 0) {
+    warnings.push(
+      manifest
+        ? `${file}: no dependencies could be read from the project manifest; all dependencies are treated as direct`
+        : `${file}: ${NO_MANIFEST_WARNING}`,
+    );
+  }
+  if (packages.length === 0) {
+    warnings.push(`${file}: no parseable ${manager} dependencies found`);
+  }
+  return { packages: pushUnique(packages), warnings };
+}
+
 export function parsePoetryLock(
   content: string,
   file: string,
+  direct?: DirectInfo,
+): ParsedDependencies {
+  return parsePackageBlocks(content, file, {
+    manager: "poetry",
+    manifest: manifestOf(direct),
+  });
+}
+
+export function parseUvLock(
+  content: string,
+  file: string,
+  direct?: DirectInfo,
+): ParsedDependencies {
+  return parsePackageBlocks(content, file, { manager: "uv", manifest: manifestOf(direct) });
+}
+
+export function parsePdmLock(
+  content: string,
+  file: string,
+  direct?: DirectInfo,
+): ParsedDependencies {
+  return parsePackageBlocks(content, file, { manager: "pdm", manifest: manifestOf(direct) });
+}
+
+export function parsePylock(
+  content: string,
+  file: string,
+  direct?: DirectInfo,
+): ParsedDependencies {
+  return parsePackageBlocks(content, file, {
+    manager: "pylock",
+    manifest: manifestOf(direct),
+    header: "packages",
+  });
+}
+
+/** First line of every `"name": {` entry per top-level Pipfile.lock section. */
+function pipfileLockLines(content: string): Map<string, number> {
+  const lines = new Map<string, number>();
+  const physical = splitLines(content);
+  let section = "";
+  let sectionIndent = -1;
+  for (let index = 0; index < physical.length; index += 1) {
+    const text = physical[index] ?? "";
+    if (text.length > 4096) continue;
+    const match = /^(\s*)"((?:[^"\\]|\\.)*)"\s*:\s*\{/.exec(text);
+    if (!match) continue;
+    const indent = (match[1] ?? "").length;
+    const key = match[2] ?? "";
+    if (sectionIndent < 0 || indent <= sectionIndent) {
+      section = key;
+      sectionIndent = indent;
+      continue;
+    }
+    const id = `${section}\u0000${key}`;
+    if (!lines.has(id)) lines.set(id, index + 1);
+  }
+  return lines;
+}
+
+export function parsePipfileLock(
+  content: string,
+  file: string,
+  direct?: DirectInfo,
 ): ParsedDependencies {
   const warnings: string[] = [];
   const packages: ScaPackage[] = [];
-  const blocks = content.split(/^\[\[package\]\]\s*$/m);
-  let offset = content.indexOf("[[package]]");
+  const text = stripBom(content);
+  let document: unknown;
+  try {
+    document = JSON.parse(text);
+  } catch (error) {
+    return {
+      packages: [],
+      warnings: [
+        `Pipfile.lock parse failed (${file}): ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    return { packages: [], warnings: [`${file}: no parseable Pipfile.lock dependencies found`] };
+  }
 
-  for (let index = 1; index < blocks.length; index += 1) {
-    const block = blocks[index] ?? "";
-    const start = content.indexOf(block, Math.max(0, offset));
-    const name = /^name\s*=\s*"([^"]+)"/m.exec(block)?.[1];
-    const version = /^version\s*=\s*"([^"]+)"/m.exec(block)?.[1];
-    if (name && version) {
+  const manifest = manifestOf(direct);
+  const lineIndex = pipfileLockLines(text);
+  const sections = Object.keys(document).filter((key) => key !== "_meta");
+  // `default` first so a package present in several categories is runtime.
+  sections.sort((a, b) => Number(b === "default") - Number(a === "default"));
+
+  let unpinned = 0;
+  let unversioned = 0;
+  for (const section of sections) {
+    const group = (document as Record<string, unknown>)[section];
+    if (!group || typeof group !== "object" || Array.isArray(group)) continue;
+    const scope: DependencyScope = section === "default" ? "runtime" : "dev";
+    for (const [name, value] of Object.entries(group as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.version !== "string") {
+        // git / file / path / editable entries have no version.
+        unversioned += 1;
+        continue;
+      }
+      const pinned = /^\s*={2,3}\s*([^\s,;*]+)\s*$/.exec(entry.version);
+      if (!pinned?.[1]) {
+        unpinned += 1;
+        continue;
+      }
       packages.push({
         name,
-        version,
+        version: pinned[1],
         ecosystem: "PyPI",
         file,
-        line: start >= 0 ? lineAt(content, start) : 1,
-        manager: "poetry",
-        direct: true,
+        line: lineIndex.get(`${section}\u0000${name}`) ?? 1,
+        manager: "pipfile",
+        direct: manifest && manifest.names.size > 0 ? manifest.names.has(pypiKey(name)) : true,
+        scope,
+        dev: scope === "dev",
       });
     }
-    offset = start + block.length;
   }
 
+  if (unversioned > 0) {
+    warnings.push(
+      `${file}: ${unversioned} direct URL/VCS entries cannot be checked against OSV`,
+    );
+  }
+  if (unpinned > 0) {
+    warnings.push(
+      `${file}: ${unpinned} unpinned entries not parsed (unresolved transitive dependencies)`,
+    );
+  }
   if (packages.length === 0) {
-    warnings.push(`${file}: no parseable poetry dependencies found`);
+    warnings.push(`${file}: no parseable Pipfile.lock dependencies found`);
   }
   return { packages: pushUnique(packages), warnings };
+}
+
+function emptyManifest(warning?: string): ManifestDependencies {
+  return {
+    names: new Set<string>(),
+    scopes: new Map<string, DependencyScope>(),
+    optionalGroups: new Set<string>(),
+    ...(warning ? { warning } : {}),
+  };
+}
+
+/**
+ * Extract the dependencies a pyproject.toml declares, with the scope each one
+ * is declared in: PEP 621 `[project]`, `[project.optional-dependencies]`,
+ * PEP 735 `[dependency-groups]`, Poetry tables and groups (including the
+ * legacy `dev-dependencies`), PDM and uv development dependencies.
+ */
+export function parsePyprojectDependencies(
+  content: string,
+  file: string,
+): ManifestDependencies {
+  const parsed = parseTomlSubset(content, file);
+  if (parsed.error) return emptyManifest(parsed.error);
+
+  const result = emptyManifest();
+  const add = (name: string | undefined, scope: DependencyScope): void => {
+    if (!name) return;
+    const key = pypiKey(name);
+    result.names.add(key);
+    result.scopes.set(key, betterScope(result.scopes.get(key), scope));
+  };
+  const addArray = (value: TomlValue | undefined, scope: DependencyScope): void => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      // Tables such as `{ include-group = "x" }` are not requirements.
+      if (typeof item === "string") add(requirementName(item), scope);
+    }
+  };
+  const addGroups = (value: TomlValue | undefined, scope: DependencyScope): void => {
+    const table = asTable(value);
+    if (!table) return;
+    for (const group of Object.keys(table)) {
+      if (scope === "optional") result.optionalGroups.add(group.toLowerCase());
+      addArray(table[group], scope);
+    }
+  };
+  const addPoetryTable = (value: TomlValue | undefined, scope: DependencyScope): void => {
+    const table = asTable(value);
+    if (!table) return;
+    for (const key of Object.keys(table)) {
+      // `python` is a constraint key in Poetry, not a package.
+      if (key.toLowerCase() === "python") continue;
+      const spec = asTable(table[key]);
+      add(key, scope === "runtime" && spec?.optional === true ? "optional" : scope);
+    }
+  };
+
+  const project = asTable(parsed.data.project);
+  addArray(project?.dependencies, "runtime");
+  addGroups(project?.["optional-dependencies"], "optional");
+  addGroups(parsed.data["dependency-groups"], "dev");
+
+  const tool = asTable(parsed.data.tool);
+  const poetry = asTable(tool?.poetry);
+  addPoetryTable(poetry?.dependencies, "runtime");
+  addPoetryTable(poetry?.["dev-dependencies"], "dev");
+  const groups = asTable(poetry?.group);
+  if (groups) {
+    for (const key of Object.keys(groups)) {
+      addPoetryTable(asTable(groups[key])?.dependencies, "dev");
+    }
+  }
+  const extras = asTable(poetry?.extras);
+  if (extras) for (const key of Object.keys(extras)) result.optionalGroups.add(key.toLowerCase());
+
+  addGroups(asTable(tool?.pdm)?.["dev-dependencies"], "dev");
+  addArray(asTable(tool?.uv)?.["dev-dependencies"], "dev");
+
+  return result;
+}
+
+/** Extract the dependencies a Pipfile declares (`[packages]`, `[dev-packages]`, custom categories). */
+export function parsePipfileDependencies(
+  content: string,
+  file: string,
+): ManifestDependencies {
+  const parsed = parseTomlSubset(content, file);
+  if (parsed.error) return emptyManifest(parsed.error);
+  const result = emptyManifest();
+  const reserved = new Set(["source", "requires", "scripts", "pipenv", "pipfile"]);
+  for (const section of Object.keys(parsed.data)) {
+    if (reserved.has(section)) continue;
+    const table = asTable(parsed.data[section]);
+    if (!table) continue;
+    const scope: DependencyScope = section === "packages" ? "runtime" : "dev";
+    for (const name of Object.keys(table)) {
+      const key = pypiKey(name);
+      result.names.add(key);
+      result.scopes.set(key, betterScope(result.scopes.get(key), scope));
+    }
+  }
+  return result;
 }
 
 export function parseGoMod(content: string, file: string): ParsedDependencies {
   const warnings: string[] = [];
   const packages: ScaPackage[] = [];
-  const lines = content.split(/\r?\n/);
+  const lines = splitLines(content);
   let inRequireBlock = false;
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -458,20 +1313,48 @@ export function parsePackagesLock(
   return { packages: pushUnique(packages), warnings };
 }
 
+export interface ParseLockfileOptions {
+  /** Audit root, used to resolve `-r` includes in requirements files. */
+  root?: string;
+  /**
+   * Dependencies declared by the sibling manifest (pyproject.toml or
+   * Pipfile), if present: plain direct names or full manifest information.
+   */
+  directNames?: DirectInfo;
+  /**
+   * Requirements files already parsed in this scan. Sharing one set across
+   * lockfiles keeps a file that is both scanned and `-r`-included from being
+   * parsed (and warned about) twice.
+   */
+  visitedRequirements?: Set<string>;
+}
+
 export function parseLockfile(
   relPath: string,
   content: string,
+  options: ParseLockfileOptions = {},
 ): ParsedDependencies {
   const base = path.basename(relPath);
+  const requirements = (): ParsedDependencies =>
+    parseRequirements(content, relPath, {
+      root: options.root,
+      visited: options.visitedRequirements ?? new Set<string>(),
+    });
   switch (base) {
     case "package-lock.json":
       return parsePackageLock(content, relPath);
     case "pnpm-lock.yaml":
       return parsePnpmLock(content, relPath);
     case "requirements.txt":
-      return parseRequirements(content, relPath);
+      return requirements();
     case "poetry.lock":
-      return parsePoetryLock(content, relPath);
+      return parsePoetryLock(content, relPath, options.directNames);
+    case "uv.lock":
+      return parseUvLock(content, relPath, options.directNames);
+    case "pdm.lock":
+      return parsePdmLock(content, relPath, options.directNames);
+    case "Pipfile.lock":
+      return parsePipfileLock(content, relPath, options.directNames);
     case "go.mod":
       return parseGoMod(content, relPath);
     case "pom.xml":
@@ -482,6 +1365,10 @@ export function parseLockfile(
     case "yarn.lock":
       return { packages: [], warnings: [] };
     default:
+      if (base === "pylock.toml" || /^pylock\..+\.toml$/.test(base)) {
+        return parsePylock(content, relPath, options.directNames);
+      }
+      if (isRequirementsLockfilePath(relPath)) return requirements();
       return { packages: [], warnings: [`${relPath}: unsupported lockfile type`] };
   }
 }
@@ -492,11 +1379,40 @@ function dirOf(relPath: string): string {
 
 const EXPECTED_LOCKFILES: Record<string, string[]> = {
   "package.json": ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"],
-  "pyproject.toml": ["poetry.lock", "requirements.txt"],
+  "pyproject.toml": [
+    "poetry.lock",
+    "uv.lock",
+    "pdm.lock",
+    "pylock.toml",
+    "requirements.txt",
+  ],
   "Pipfile": ["Pipfile.lock"],
   "Cargo.toml": ["Cargo.lock"],
   "composer.json": ["composer.lock"],
 };
+
+function hasRequiredLockfile(
+  base: string,
+  present: Set<string>,
+  nested?: Set<string>,
+): boolean {
+  const names = new Set(
+    [...present].map((relPath) => path.posix.basename(relPath)),
+  );
+  const required = EXPECTED_LOCKFILES[base];
+  if (required?.some((candidate) => names.has(candidate))) return true;
+  if (base === "pyproject.toml") {
+    if ([...names].some((name) => /^pylock\..+\.toml$/.test(name))) return true;
+    if ([...present].some(isRequirementsLockfilePath)) return true;
+    // `requirements/*.txt` next to the manifest also counts.
+    if (nested && [...nested].some(isRequirementsLockfilePath)) return true;
+  }
+  return false;
+}
+
+function requirementsDirOf(dir: string): string {
+  return dir === "." || dir === "" ? "requirements" : `${dir}/requirements`;
+}
 
 function manifestHygieneWarnings(inventory: InventoryResult): string[] {
   const warnings: string[] = [];
@@ -504,7 +1420,7 @@ function manifestHygieneWarnings(inventory: InventoryResult): string[] {
   for (const manifest of inventory.manifests) {
     const dir = dirOf(manifest.relPath);
     const set = byDir.get(dir) ?? new Set<string>();
-    set.add(path.basename(manifest.relPath));
+    set.add(manifest.relPath);
     byDir.set(dir, set);
   }
 
@@ -513,8 +1429,7 @@ function manifestHygieneWarnings(inventory: InventoryResult): string[] {
     const base = path.basename(manifest.relPath);
     const dir = dirOf(manifest.relPath);
     const present = byDir.get(dir) ?? new Set<string>();
-    const required = EXPECTED_LOCKFILES[base];
-    if (required && !required.some((candidate) => present.has(candidate))) {
+    if (!hasRequiredLockfile(base, present, byDir.get(requirementsDirOf(dir)))) {
       warnings.push(
         `${manifest.relPath}: no matching lockfile found; direct dependencies only (unresolved transitive dependencies)`,
       );
@@ -550,7 +1465,7 @@ function dependencyDeclarationLine(absPath: string, base: string): number {
       : base === "pyproject.toml"
         ? [/^\s*dependencies\s*=/, /\[tool\.poetry\.dependencies\]/, /\[project\]/]
         : [];
-  const lines = content.split(/\r?\n/);
+  const lines = splitLines(content);
   for (let index = 0; index < lines.length; index += 1) {
     if (patterns.some((pattern) => pattern.test(lines[index] ?? ""))) {
       return index + 1;
@@ -571,7 +1486,7 @@ export function manifestLockfileIssues(
   for (const manifest of inventory.manifests) {
     const dir = dirOf(manifest.relPath);
     const set = byDir.get(dir) ?? new Set<string>();
-    set.add(path.basename(manifest.relPath));
+    set.add(manifest.relPath);
     byDir.set(dir, set);
   }
 
@@ -583,8 +1498,9 @@ export function manifestLockfileIssues(
     const present = byDir.get(dir) ?? new Set<string>();
     const required = EXPECTED_LOCKFILES[base];
     const missing = required
-      ? !required.some((candidate) => present.has(candidate))
-      : base.endsWith(".csproj") && !present.has("packages.lock.json");
+      ? !hasRequiredLockfile(base, present, byDir.get(requirementsDirOf(dir)))
+      : base.endsWith(".csproj") &&
+        ![...present].some((relPath) => path.posix.basename(relPath) === "packages.lock.json");
     if (!missing) continue;
     issues.push({
       file: manifest.relPath,
@@ -639,7 +1555,7 @@ export function parseCvssV3(vector: string): number | undefined {
   return Math.ceil(base * 10) / 10;
 }
 
-function severityFromScore(score: number): Severity {
+export function severityFromScore(score: number): Severity {
   if (score >= 9) return "critical";
   if (score >= 7) return "high";
   if (score >= 4) return "medium";
@@ -665,7 +1581,10 @@ export interface OsvDetail {
   severity?: Array<{ type?: string; score?: string }>;
   affected?: Array<{
     package?: { name?: string; ecosystem?: string };
-    ranges?: Array<{ events?: Array<{ fixed?: string; last_affected?: string }> }>;
+    ranges?: Array<{
+      type?: string;
+      events?: Array<{ introduced?: string; fixed?: string; last_affected?: string }>;
+    }>;
   }>;
   database_specific?: {
     severity?: string;
@@ -723,6 +1642,13 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/** Version comparator for an ecosystem: PEP 440 for PyPI, generic otherwise. */
+export function versionComparator(
+  ecosystem: string | undefined,
+): (a: string, b: string) => number {
+  return ecosystem?.toLowerCase() === "pypi" ? comparePypiVersions : compareVersions;
+}
+
 /**
  * Pick the smallest fixed version that is greater than the installed version.
  * OSV may return multiple ranges and affected entries; entries for another
@@ -745,19 +1671,22 @@ export function extractFixedVersion(
     if (
       affected.package?.ecosystem &&
       pkg.ecosystem &&
-      affected.package.ecosystem !== pkg.ecosystem
+      affected.package.ecosystem.toLowerCase() !== pkg.ecosystem.toLowerCase()
     ) {
       continue;
     }
     for (const range of affected.ranges ?? []) {
+      // GIT ranges carry commit hashes, not release versions.
+      if (range.type?.toUpperCase() === "GIT") continue;
       for (const event of range.events ?? []) {
         if (event.fixed) candidates.push(event.fixed);
       }
     }
   }
+  const compare = versionComparator(pkg.ecosystem);
   const applicable = candidates
-    .filter((candidate) => compareVersions(candidate, pkg.version) > 0)
-    .sort(compareVersions);
+    .filter((candidate) => compare(candidate, pkg.version) > 0)
+    .sort(compare);
   return applicable[0];
 }
 
@@ -778,6 +1707,8 @@ export interface ScaOptions {
   skipLockfiles?: string[];
   /** Injectable delay so tests do not wait for real backoff. */
   sleep?: (ms: number) => Promise<void>;
+  /** Injectable dependency-file parser (tests); defaults to `parseLockfile`. */
+  parseLockfile?: typeof parseLockfile;
 }
 
 function isRetryable(error: unknown): boolean {
@@ -848,11 +1779,300 @@ function truncate(value: string, max = 300): string {
   return singleLine.length > max ? `${singleLine.slice(0, max)}…` : singleLine;
 }
 
+/**
+ * Read the manifest next to a Python lockfile (pyproject.toml, or Pipfile for
+ * Pipfile.lock) through the path jail. Returns undefined when there is no
+ * sibling manifest so the caller keeps every package marked direct.
+ */
+export function readSiblingManifest(
+  root: string,
+  lockfileRel: string,
+): ManifestDependencies | undefined {
+  const base = path.posix.basename(lockfileRel);
+  const manifestName = base === "Pipfile.lock" ? "Pipfile" : "pyproject.toml";
+  const isTomlLock =
+    base === "poetry.lock" ||
+    base === "uv.lock" ||
+    base === "pdm.lock" ||
+    base === "pylock.toml" ||
+    /^pylock\..+\.toml$/.test(base);
+  if (!isTomlLock && base !== "Pipfile.lock") return undefined;
+  const dir = dirOf(lockfileRel);
+  const rel = dir === "." ? manifestName : `${dir}/${manifestName}`;
+  const read = readJailedFile(root, rel);
+  if ("error" in read) {
+    if (read.error === "ENOENT" || read.error === "ENOTDIR") return undefined;
+    return emptyManifest(`${rel}: manifest was not read (${read.error})`);
+  }
+  return manifestName === "Pipfile"
+    ? parsePipfileDependencies(read.content, rel)
+    : parsePyprojectDependencies(read.content, rel);
+}
+
+const ADVISORY_ID_PREFERENCE = [/^GHSA-/i, /^CVE-/i];
+
+/** Prefer a GHSA id, then a CVE id, then the first id. */
+export function pickAdvisoryId(ids: string[]): string {
+  for (const pattern of ADVISORY_ID_PREFERENCE) {
+    const match = ids.find((id) => pattern.test(id));
+    if (match) return match;
+  }
+  return ids[0] ?? "";
+}
+
+export interface AdvisoryEntry {
+  id: string;
+  detail?: OsvDetail;
+}
+
+/**
+ * Group advisories that are the same vulnerability under different names
+ * (PYSEC / GHSA / CVE). Two entries belong together when their id-plus-alias
+ * sets intersect, or when an explicit group (OSV-Scanner `groups[].ids`)
+ * lists both. Groups and their members keep first-seen order.
+ */
+export function groupAdvisories(
+  entries: AdvisoryEntry[],
+  explicitGroups: string[][] = [],
+): AdvisoryEntry[][] {
+  const unique: AdvisoryEntry[] = [];
+  const indexById = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.id || indexById.has(entry.id)) continue;
+    indexById.set(entry.id, unique.length);
+    unique.push(entry);
+  }
+  const parent = unique.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root] as number;
+    while (parent[index] !== root) {
+      const next = parent[index] as number;
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) return;
+    // Keep the earlier entry as the root so group order is stable.
+    if (ra < rb) parent[rb] = ra;
+    else parent[ra] = rb;
+  };
+  const owner = new Map<string, number>();
+  const claim = (name: string, index: number): void => {
+    const key = name.toUpperCase();
+    const existing = owner.get(key);
+    if (existing === undefined) owner.set(key, index);
+    else union(existing, index);
+  };
+  unique.forEach((entry, index) => {
+    claim(entry.id, index);
+    for (const alias of entry.detail?.aliases ?? []) {
+      if (typeof alias === "string" && alias) claim(alias, index);
+    }
+  });
+  for (const ids of explicitGroups) {
+    let first: number | undefined;
+    for (const id of ids) {
+      const index = indexById.get(id);
+      if (index === undefined) continue;
+      if (first === undefined) first = index;
+      else union(first, index);
+    }
+  }
+  const groups = new Map<number, AdvisoryEntry[]>();
+  unique.forEach((entry, index) => {
+    const root = find(index);
+    const list = groups.get(root) ?? [];
+    list.push(entry);
+    groups.set(root, list);
+  });
+  return [...groups.values()];
+}
+
+export interface AdvisorySummary {
+  advisoryId: string;
+  /** Every other id and alias of the same vulnerability. */
+  aliases: string[];
+  severity: Severity;
+  cvss?: number;
+  fixedVersion?: string;
+  summary: string;
+  details: string;
+  cwe: string;
+  references: string[];
+}
+
+/**
+ * Collapse one advisory group into a single description: the preferred id,
+ * the highest severity, and the fixed version that satisfies every entry of
+ * the group (the highest of the per-entry minimum fixes).
+ */
+export function summarizeAdvisoryGroup(
+  entries: AdvisoryEntry[],
+  pkg: { name: string; version: string; ecosystem?: string },
+  extra: { aliases?: string[]; maxSeverityScore?: number } = {},
+): AdvisorySummary {
+  const advisoryId = pickAdvisoryId(entries.map((entry) => entry.id));
+  const primary = entries.find((entry) => entry.id === advisoryId);
+  const ordered = primary ? [primary, ...entries.filter((e) => e !== primary)] : entries;
+
+  let severity: Severity | undefined;
+  let cvss: number | undefined;
+  const raise = (candidate: Severity): void => {
+    if (!severity || SEVERITY_ORDER[candidate] > SEVERITY_ORDER[severity]) {
+      severity = candidate;
+    }
+  };
+  for (const entry of ordered) {
+    const detail = entry.detail;
+    if (!detail) continue;
+    const extracted = extractSeverity(detail);
+    const informative =
+      extracted.cvss !== undefined ||
+      severityFromText(detail.database_specific?.severity) !== undefined;
+    if (!informative) continue;
+    raise(extracted.severity);
+    if (extracted.cvss !== undefined && (cvss === undefined || extracted.cvss > cvss)) {
+      cvss = extracted.cvss;
+    }
+  }
+  const score = extra.maxSeverityScore;
+  if (score !== undefined && Number.isFinite(score) && score > 0 && score <= 10) {
+    raise(severityFromScore(score));
+    if (cvss === undefined || score > cvss) cvss = score;
+  }
+
+  const compare = versionComparator(pkg.ecosystem);
+  let fixedVersion: string | undefined;
+  for (const entry of ordered) {
+    const fixed = extractFixedVersion(entry.detail, pkg);
+    if (fixed && (!fixedVersion || compare(fixed, fixedVersion) > 0)) fixedVersion = fixed;
+  }
+
+  const seen = new Set<string>([advisoryId.toUpperCase()]);
+  const aliases: string[] = [];
+  const addAlias = (value: unknown): void => {
+    if (typeof value !== "string" || !value) return;
+    const key = value.toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    aliases.push(value);
+  };
+  for (const entry of ordered) addAlias(entry.id);
+  for (const entry of ordered) for (const alias of entry.detail?.aliases ?? []) addAlias(alias);
+  for (const alias of extra.aliases ?? []) addAlias(alias);
+
+  const summary =
+    ordered.map((entry) => entry.detail?.summary).find((text) => Boolean(text)) ??
+    `OSV advisory ${advisoryId}`;
+  const details =
+    ordered.map((entry) => entry.detail?.details).find((text) => Boolean(text)) ?? summary;
+  const cwe =
+    ordered
+      .map((entry) => entry.detail?.database_specific?.cwe_ids?.[0])
+      .find((value) => Boolean(value)) ?? "CWE-1104";
+  const references = [
+    ...new Set([
+      `https://osv.dev/vulnerability/${advisoryId}`,
+      ...ordered.flatMap((entry) =>
+        (entry.detail?.references ?? [])
+          .map((reference) => reference.url)
+          .filter((url): url is string => Boolean(url)),
+      ),
+    ]),
+  ].slice(0, 5);
+
+  return {
+    advisoryId,
+    aliases,
+    severity: severity ?? "medium",
+    ...(cvss !== undefined ? { cvss } : {}),
+    ...(fixedVersion ? { fixedVersion } : {}),
+    summary,
+    details,
+    cwe,
+    references,
+  };
+}
+
+/** Human-readable dependency path used in SCA findings. */
+export function describeDependencyPath(pkg: {
+  manager: string;
+  direct: boolean;
+  scope?: DependencyScope;
+  dev?: boolean;
+}): string {
+  if (pkg.dev || pkg.scope === "dev") return `${pkg.manager} dev dependency`;
+  return pkg.direct
+    ? `${pkg.manager} direct dependency`
+    : `${pkg.manager} transitive dependency (from lockfile)`;
+}
+
+/** Remediation text of an SCA finding; always names `fixedVersion` when given. */
+export function scaRemediation(name: string, fixedVersion: string | undefined): string {
+  return fixedVersion
+    ? `Upgrade ${name} to ${fixedVersion} or later; rerun the dependency audit and regression tests.`
+    : `Upgrade ${name} to the latest stable or vendor-recommended version; confirm the impact before choosing mitigations.`;
+}
+
+/** Build the SCA finding for one advisory group of one package. */
+export function buildScaFinding(input: {
+  advisory: AdvisorySummary;
+  name: string;
+  version: string;
+  ecosystem: string;
+  file: string;
+  line: number;
+  dependencyPath: string;
+  scope?: DependencyScope;
+  provenance: { engine: string; rule?: string; version?: string };
+}): Finding {
+  const { advisory, name, version } = input;
+  // `dependencyScope` is an additive SCA field; the finding schema passes
+  // unknown keys through, so it reaches the JSON report unchanged.
+  const init: FindingInit & { dependencyScope: DependencyScope } = {
+    ruleId: `sca-${advisory.advisoryId.toLowerCase()}`,
+    title: truncate(`${name}@${version}: ${advisory.summary}`, 160),
+    category: "sca",
+    severity: advisory.severity,
+    confidence: "high",
+    cvss: advisory.cvss,
+    cwe: advisory.cwe,
+    owasp: "A06:2021",
+    file: input.file,
+    startLine: input.line,
+    evidence: `${name}@${version}`,
+    message: truncate(advisory.details, 500),
+    remediation: scaRemediation(name, advisory.fixedVersion),
+    references: advisory.references,
+    package: name,
+    ecosystem: input.ecosystem,
+    installedVersion: version,
+    fixedVersion: advisory.fixedVersion,
+    advisoryId: advisory.advisoryId,
+    aliases: advisory.aliases,
+    dependencyPath: input.dependencyPath,
+    dependencyScope: input.scope ?? "unknown",
+    reachable: "unknown",
+    provenance: input.provenance,
+  };
+  return createFinding(init);
+}
+
 export async function runSca(options: ScaOptions): Promise<ScaResult> {
   const warnings = manifestHygieneWarnings(options.inventory);
   const findings: Finding[] = [];
   const packages: ScaPackage[] = [];
   const skipLockfiles = new Set(options.skipLockfiles ?? []);
+  const visitedRequirements = new Set<string>();
+  const seenWarnings = new Set<string>(warnings);
+  const perFileCount = new Map<string, number>();
+  const overCap = new Map<string, number>();
+  let scanCapExceeded = false;
 
   for (const lockfile of options.inventory.lockfiles) {
     if (skipLockfiles.has(lockfile.relPath)) continue;
@@ -868,12 +2088,66 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
       );
       continue;
     }
-    const parsed = parseLockfile(lockfile.relPath, content);
-    packages.push(...parsed.packages);
-    warnings.push(...parsed.warnings);
+    // One hostile or broken dependency file must never abort the scan: any
+    // exception while parsing it becomes a warning and the next file is read.
+    let parsed: ParsedDependencies;
+    try {
+      const manifest = readSiblingManifest(options.root, lockfile.relPath);
+      if (manifest?.warning && !seenWarnings.has(manifest.warning)) {
+        seenWarnings.add(manifest.warning);
+        warnings.push(manifest.warning);
+      }
+      parsed = (options.parseLockfile ?? parseLockfile)(lockfile.relPath, content, {
+        root: options.root,
+        directNames: manifest,
+        visitedRequirements,
+      });
+    } catch (error) {
+      warnings.push(
+        `${lockfile.relPath}: dependency file could not be parsed and was skipped (${
+          error instanceof Error ? error.message : String(error)
+        })`,
+      );
+      continue;
+    }
+    // Caps are counted per declaring file (an `-r` include is its own file).
+    for (const pkg of parsed.packages) {
+      if (packages.length >= MAX_DEPENDENCIES_PER_SCAN) {
+        scanCapExceeded = true;
+        break;
+      }
+      const count = perFileCount.get(pkg.file) ?? 0;
+      if (count >= MAX_DEPENDENCIES_PER_FILE) {
+        overCap.set(pkg.file, (overCap.get(pkg.file) ?? 0) + 1);
+        continue;
+      }
+      perFileCount.set(pkg.file, count + 1);
+      packages.push(pkg);
+    }
+    for (const warning of parsed.warnings) {
+      if (!seenWarnings.has(warning)) {
+        seenWarnings.add(warning);
+        warnings.push(warning);
+      }
+    }
+    if (scanCapExceeded) break;
+  }
+  for (const [file, dropped] of overCap) {
+    warnings.push(
+      `${file}: more than ${MAX_DEPENDENCIES_PER_FILE} dependencies; ${dropped} further entries were not checked`,
+    );
+  }
+  if (scanCapExceeded) {
+    warnings.push(
+      `more than ${MAX_DEPENDENCIES_PER_SCAN} dependencies in this scan; the remaining dependency files were not checked`,
+    );
   }
 
-  const uniquePackages = pushUnique(packages);
+  // Every (file, package, version) occurrence is kept so that each lockfile
+  // pinning a vulnerable release gets its own finding; OSV is queried once
+  // per distinct (ecosystem, name, version).
+  const uniquePackages = uniqueOccurrences(packages);
+  const queryPackages = pushUnique(uniquePackages);
   const unresolvedManifests = warnings.filter((warning) =>
     warning.includes("unresolved transitive dependencies"),
   );
@@ -892,7 +2166,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
 
   if (options.offline) {
     warnings.push(
-      `offline mode: skipped OSV.dev queries (${uniquePackages.length} dependencies were not checked for vulnerabilities)`,
+      `offline mode: skipped OSV.dev queries (${queryPackages.length} dependencies were not checked for vulnerabilities)`,
     );
     return {
       findings,
@@ -914,10 +2188,11 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
   const sleep = options.sleep ?? defaultSleep;
   const retry = { maxRetries, retryBaseMs, sleep };
   const associations: Array<{ pkg: ScaPackage; vulnId: string }> = [];
+  const idsByQuery = new Map<string, string[]>();
   let degraded = false;
 
-  for (let offset = 0; offset < uniquePackages.length; offset += batchSize) {
-    const batch = uniquePackages.slice(offset, offset + batchSize);
+  for (let offset = 0; offset < queryPackages.length; offset += batchSize) {
+    const batch = queryPackages.slice(offset, offset + batchSize);
     let response: unknown;
     try {
       response = await requestWithRetry(
@@ -960,7 +2235,12 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
         | { vulns?: Array<{ id?: string }> }
         | undefined;
       for (const vuln of result?.vulns ?? []) {
-        if (vuln.id) associations.push({ pkg, vulnId: vuln.id });
+        if (typeof vuln.id !== "string" || !vuln.id) continue;
+        const ids = idsByQuery.get(packageKey(pkg)) ?? [];
+        if (ids.includes(vuln.id)) continue;
+        ids.push(vuln.id);
+        idsByQuery.set(packageKey(pkg), ids);
+        associations.push({ pkg, vulnId: vuln.id });
       }
     }
   }
@@ -991,58 +2271,42 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
     if (warning) warnings.push(warning);
   }
 
-  for (const { pkg, vulnId } of associations) {
-    const detail = details.get(vulnId);
-    const { severity, cvss } = extractSeverity(detail);
-    const fixedVersion = extractFixedVersion(detail, pkg);
-    const aliases = detail?.aliases ?? [];
-    const summary = detail?.summary ?? `OSV advisory ${vulnId}`;
-    const cwe = detail?.database_specific?.cwe_ids?.[0] ?? "CWE-1104";
-    const references = [
-      `https://osv.dev/vulnerability/${vulnId}`,
-      ...(detail?.references ?? [])
-        .map((reference) => reference.url)
-        .filter((url): url is string => Boolean(url)),
-    ].slice(0, 5);
-
-    findings.push(
-      createFinding({
-        ruleId: `sca-${vulnId.toLowerCase()}`,
-        title: truncate(`${pkg.name}@${pkg.version}: ${summary}`, 160),
-        category: "sca",
-        severity,
-        confidence: "high",
-        cvss,
-        cwe,
-        owasp: "A06:2021",
-        file: pkg.file,
-        startLine: pkg.line,
-        evidence: `${pkg.name}@${pkg.version}`,
-        message: truncate(detail?.details ?? summary, 500),
-        remediation: fixedVersion
-          ? `Upgrade ${pkg.name} to ${fixedVersion} or later; rerun the dependency audit and regression tests.`
-          : `Upgrade ${pkg.name} to the latest stable or vendor-recommended version; confirm the impact before choosing mitigations.`,
-        references,
-        package: pkg.name,
-        ecosystem: pkg.ecosystem,
-        installedVersion: pkg.version,
-        fixedVersion,
-        advisoryId: vulnId,
-        aliases: [...new Set([vulnId, ...aliases])],
-        dependencyPath: pkg.direct
-          ? `${pkg.manager} direct dependency`
-          : `${pkg.manager} transitive dependency (from lockfile)`,
-        reachable: "unknown",
-        provenance: { engine: "osv", rule: vulnId },
-      }),
+  // One finding per vulnerability: the same advisory published as PYSEC-x and
+  // GHSA-y (linked through a shared alias) is reported once.
+  const advisoriesByQuery = new Map<string, AdvisorySummary[]>();
+  for (const pkg of queryPackages) {
+    const ids = idsByQuery.get(packageKey(pkg));
+    if (!ids) continue;
+    advisoriesByQuery.set(
+      packageKey(pkg),
+      groupAdvisories(ids.map((id) => ({ id, detail: details.get(id) }))).map((group) =>
+        summarizeAdvisoryGroup(group, pkg),
+      ),
     );
+  }
+  for (const pkg of uniquePackages) {
+    for (const advisory of advisoriesByQuery.get(packageKey(pkg)) ?? []) {
+      findings.push(
+        buildScaFinding({
+          advisory,
+          name: pkg.name,
+          version: pkg.version,
+          ecosystem: pkg.ecosystem,
+          file: pkg.file,
+          line: pkg.line,
+          dependencyPath: describeDependencyPath(pkg),
+          scope: pkg.scope,
+          provenance: { engine: "osv", rule: advisory.advisoryId },
+        }),
+      );
+    }
   }
 
   return {
     findings,
     warnings,
     packages: uniquePackages,
-    queriedPackages: uniquePackages.length,
+    queriedPackages: queryPackages.length,
     vulnIds,
     unresolvedManifests,
     degraded,

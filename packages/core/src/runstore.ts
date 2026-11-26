@@ -15,6 +15,7 @@ import {
   inventory,
   MAX_TEXT_FILE_BYTES,
   type InventoryResult,
+  type InventoryFile,
 } from "./inventory.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
 import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
@@ -25,12 +26,20 @@ import {
   type ReportContext,
   type ReportLang,
 } from "./report.js";
-import { loadRules, type LoadedRule } from "./rules.js";
+import { loadRules, redactionsForFile, type LoadedRule, type RuleSet } from "./rules.js";
 import {
-  isPrivateKeyBoundary,
-  redactSecret,
-  redactSecretsInText,
-} from "./secrets.js";
+  LINE_MASK_ALL,
+  LINE_MASK_STRINGS,
+  isCredentialFinding,
+  redactEvidence,
+  redactLine,
+  redactLineDetailed,
+  redactText,
+  scrubValues,
+  sensitiveLines,
+  splitLines,
+  type RedactRange,
+} from "./redact.js";
 
 export class RunStoreError extends Error {
   readonly code: string;
@@ -260,6 +269,88 @@ function loadInventoryForRun(root: string): InventoryResult {
   return inventory(root);
 }
 
+/**
+ * Redaction of source lines shown outside a scan (read, search, agent-added
+ * findings). Uses the shared `redactLine`, the multi-line state of
+ * `sensitiveLines`, and what the run's `redactEvidence` rules match in the
+ * file, so these tools mask exactly what the scan masks.
+ */
+class SourceRedactor {
+  private ruleSet: RuleSet | null | undefined;
+  private readonly ranges = new Map<string, Map<number, RedactRange[]>>();
+
+  constructor(private readonly rulesDir: string) {}
+
+  private rangesFor(entry: InventoryFile): Map<number, RedactRange[]> {
+    const cached = this.ranges.get(entry.relPath);
+    if (cached) return cached;
+    if (this.ruleSet === undefined) {
+      try {
+        this.ruleSet = loadRules(this.rulesDir);
+      } catch {
+        this.ruleSet = null;
+      }
+    }
+    let result = new Map<number, RedactRange[]>();
+    if (this.ruleSet && entry.scannable) {
+      try {
+        result = redactionsForFile(entry, this.ruleSet);
+      } catch {
+        result = new Map();
+      }
+    }
+    this.ranges.set(entry.relPath, result);
+    return result;
+  }
+
+  /**
+   * A function that redacts line `index` (zero-based) of `lines`. With
+   * `evidence` the line is trimmed and cut like scan evidence (starting at
+   * `column` when it is longer than the evidence limit).
+   */
+  forFile(
+    entry: InventoryFile,
+    lines: string[],
+  ): (
+    index: number,
+    options?: {
+      maskAllStrings?: boolean;
+      evidence?: boolean;
+      column?: number;
+      /** Receives the raw values that were masked on the line. */
+      masked?: string[];
+    },
+  ) => string {
+    const flags = sensitiveLines(lines);
+    let ranges: Map<number, RedactRange[]> | undefined;
+    return (index, options = {}) => {
+      if (flags[index] === LINE_MASK_ALL) return "[private key content redacted]";
+      ranges ??= this.rangesFor(entry);
+      const redactOptions = {
+        file: entry.relPath,
+        ranges: ranges.get(index + 1),
+        maskAllStrings: options.maskAllStrings || flags[index] === LINE_MASK_STRINGS,
+      };
+      const line = lines[index] ?? "";
+      if (options.masked) {
+        for (const value of redactLineDetailed(line, redactOptions).masked) {
+          options.masked.push(value);
+        }
+      }
+      if (options.evidence) {
+        return redactEvidence(line, { ...redactOptions, column: options.column });
+      }
+      return redactLine(line, redactOptions);
+    };
+  }
+}
+
+function sourceRedactor(run: { run: Record<string, unknown> }): SourceRedactor {
+  return new SourceRedactor(
+    typeof run.run.rulesDir === "string" ? run.run.rulesDir : defaultRulesDir(),
+  );
+}
+
 export function loadRun(
   ref: string,
   options: ResolveRunOptions = {},
@@ -388,9 +479,7 @@ export function recordVerdict(
     rationale,
     ...(input.evidenceLines && input.evidenceLines.length > 0
       ? {
-          evidenceLines: input.evidenceLines.map((line) =>
-            redactSecretsInText(line),
-          ),
+          evidenceLines: input.evidenceLines.map((line) => redactText(line)),
         }
       : {}),
     at: new Date().toISOString(),
@@ -539,8 +628,9 @@ export function readSnippet(
   }
   const absolute = resolveInside(run.root, entry.relPath);
   const text = fs.readFileSync(absolute, "utf8");
-  const allLines = text.split(/\r?\n/);
+  const allLines = splitLines(text);
   const totalLines = allLines.length;
+  const redact = sourceRedactor(run).forFile(entry, allLines);
   const start = Math.max(1, Math.trunc(startLine));
   if (start > totalLines) {
     throw new RunStoreError(
@@ -556,22 +646,8 @@ export function readSnippet(
   );
   const truncated = cappedEnd < Math.min(totalLines, requestedEnd);
   const lines: Array<{ number: number; text: string }> = [];
-  let inPrivateKey = false;
-  for (let index = 1; index <= cappedEnd; index += 1) {
-    const raw = allLines[index - 1] ?? "";
-    const boundary = isPrivateKeyBoundary(raw);
-    const inside = inPrivateKey || boundary;
-    if (index >= start) {
-      lines.push({
-        number: index,
-        text: inside
-          ? "[private key content redacted]"
-          : redactSecretsInText(raw),
-      });
-    }
-    if (boundary) {
-      inPrivateKey = /-----BEGIN /.test(raw) && !/-----END /.test(raw);
-    }
+  for (let index = start; index <= cappedEnd; index += 1) {
+    lines.push({ number: index, text: redact(index - 1) });
   }
   return {
     file: entry.relPath,
@@ -684,6 +760,7 @@ export function searchCode(
   );
   const inv = loadInventoryForRun(run.root);
   const matches: SearchMatch[] = [];
+  const redactor = sourceRedactor(run);
   let truncated = false;
   let searchedFiles = 0;
   let consumed = 0;
@@ -700,29 +777,22 @@ export function searchCode(
     const text = fs.readFileSync(absolute, "utf8");
     consumed += Buffer.byteLength(text, "utf8");
     searchedFiles += 1;
-    const lines = text.split(/\r?\n/);
-    let inPrivateKey = false;
+    const lines = splitLines(text);
+    const redact = redactor.forFile(entry, lines);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index] ?? "";
-      const boundary = isPrivateKeyBoundary(line);
-      const inside = inPrivateKey || boundary;
       const match = regex.exec(line);
       if (match) {
         matches.push({
           file: entry.relPath,
           line: index + 1,
           column: (match.index ?? 0) + 1,
-          text: inside
-            ? "[private key content redacted]"
-            : redactSecretsInText(line.trim().slice(0, 400)),
+          text: redact(index, { evidence: true, column: match.index ?? 0 }),
         });
         if (matches.length >= maxResults) {
           truncated = true;
           break;
         }
-      }
-      if (boundary) {
-        inPrivateKey = /-----BEGIN /.test(line) && !/-----END /.test(line);
       }
     }
     if (truncated) break;
@@ -780,13 +850,17 @@ function slugify(title: string): string {
 
 function readEvidenceForRange(
   root: string,
-  relPath: string,
+  entry: InventoryFile,
+  redactor: SourceRedactor,
+  maskAllStrings: boolean,
   startLine: number,
   endLine?: number,
+  masked?: string[],
 ): string {
+  const relPath = entry.relPath;
   const absolute = resolveInside(root, relPath);
   const text = fs.readFileSync(absolute, "utf8");
-  const lines = text.split(/\r?\n/);
+  const lines = splitLines(text);
   if (startLine < 1 || startLine > lines.length) {
     throw new RunStoreError(
       `startLine ${startLine} is out of range for ${relPath} (${lines.length} lines)`,
@@ -800,18 +874,21 @@ function readEvidenceForRange(
       "LINE_OUT_OF_RANGE",
     );
   }
-  let inPrivateKey = false;
-  return lines
-    .slice(startLine - 1, end)
-    .map((line) => {
-      const boundary = isPrivateKeyBoundary(line);
-      const inside = inPrivateKey || boundary;
-      if (boundary) {
-        inPrivateKey = /-----BEGIN /.test(line) && !/-----END /.test(line);
-      }
-      return inside ? "[private key content redacted]" : redactSecretsInText(line);
-    })
-    .join("\n");
+  // The source line never becomes evidence as it is: it goes through the same
+  // line redaction as scan evidence, and for a credential finding every
+  // string literal is masked.
+  const redact = redactor.forFile(entry, lines);
+  const result: string[] = [];
+  for (let index = startLine - 1; index < end; index += 1) {
+    const line = lines[index] ?? "";
+    // A very long line is cut like scan evidence.
+    result.push(
+      line.length > 2000
+        ? redact(index, { evidence: true, maskAllStrings, masked })
+        : redact(index, { maskAllStrings, masked }),
+    );
+  }
+  return result.join("\n");
 }
 
 export function addFinding(
@@ -853,7 +930,17 @@ export function addFinding(
       file: hotspot.file,
       startLine: hotspot.startLine,
       endLine: hotspot.endLine,
-      evidence: hotspot.evidence,
+      // A hotspot promoted to a credential finding gets the same treatment
+      // as a new credential finding: every string literal is masked.
+      evidence: redactText(hotspot.evidence, {
+        file: hotspot.file,
+        maskAllStrings: isCredentialFinding({
+          cwe: input.cwe ?? hotspot.cwe,
+          title: input.title ?? hotspot.title,
+          ruleId: input.ruleId ?? hotspot.ruleId,
+          category: hotspot.category,
+        }),
+      }),
       message: input.message ?? hotspot.message,
       remediation: input.remediation ?? hotspot.remediation,
       references: hotspot.references,
@@ -913,16 +1000,23 @@ export function addFinding(
         "DUPLICATE_FINDING",
       );
     }
+    const ruleId = input.ruleId ?? `agent-${slugify(input.title)}`;
+    const maskedValues: string[] = [];
     const evidence = readEvidenceForRange(
       run.root,
-      entry.relPath,
+      entry,
+      sourceRedactor(run),
+      isCredentialFinding({ cwe: input.cwe, title: input.title, ruleId }),
       startLine,
       input.endLine,
+      maskedValues,
     );
-    const ruleId = input.ruleId ?? `agent-${slugify(input.title)}`;
+    // Text the agent wrote about these lines may quote them: the values that
+    // were masked in the evidence are masked there too.
+    const scrub = (text: string): string => scrubValues(redactText(text), maskedValues);
     finding = createFinding({
       ruleId,
-      title: input.title.trim(),
+      title: scrub(input.title.trim()),
       category: "sast",
       severity: input.severity,
       confidence: input.confidence ?? "medium",
@@ -933,17 +1027,18 @@ export function addFinding(
       startLine,
       endLine: input.endLine,
       evidence,
-      message: input.message ?? rationale,
+      // Agent-written text may quote the source line.
+      message: scrub(input.message ?? rationale),
       remediation:
         input.remediation ??
         "Review the code path and apply the fix described in the rationale.",
-      source: input.source,
+      source: input.source === undefined ? undefined : scrub(input.source),
       status: "needs_review",
       provenance: {
         engine: "agent",
         rule: ruleId,
         version: TOOL_VERSION,
-        ...(input.source ? { source: input.source } : {}),
+        ...(input.source ? { source: scrub(input.source) } : {}),
         ...(input.reviewer ? { reviewer: input.reviewer } : {}),
       },
     });

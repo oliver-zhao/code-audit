@@ -1,3 +1,4 @@
+import { splitLines } from "../redact.js";
 import { createFinding, type Confidence, type Finding, type Severity } from "../finding.js";
 import { PathJailError, resolveInside, toPosixRelative } from "../pathJail.js";
 import { loadOpengrepRules } from "./opengrepRules.js";
@@ -63,7 +64,7 @@ function firstCwe(value: string | string[] | undefined): string | undefined {
 function evidenceFrom(entry: SemgrepResultEntry): string {
   const lines = entry.extra?.lines?.trim();
   if (!lines) return entry.check_id ?? "semgrep result";
-  const first = lines.split(/\r?\n/)[0]?.trim() ?? lines;
+  const first = splitLines(lines)[0]?.trim() ?? lines;
   return first.slice(0, 400);
 }
 

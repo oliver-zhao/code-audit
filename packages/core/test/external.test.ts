@@ -14,6 +14,7 @@ import {
   selectSastTool,
 } from "../src/external/index.js";
 import { createFinding } from "../src/finding.js";
+import { groupAdvisories, type OsvDetail } from "../src/sca.js";
 import { REPO_ROOT, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("external");
@@ -324,6 +325,264 @@ describe("osv-scanner adapter", () => {
   });
 });
 
+/** Fake osv-scanner that prints a report and exits 1 (vulnerabilities found). */
+function fakeOsvScanner(name: string, report: unknown): string {
+  const dir = path.join(temp, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "report.json"), JSON.stringify(report));
+  return fakeCjs(
+    dir,
+    "osv-scanner",
+    [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "fs.writeSync(1, fs.readFileSync(path.join(__dirname, 'report.json')));",
+      "process.exit(1);",
+    ].join("\n"),
+  );
+}
+
+/**
+ * Hand-built in the shape of real OSV-Scanner 2.x JSON (see the recorded
+ * sample): `vulnerabilities[]` holds one OSV record per id and `groups[]`
+ * lists which ids are the same vulnerability. Modelled on the virtualenv
+ * report from a real project (36 vulnerabilities in 20 groups), reduced to
+ * 7 vulnerabilities in 3 groups.
+ */
+function virtualenvPackage(withGroups: boolean): Record<string, unknown> {
+  const ecosystemRange = (fixed: string) => ({
+    package: { ecosystem: "PyPI", name: "virtualenv", purl: "pkg:pypi/virtualenv" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed }] }],
+  });
+  const gitOnly = {
+    package: { ecosystem: "PyPI", name: "virtualenv" },
+    ranges: [
+      {
+        type: "GIT",
+        repo: "https://github.com/pypa/virtualenv",
+        events: [{ introduced: "0" }, { fixed: "86dddeda7c991f8529e1995bbff280fb7b761972" }],
+      },
+    ],
+  };
+  const pkg: Record<string, unknown> = {
+    package: { name: "virtualenv", version: "21.7.1", ecosystem: "PyPI" },
+    vulnerabilities: [
+      {
+        id: "PYSEC-2026-101",
+        details: "PYSEC record without a summary.",
+        aliases: ["CVE-2026-11111", "GHSA-aaaa-1111-aaaa"],
+        affected: [gitOnly],
+      },
+      {
+        id: "GHSA-aaaa-1111-aaaa",
+        summary: "TOCTOU in virtualenv directory creation",
+        aliases: ["CVE-2026-11111"],
+        severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N" }],
+        database_specific: { severity: "MODERATE", cwe_ids: ["CWE-362"] },
+        affected: [ecosystemRange("21.8.0")],
+      },
+      {
+        id: "CVE-2026-11111",
+        aliases: ["GHSA-aaaa-1111-aaaa"],
+        severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+        affected: [ecosystemRange("21.8.1")],
+      },
+      {
+        id: "PYSEC-2026-102",
+        summary: "Command injection through activation scripts",
+        aliases: ["CVE-2026-22222"],
+        database_specific: { severity: "HIGH" },
+        affected: [ecosystemRange("21.9.0")],
+      },
+      {
+        id: "CVE-2026-22222",
+        aliases: ["PYSEC-2026-102"],
+        affected: [ecosystemRange("21.9.0")],
+      },
+      {
+        id: "PYSEC-2026-103",
+        summary: "Only known to PyPA",
+        affected: [ecosystemRange("21.7.2")],
+      },
+      {
+        id: "MAL-2026-9",
+        summary: "Grouped only by the scanner",
+        affected: [ecosystemRange("21.7.3")],
+      },
+    ],
+  };
+  if (withGroups) {
+    pkg.groups = [
+      {
+        ids: ["PYSEC-2026-101", "GHSA-aaaa-1111-aaaa", "CVE-2026-11111"],
+        aliases: ["CVE-2026-11111", "GHSA-aaaa-1111-aaaa", "PYSEC-2026-101", "BIT-virtualenv-2026-11111"],
+        max_severity: "9.8",
+      },
+      {
+        ids: ["PYSEC-2026-102", "CVE-2026-22222"],
+        aliases: ["CVE-2026-22222", "PYSEC-2026-102"],
+        max_severity: "",
+      },
+      // No alias links these two; only the scanner's group does.
+      { ids: ["PYSEC-2026-103", "MAL-2026-9"], aliases: ["PYSEC-2026-103", "MAL-2026-9"], max_severity: "3.1" },
+    ];
+  }
+  return pkg;
+}
+
+describe("osv-scanner adapter: paths and advisory groups", () => {
+  const uvLock = [
+    "version = 1",
+    "",
+    "[[package]]",
+    'name = "app"',
+    'version = "0.1.0"',
+    'source = { virtual = "." }',
+    "",
+    "[package.dev-dependencies]",
+    'dev = [{ name = "virtualenv" }]',
+    "",
+    "[[package]]",
+    'name = "virtualenv"',
+    'version = "21.7.1"',
+    'source = { registry = "https://pypi.org/simple" }',
+    "",
+  ].join("\n");
+
+  it("reports findings with a root-relative file even when the tool prints absolute paths", async () => {
+    const base = path.join(temp, "osv-abs");
+    const root = path.join(base, "real-root");
+    writeFile(root, "services/api/uv.lock", uvLock);
+    writeFile(base, "outside/uv.lock", uvLock);
+    // The audit root is reached through a symbolic link, as /tmp is on macOS.
+    const linkedRoot = path.join(base, "linked-root");
+    fs.symlinkSync(root, linkedRoot, "dir");
+    fs.symlinkSync(path.join(base, "outside/uv.lock"), path.join(root, "escape.lock"));
+    const tool = fakeOsvScanner("osv-abs-bin", {
+      results: [
+        {
+          source: { path: path.join(linkedRoot, "services/api/uv.lock"), type: "lockfile" },
+          packages: [virtualenvPackage(true)],
+        },
+        {
+          source: { path: path.join(base, "outside/uv.lock"), type: "lockfile" },
+          packages: [virtualenvPackage(true)],
+        },
+        {
+          source: { path: path.join(linkedRoot, "escape.lock"), type: "lockfile" },
+          packages: [virtualenvPackage(true)],
+        },
+        {
+          source: { path: path.join(linkedRoot, "../outside/uv.lock"), type: "lockfile" },
+          packages: [virtualenvPackage(true)],
+        },
+        { packages: [virtualenvPackage(true)] },
+      ],
+    });
+    const result = await runOsvScanner({ root: linkedRoot, toolPath: tool, timeoutMs: 10_000 });
+    expect(result.ok).toBe(true);
+    expect(result.reportedFiles).toEqual(["services/api/uv.lock"]);
+    expect(result.findings).toHaveLength(3);
+    for (const finding of result.findings) {
+      expect(finding.file).toBe("services/api/uv.lock");
+      expect(path.isAbsolute(finding.file)).toBe(false);
+      expect(finding.file).not.toContain("\\");
+      expect(finding.file.startsWith("..")).toBe(false);
+    }
+    const dropped = result.warnings.filter((warning) => warning.includes("outside the root"));
+    expect(dropped).toHaveLength(3);
+    expect(result.warnings.join("\n")).toContain("without a source path");
+    // Nothing from outside the root leaks into any finding.
+    expect(JSON.stringify(result.findings)).not.toContain("outside");
+  });
+
+  it("emits one finding per group with the preferred id, top severity and best fix", async () => {
+    const root = path.join(temp, "osv-groups");
+    writeFile(root, "uv.lock", uvLock);
+    const tool = fakeOsvScanner("osv-groups-bin", {
+      results: [
+        { source: { path: path.join(root, "uv.lock"), type: "lockfile" }, packages: [virtualenvPackage(true)] },
+        // The same lockfile listed again must not duplicate findings.
+        { source: { path: path.join(root, "uv.lock"), type: "unknown" }, packages: [virtualenvPackage(true)] },
+      ],
+    });
+    const result = await runOsvScanner({ root, toolPath: tool, version: "2.7.1", timeoutMs: 10_000 });
+    expect(result.findings.map((finding) => finding.advisoryId)).toEqual([
+      "GHSA-aaaa-1111-aaaa",
+      "CVE-2026-22222",
+      "PYSEC-2026-103",
+    ]);
+    const [first, second, third] = result.findings;
+    expect(first?.ruleId).toBe("sca-ghsa-aaaa-1111-aaaa");
+    expect(first?.aliases).toEqual([
+      "PYSEC-2026-101",
+      "CVE-2026-11111",
+      "BIT-virtualenv-2026-11111",
+    ]);
+    expect(first?.title).toContain("TOCTOU in virtualenv directory creation");
+    expect(first?.cwe).toBe("CWE-362");
+    // Highest severity of the three entries (and the group's max_severity).
+    expect(first?.severity).toBe("critical");
+    expect(first?.cvss).toBeCloseTo(9.8, 1);
+    // The fix that satisfies every entry of the group; the GIT hash is ignored.
+    expect(first?.fixedVersion).toBe("21.8.1");
+    expect(second?.aliases).toEqual(["PYSEC-2026-102"]);
+    expect(second?.severity).toBe("high");
+    expect(second?.fixedVersion).toBe("21.9.0");
+    expect(second?.title).toContain("Command injection");
+    expect(third?.aliases).toEqual(["MAL-2026-9"]);
+    expect(third?.severity).toBe("low");
+    expect(third?.fixedVersion).toBe("21.7.3");
+    for (const finding of result.findings) {
+      expect(finding.aliases).not.toContain(finding.advisoryId);
+      expect(finding.provenance).toMatchObject({ engine: "osv-scanner", version: "2.7.1" });
+      // Location, directness and scope come from the lockfile itself.
+      expect(finding.startLine).toBe(11);
+      expect(finding.dependencyPath).toBe("uv dev dependency");
+      expect((finding as Record<string, unknown>).dependencyScope).toBe("dev");
+    }
+  });
+
+  it("groups by shared aliases when the report has no groups", async () => {
+    const root = path.join(temp, "osv-nogroups");
+    writeFile(root, "uv.lock", uvLock);
+    const tool = fakeOsvScanner("osv-nogroups-bin", {
+      results: [{ source: { path: "uv.lock" }, packages: [virtualenvPackage(false)] }],
+    });
+    const result = await runOsvScanner({ root, toolPath: tool, timeoutMs: 10_000 });
+    expect(result.findings.map((finding) => finding.advisoryId)).toEqual([
+      "GHSA-aaaa-1111-aaaa",
+      "CVE-2026-22222",
+      "PYSEC-2026-103",
+      "MAL-2026-9",
+    ]);
+  });
+
+  it("tolerates malformed entries without throwing", async () => {
+    const root = path.join(temp, "osv-malformed");
+    writeFile(root, "uv.lock", uvLock);
+    const tool = fakeOsvScanner("osv-malformed-bin", {
+      results: [
+        null,
+        { source: { path: "uv.lock" }, packages: "nope" },
+        {
+          source: { path: "uv.lock" },
+          packages: [
+            null,
+            { package: { name: "virtualenv" } },
+            { package: { name: "virtualenv", version: "21.7.1", ecosystem: "PyPI" }, vulnerabilities: [null, {}, { id: 7 }], groups: [null, { ids: "x" }] },
+            { package: { name: "virtualenv", version: "21.7.1", ecosystem: "PyPI" }, vulnerabilities: [{ id: "OSV-1" }], groups: "x" },
+          ],
+        },
+      ],
+    });
+    const result = await runOsvScanner({ root, toolPath: tool, timeoutMs: 10_000 });
+    expect(result.ok).toBe(true);
+    expect(result.findings.map((finding) => finding.advisoryId)).toEqual(["OSV-1"]);
+    expect(result.findings[0]?.severity).toBe("medium");
+  });
+});
+
 describe("opengrep/semgrep adapter", () => {
   it("maps severities, records the engine and strips the config path from rule ids", async () => {
     const root = path.join(temp, "sast-project");
@@ -536,6 +795,86 @@ describe("cross-engine merge", () => {
   });
 });
 
+describe("cross-engine SCA merge by alias", () => {
+  const sca = (overrides: Record<string, unknown>) =>
+    createFinding({
+      ruleId: `sca-${String(overrides.advisoryId).toLowerCase()}`,
+      title: "requests advisory",
+      category: "sca",
+      severity: "medium",
+      confidence: "high",
+      file: "requirements.txt",
+      startLine: 1,
+      evidence: "requests@2.19.0",
+      message: "m",
+      remediation: "r",
+      package: "requests",
+      ecosystem: "PyPI",
+      installedVersion: "2.19.0",
+      provenance: { engine: "osv" },
+      ...overrides,
+    } as Parameters<typeof createFinding>[0]);
+
+  it("merges an osv-scanner group with the built-in finding for the same package and version", () => {
+    const builtin = sca({
+      advisoryId: "PYSEC-2018-28",
+      aliases: ["CVE-2018-18074"],
+      startLine: 2,
+      endLine: 2,
+      fixedVersion: "2.20.0",
+    });
+    const external = sca({
+      advisoryId: "GHSA-x84v-xcm2-53pg",
+      aliases: ["PYSEC-2018-28", "CVE-2018-18074"],
+      severity: "high",
+      package: "Requests",
+      provenance: { engine: "osv-scanner" },
+    });
+    const otherVersion = sca({
+      advisoryId: "GHSA-x84v-xcm2-53pg",
+      aliases: ["PYSEC-2018-28"],
+      installedVersion: "2.18.0",
+      evidence: "requests@2.18.0",
+      provenance: { engine: "osv-scanner" },
+    });
+    const unrelated = sca({
+      advisoryId: "GHSA-j8r2-6x86-q33q",
+      aliases: ["CVE-2023-32681"],
+      provenance: { engine: "osv-scanner" },
+    });
+    const merged = mergeScaFindings([builtin], [external, otherVersion, unrelated]);
+    expect(merged).toHaveLength(3);
+    const first = merged[0];
+    expect(first?.advisoryId).toBe("GHSA-x84v-xcm2-53pg");
+    expect(first?.ruleId).toBe("sca-ghsa-x84v-xcm2-53pg");
+    expect([...(first?.aliases ?? [])].sort()).toEqual(["CVE-2018-18074", "PYSEC-2018-28"]);
+    expect(first?.severity).toBe("high");
+    expect(first?.fixedVersion).toBe("2.20.0");
+    expect(first?.startLine).toBe(2);
+    expect(first?.provenance.engines).toEqual(expect.arrayContaining(["osv", "osv-scanner"]));
+    expect(merged[1]?.installedVersion).toBe("2.18.0");
+    expect(merged[2]?.advisoryId).toBe("GHSA-j8r2-6x86-q33q");
+  });
+
+  it("folds findings that a later one links together, and never merges findings without ids", () => {
+    const a = sca({ advisoryId: "PYSEC-1", aliases: [] });
+    const b = sca({ advisoryId: "CVE-2020-1", aliases: [] });
+    const bridge = sca({
+      advisoryId: "GHSA-aaaa-bbbb-cccc",
+      aliases: ["PYSEC-1", "CVE-2020-1"],
+      provenance: { engine: "osv-scanner" },
+    });
+    const merged = mergeScaFindings([a, b], [bridge]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.advisoryId).toBe("GHSA-aaaa-bbbb-cccc");
+    expect([...(merged[0]?.aliases ?? [])].sort()).toEqual(["CVE-2020-1", "PYSEC-1"]);
+
+    const noIdA = sca({ advisoryId: undefined, ruleId: "sca-a" });
+    const noIdB = sca({ advisoryId: undefined, ruleId: "sca-b" });
+    expect(mergeScaFindings([noIdA], [noIdB])).toHaveLength(2);
+  });
+});
+
 describe("recorded real outputs", () => {
   const recordedDir = path.join(REPO_ROOT, "packages/core/test/recorded");
 
@@ -600,6 +939,73 @@ describe("recorded real outputs", () => {
     expect(lodash?.installedVersion).toBe("4.17.15");
     expect(lodash?.fixedVersion).toBeTruthy();
     expect(lodash?.aliases?.length).toBeGreaterThan(0);
+  });
+
+  it("collapses the recorded OSV-Scanner vulnerabilities into one finding per group", async () => {
+    interface RecordedPackage {
+      package: { name: string; version: string; ecosystem: string };
+      vulnerabilities: Array<OsvDetail & { id: string }>;
+      groups: Array<{ ids: string[] }>;
+    }
+    const document = JSON.parse(
+      fs.readFileSync(recorded("osv-scanner-vulnerable.json"), "utf8"),
+    ) as { results: Array<{ source: { path: string }; packages: RecordedPackage[] }> };
+
+    // Independent count straight from the recorded JSON.
+    const expectedGroups = new Set<string>();
+    let vulnerabilityCount = 0;
+    for (const entry of document.results) {
+      for (const pkg of entry.packages) {
+        vulnerabilityCount += pkg.vulnerabilities.length;
+        for (const group of pkg.groups) {
+          expectedGroups.add(
+            [entry.source.path, pkg.package.name, pkg.package.version, [...group.ids].sort().join(",")].join("|"),
+          );
+        }
+        // The alias-based grouping used by the built-in OSV path reproduces
+        // the scanner's own groups on real data.
+        const byAlias = groupAdvisories(
+          pkg.vulnerabilities.map((vuln) => ({ id: vuln.id, detail: vuln })),
+        ).map((group) => group.map((item) => item.id).sort().join(","));
+        expect(byAlias.sort()).toEqual(pkg.groups.map((group) => [...group.ids].sort().join(",")).sort());
+      }
+    }
+    expect(vulnerabilityCount).toBe(178);
+    expect(expectedGroups.size).toBe(64);
+
+    const dir = path.join(temp, "recorded-osv-groups");
+    const tool = fakeCjs(
+      dir,
+      "osv-scanner",
+      [
+        "const fs = require('fs');",
+        `fs.writeSync(1, fs.readFileSync(${JSON.stringify(recorded("osv-scanner-vulnerable.json"))}));`,
+        "process.exit(1);",
+      ].join("\n"),
+    );
+    const result = await runOsvScanner({ root: REPO_ROOT, toolPath: tool, timeoutMs: 10_000 });
+    expect(result.findings).toHaveLength(expectedGroups.size);
+    const keys = new Set(
+      result.findings.map((f) => `${f.file}|${f.package}|${f.installedVersion}|${f.advisoryId}`),
+    );
+    expect(keys.size).toBe(result.findings.length);
+    for (const finding of result.findings) {
+      expect(path.isAbsolute(finding.file)).toBe(false);
+      expect(finding.file.startsWith("fixtures/vulnerable/sca/")).toBe(true);
+      // Every recorded group has a GHSA id, so it is always the advisory id.
+      expect(finding.advisoryId).toMatch(/^GHSA-/);
+      expect(finding.aliases).not.toContain(finding.advisoryId);
+    }
+    const django = result.findings.filter((f) => f.package === "django");
+    expect(django).toHaveLength(38);
+    // Declared on line 1 of fixtures/vulnerable/sca/requirements.txt.
+    expect(django.every((f) => f.startLine === 1 && f.fixedVersion)).toBe(true);
+    const requests = result.findings.filter((f) => f.package === "requests");
+    expect(requests).toHaveLength(5);
+    expect(requests.every((f) => f.startLine === 2)).toBe(true);
+    const credentials = requests.find((f) => f.advisoryId === "GHSA-x84v-xcm2-53pg");
+    expect(credentials?.aliases).toEqual(expect.arrayContaining(["PYSEC-2018-28", "CVE-2018-18074"]));
+    expect(credentials?.fixedVersion).toBe("2.20.0");
   });
 
   it("parses the recorded Gitleaks JSON and keeps secrets redacted", async () => {

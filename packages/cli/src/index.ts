@@ -42,6 +42,7 @@ Usage:
                         [--fail-on low|medium|high|critical]
                         [--min-confidence low|medium|high] [--lang en|zh]
                         [--rules <dir>] [--ignore-file <path>] [--no-ignore-file]
+                        [--no-inline-ignore]
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
   code-audit baseline <run-id|run-dir> [--output <file>]
@@ -125,6 +126,7 @@ interface ScanArgs {
   engines?: EngineName[];
   ignoreFile?: string;
   noIgnoreFile: boolean;
+  noInlineIgnore: boolean;
   baseline?: string;
   noBaseline: boolean;
   failOnExisting: boolean;
@@ -146,6 +148,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let engines: EngineName[] | undefined;
   let ignoreFile: string | undefined;
   let noIgnoreFile = false;
+  let noInlineIgnore = false;
   let baseline: string | undefined;
   let noBaseline = false;
   let failOnExisting = false;
@@ -231,6 +234,8 @@ function parseScanArgs(args: string[]): ScanArgs {
       index += 1;
     } else if (arg === "--no-ignore-file") {
       noIgnoreFile = true;
+    } else if (arg === "--no-inline-ignore") {
+      noInlineIgnore = true;
     } else if (arg === "--baseline") {
       baseline = takeValue(args, index + 1, arg);
       index += 1;
@@ -268,6 +273,7 @@ function parseScanArgs(args: string[]): ScanArgs {
     engines,
     ignoreFile,
     noIgnoreFile,
+    noInlineIgnore,
     baseline,
     noBaseline,
     failOnExisting,
@@ -292,6 +298,7 @@ async function runScan(args: string[]): Promise<number> {
     engines: parsed.engines,
     ignoreFile: parsed.ignoreFile,
     noIgnoreFile: parsed.noIgnoreFile,
+    noInlineIgnore: parsed.noInlineIgnore,
     baseline: parsed.baseline,
     noBaseline: parsed.noBaseline,
     failOnExisting: parsed.failOnExisting,
@@ -350,17 +357,35 @@ async function runScan(args: string[]): Promise<number> {
       }
     }
   } else {
+    // Suppressed candidates are not counted as findings, and are never hidden.
+    const notSuppressed = (finding: { status: string }): boolean =>
+      finding.status !== "suppressed";
+    const suppressedAll = [...result.findings, ...result.hotspots].filter(
+      (finding) => finding.status === "suppressed",
+    );
+    const suppressedInline = suppressedAll.filter(
+      (finding) => finding.suppression?.source === "inline",
+    ).length;
     process.stdout.write(
       [
         `code-audit scan completed: ${result.runId}`,
-        `Files: ${result.coverage.stats.scannedFiles} scanned / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
+        `Files: ${result.coverage.stats.scannedFiles} scanned${
+          (result.coverage.stats.partialFiles ?? 0) > 0
+            ? ` (${result.coverage.stats.partialFiles} partially: generated lockfiles, dependencies and high-confidence secrets only)`
+            : ""
+        } / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
         `Rules: ${result.coverage.rulesCount}`,
         ...(baseline
           ? [`Baseline: New: ${baseline.new} · Existing: ${baseline.existing} · Fixed: ${baseline.fixed}`]
           : []),
         ...(scope ? [`Scope: files changed since ${scope.since} (${scope.changedFiles} files)`] : []),
-        `Findings: ${result.findings.length} (critical ${counts.critical}, high ${counts.high}, medium ${counts.medium}, low ${counts.low}, info ${counts.info})`,
-        `Hotspots: ${result.hotspots.length}`,
+        `Findings: ${result.findings.filter(notSuppressed).length} (critical ${counts.critical}, high ${counts.high}, medium ${counts.medium}, low ${counts.low}, info ${counts.info})`,
+        `Hotspots: ${result.hotspots.filter(notSuppressed).length}`,
+        ...(suppressedAll.length > 0
+          ? [
+              `Suppressed: ${suppressedAll.length} (ignore file ${suppressedAll.length - suppressedInline}, inline comments ${suppressedInline}); listed in the report`,
+            ]
+          : []),
         `Duration: ${result.durationMs} ms`,
         `Report directory: ${result.runDir}`,
         "",
