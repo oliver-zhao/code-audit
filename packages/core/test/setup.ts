@@ -53,3 +53,11 @@ for (const tool of REQUIRED_TOOLS) {
   }
 }
 process.env.PATH = [...kept, ...shims].join(path.delimiter);
+
+// Many CLI tests are synchronous (spawnSync). Vitest only awaits microtasks
+// between synchronous tests, so a long file never returns to the event loop's
+// poll phase and the worker cannot read the runner's replies; on a slow CI
+// machine that ends in "Timeout calling onTaskUpdate" although every test
+// passed. Yield one macrotask turn after each test.
+const { afterEach } = await import("vitest");
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
