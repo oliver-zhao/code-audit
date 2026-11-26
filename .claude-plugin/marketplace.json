@@ -1,0 +1,16 @@
+{
+  "name": "code-audit",
+  "owner": {
+    "name": "code-audit"
+  },
+  "metadata": {
+    "description": "Deterministic source audit with agent review for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "code-audit",
+      "source": "./adapters/claude-code",
+      "description": "Deterministic source audit with agent review: scan, read evidence, record verdicts, render a report."
+    }
+  ]
+}

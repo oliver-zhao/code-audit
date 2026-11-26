@@ -1,6 +1,9 @@
 import {
+  ADJUSTMENT_PLACEHOLDER,
   CONFIDENCE_ORDER,
   SEVERITY_ORDER,
+  lowerConfidence,
+  restoreConfidence,
   type Finding,
 } from "../finding.js";
 import { scaRemediation } from "../sca.js";
@@ -44,7 +47,23 @@ function rulesOf(finding: Finding): string[] {
   return [finding.provenance.rule ?? finding.ruleId];
 }
 
-function mergePair(a: Finding, b: Finding): Finding {
+function isPlaceholderAdjusted(finding: Finding): boolean {
+  return finding.adjustments?.includes(ADJUSTMENT_PLACEHOLDER) ?? false;
+}
+
+function mergePair(first: Finding, second: Finding): Finding {
+  // A placeholder verdict survives a merge only when both engines reached it:
+  // two findings on one line can be about two different values. The merge
+  // works on the confidences the engines reported and the adjustment is
+  // applied again to the result.
+  const bothPlaceholder = isPlaceholderAdjusted(first) && isPlaceholderAdjusted(second);
+  const a = restoreConfidence(first);
+  const b = restoreConfidence(second);
+  const merged = mergePairUnadjusted(a, b);
+  return bothPlaceholder ? lowerConfidence(merged, ADJUSTMENT_PLACEHOLDER, "low") : merged;
+}
+
+function mergePairUnadjusted(a: Finding, b: Finding): Finding {
   const bySeverity = higherSeverity(a, b);
   const primary = higherConfidence(bySeverity, bySeverity === a ? b : a);
   const engines = mergeEngines(a, b);

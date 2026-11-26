@@ -1,5 +1,13 @@
 import fs from "node:fs";
-import { createFinding, type Confidence, type Finding, type Severity } from "./finding.js";
+import {
+  ADJUSTMENT_PLACEHOLDER,
+  createFinding,
+  lowerConfidence,
+  type Confidence,
+  type Finding,
+  type Severity,
+} from "./finding.js";
+import { classifySecretValue, isPlaceholderSecret } from "./placeholder.js";
 import type { InventoryFile } from "./inventory.js";
 import {
   LINE_MASK_ALL,
@@ -74,15 +82,6 @@ const URL_CREDENTIALS_DEFINITION = {
     "Remove the credentials from the URL, rotate them, and supply them through the environment, a keyring or the package manager's credential store (for pip: PIP_INDEX_URL from a secret, or a netrc file).",
 };
 
-/** A URL password that is a variable reference or an obvious dummy. */
-function isUrlPasswordPlaceholder(value: string): boolean {
-  if (value.length < 3) return true;
-  if (/^[$%]/.test(value) || /^\*+$/.test(value) || /[{}]/.test(value)) return true;
-  if (/^(?:pass(?:word|wd)?|pwd|secret|token|user(?:name)?|redacted)$/i.test(value)) return true;
-  if (PLACEHOLDER_PATTERN.test(value)) return true;
-  return false;
-}
-
 /**
  * `name = "value"` / `"name": "value"` where the name is, or ends with, a
  * credential word. Group 1 is the compound prefix (`db_`), group 3 the quote
@@ -91,8 +90,11 @@ function isUrlPasswordPlaceholder(value: string): boolean {
 const GENERIC_ASSIGNMENT =
   /(?<![A-Za-z0-9])((?:[A-Za-z0-9]{1,40}[_.-]){0,6})(password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|token)(["']?)\s*[:=]\s*(["'])([^"'\r\n]{8,})\4/gi;
 
-const PLACEHOLDER_PATTERN =
-  /(xxx|changeme|change_me|example|placeholder|dummy|sample|replace[_-]?me|your[_-]|todo|fixme|<[^>]*>|\$\{[^}]*\}|\{\{[^}]*\}\})/i;
+/** Rule ids of the built-in secret detectors. */
+export const BUILTIN_SECRET_RULE_IDS: readonly string[] = [
+  ...SECRET_PATTERNS.map((pattern) => pattern.id),
+  URL_CREDENTIALS_DEFINITION.id,
+];
 
 const KNOWN_SECRET_PATTERNS = SECRET_PATTERNS.filter(
   (pattern) => pattern.id !== "secret-generic-assignment",
@@ -121,12 +123,15 @@ export function isPrivateKeyBoundary(value: string): boolean {
   );
 }
 
-function isPlaceholder(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.length < 8) return true;
-  if (PLACEHOLDER_PATTERN.test(trimmed)) return true;
-  if (/^(.)\1+$/.test(trimmed)) return true;
-  return false;
+/**
+ * A value in a provider token format (AWS, GitHub, Slack) that is an obvious
+ * placeholder: a vendor-documented example, one repeated character, or a
+ * token that contains a placeholder word. Such a token is reported with low
+ * confidence and the adjustment `placeholder-value`, never dropped. A real
+ * provider token is random, so it cannot be made to contain such a word.
+ */
+function isProviderPlaceholder(value: string): boolean {
+  return isPlaceholderSecret(value);
 }
 
 /**
@@ -174,8 +179,9 @@ function makeSecretFinding(
   evidence: string,
   remediation: string,
   confidence: Confidence = "high",
+  placeholder = false,
 ): Finding {
-  return createFinding({
+  const finding = createFinding({
     ruleId,
     title,
     category: "secrets",
@@ -191,6 +197,7 @@ function makeSecretFinding(
     provenance: { engine: "builtin-secrets", rule: ruleId },
     references: [cwe, "OWASP A07:2021"],
   });
+  return placeholder ? lowerConfidence(finding, ADJUSTMENT_PLACEHOLDER, "low") : finding;
 }
 
 /**
@@ -231,6 +238,8 @@ export interface SecretScanOptions {
  *   high-confidence formats can match a hex digest or base64 integrity hash,
  *   so lockfiles produce no hash false positives.
  * - Any other non-scannable file is not read.
+ * - Files recognised as the tool's own output (`toolOutput`) get every
+ *   detector too; only values that are already masked are passed over.
  *
  * Evidence is always redacted with `redactLine`, so other secrets on the same
  * line are masked as well.
@@ -266,6 +275,10 @@ export function scanSecrets(
     scannedFiles += 1;
     const lines = splitLines(content);
     const flags = sensitiveLines(lines);
+    // The tool's own reports quote evidence with the secret masked
+    // (`ab********yz`); a masked value is not reported again from there.
+    const maskedInOutput = (value: string): boolean =>
+      file.toolOutput === true && /\*{4,}/.test(value);
     const ruleRanges = options.lineRedactions?.(file.relPath);
 
     for (let index = 0; index < lines.length; index += 1) {
@@ -288,7 +301,6 @@ export function scanSecrets(
         const match = definition.pattern.exec(line);
         if (!match) continue;
         const secret = match[0];
-        if (isPlaceholder(secret)) continue;
         const evidence =
           definition.id === "secret-private-key"
             ? "[private key block detected; content redacted]"
@@ -303,6 +315,11 @@ export function scanSecrets(
             definition.cwe,
             evidence,
             definition.remediation,
+            "high",
+            // A token in a provider format is reported even when it is a
+            // documented example value (it used to be dropped): low
+            // confidence, adjustment `placeholder-value`.
+            definition.id !== "secret-private-key" && isProviderPlaceholder(secret),
           ),
         );
       }
@@ -311,7 +328,18 @@ export function scanSecrets(
       // (which reuse these global patterns) cannot disturb the iteration.
       for (const url of line.matchAll(URL_CREDENTIALS)) {
         const password = url[2] ?? "";
-        if (isUrlPasswordPlaceholder(password)) continue;
+        // A reference (`${PIP_PASSWORD}`, `{password}`, `%s`) is not a
+        // secret. Everything else is reported: a whole-value placeholder
+        // (`password`, `****`, `changeme`, one or two characters) with low
+        // confidence, any other value with full confidence.
+        const classified = classifySecretValue(password, {
+          minLiteral: 3,
+          credentialWords: true,
+        });
+        if (classified === "reference") continue;
+        if (maskedInOutput(password)) continue;
+        const urlClass =
+          password.length < 3 || /^\*+$/.test(password) ? "placeholder" : classified;
         // A vendor token in the URL is already reported by its own detector.
         if (matchesKnownSecret(password)) continue;
         const start = (url.index ?? 0) + (url[1] ?? "").length;
@@ -325,6 +353,8 @@ export function scanSecrets(
             URL_CREDENTIALS_DEFINITION.cwe,
             evidenceOf(start, start + password.length),
             URL_CREDENTIALS_DEFINITION.remediation,
+            "high",
+            urlClass === "placeholder",
           ),
         );
         break;
@@ -335,15 +365,23 @@ export function scanSecrets(
 
       for (const generic of line.matchAll(GENERIC_ASSIGNMENT)) {
         const value = generic[5] ?? "";
-        if (isPlaceholder(value)) continue;
         if (matchesKnownSecret(value)) continue;
-        if (shannonEntropy(value) < 3.0) continue;
-        // `db_password = "..."` and `"password": "..."` are matched since the
-        // broadened pattern; they carry more name-like and template values
-        // than a bare `password = "..."`, so those are filtered out.
+        if (maskedInOutput(value)) continue;
+        // Never dropped because of a placeholder word: a reference to the
+        // environment or a template is not a secret; a value that is a
+        // placeholder as a whole is reported with low confidence; a value
+        // that merely contains such a word is judged like any other.
+        const valueClass = classifySecretValue(value, { minLiteral: 8 });
+        if (valueClass === "reference") continue;
         const prefix = generic[1] ?? "";
         const broadened = prefix.endsWith("_") || (generic[3] ?? "") !== "";
-        if (broadened && isNonSecretValue(value)) continue;
+        if (valueClass === "value") {
+          if (shannonEntropy(value) < 3.0) continue;
+          // `db_password = "..."` and `"password": "..."` are matched since
+          // the broadened pattern; they carry more name-like and template
+          // values than a bare `password = "..."`, so those are filtered out.
+          if (broadened && isNonSecretValue(value)) continue;
+        }
 
         const definition = SECRET_PATTERNS.find(
           (pattern) => pattern.id === "secret-generic-assignment",
@@ -361,6 +399,7 @@ export function scanSecrets(
             evidenceOf(start, start + value.length),
             definition.remediation,
             broadened ? BROADENED_CONFIDENCE : "high",
+            valueClass === "placeholder",
           ),
         );
       }

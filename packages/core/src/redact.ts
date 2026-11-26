@@ -9,6 +9,8 @@
  * rule matched on that line). Over-redaction is harmless; a secret that reaches
  * a report is not.
  */
+import { classifySecretValue } from "./placeholder.js";
+
 
 /**
  * Split text into physical lines the way Python does: `\r\n`, a lone `\r` and
@@ -104,9 +106,10 @@ const URL_USERINFO =
 
 /** A URL password that is a variable reference or an obvious dummy. */
 export function isUrlPasswordReference(value: string): boolean {
-  if (/^[$%]/.test(value) || /^\*+$/.test(value) || /[{}]/.test(value)) return true;
-  if (/^<[^>]*>$/.test(value)) return true;
-  return false;
+  if (/^\*+$/.test(value) || /^<[^>]*>$/.test(value)) return true;
+  // Same decision as the URL-credential detector: only a run-time reference
+  // (`${VAR}`, `$VAR`, `{name}`, `%s`) is left readable.
+  return classifySecretValue(value, { minLiteral: 3 }) === "reference";
 }
 
 /**

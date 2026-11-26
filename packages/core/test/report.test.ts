@@ -65,6 +65,9 @@ describe("SARIF output", () => {
         sarifResult.properties.confidence,
       );
       expect(["finding", "hotspot"]).toContain(sarifResult.properties.kind);
+      expect(["sast", "secrets", "sca", "config"]).toContain(sarifResult.properties.category);
+      // Not suppressed in this run: an explicit empty array, never absent.
+      expect(sarifResult.suppressions).toEqual([]);
       if (sarifResult.properties.kind === "hotspot") {
         expect(sarifResult.level).toBe("note");
       }
@@ -92,17 +95,22 @@ describe("SARIF output", () => {
 describe("Markdown report", () => {
   it("defaults to English and contains no CJK characters", () => {
     expect(report).toContain("Source Code Security Audit Report");
-    expect(report).toContain("## 1. Cover");
-    expect(report).toContain("## 6. Review hotspots");
-    expect(report).toContain("## 9. Remediation Roadmap");
+    expect(report).toContain("## 1. Executive Summary");
+    expect(report).toContain("## 5. Review hotspots");
+    expect(report).toContain("### Remediation priorities");
     expect(report).toContain("Candidate results, not reviewed");
     expect(CJK.test(report)).toBe(false);
   });
 
   it("renders Chinese section headings with --lang zh", () => {
-    expect(zhReport).toContain("## 1. 封面");
-    expect(zhReport).toContain("## 6. 复核热点");
-    expect(zhReport).toContain("## 9. 修复路线图");
+    expect(zhReport).toContain("## 1. 执行摘要");
+    expect(zhReport).toContain("## 5. 复核热点");
+    expect(zhReport).toContain("### 修复优先级");
+    // Same structure in both languages.
+    const sections = (text: string): string[] =>
+      text.split("\n").filter((line) => line.startsWith("## ")).map((line) => line.slice(0, 5));
+    expect(sections(zhReport)).toEqual(sections(report));
+    expect(zhReport.split("\n").length).toBe(report.split("\n").length);
     expect(CJK.test(zhReport)).toBe(true);
   });
 
@@ -119,11 +127,31 @@ describe("Markdown report", () => {
     expect(escaped).not.toContain("](javascript:");
   });
 
-  it("lists all bundled rules in the appendix", () => {
-    for (const ruleId of ["cs-sql-injection", "dockerfile-no-user", "prompt-injection-ignore"]) {
-      expect(report).toContain(ruleId);
+  it("lists the rules that fired in the appendix and points to SARIF for the rest", () => {
+    const start = report.indexOf("Appendix: Rules triggered in this run");
+    expect(start).toBeGreaterThan(0);
+    const appendix = report.slice(start);
+    const fired = new Set([...result.findings, ...result.hotspots].map((finding) => finding.ruleId));
+    const listed = appendix
+      .split("\n")
+      .filter((line) => line.startsWith("| ") && !line.startsWith("| ---") && !line.startsWith("| Rule ID"))
+      .map((line) => (line.split(" | ")[0] ?? "").slice(2).replace(/\\/g, ""));
+    const bundled = new Set(listed);
+    expect(listed.length).toBeGreaterThan(10);
+    for (const ruleId of listed) expect(fired.has(ruleId), ruleId).toBe(true);
+    for (const ruleId of ["cs-sql-injection", "dockerfile-no-user"]) {
+      expect(bundled.has(ruleId), ruleId).toBe(true);
     }
+    expect(appendix).toMatch(/\d+ rules were loaded; only the \d+ that produced a finding or hotspot are listed/);
+    // The complete list stays available in SARIF.
+    const sarif = JSON.parse(
+      fs.readFileSync(path.join(result.runDir, "results.sarif"), "utf8"),
+    );
+    const sarifRules = sarif.runs[0].tool.driver.rules.map((rule: { id: string }) => rule.id);
+    expect(sarifRules).toContain("prompt-injection-ignore");
+    expect(sarifRules.length).toBeGreaterThan(listed.length);
   });
+
 
   it("aggregates multiple advisories for one package into one row", async () => {
     const project = path.join(temp, "sca-report");
@@ -178,8 +206,10 @@ describe("Markdown report", () => {
       path.join(scaScan.runDir, "report.md"),
       "utf8",
     );
-    expect(scaReport).toMatch(
-      /\| lodash \| 4\.17\.15 \| 2 \| critical \| 4\.17\.21 \|/,
+    const rows = scaReport.split("\n").filter((line) => line.startsWith("| lodash "));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatch(
+      /^\| lodash \| 4\.17\.15 \| \S+ \| \S+ \| 2 \| critical \| 4\.17\.21 \| GHSA-agg-1, GHSA-agg-2 \| package-lock\.json:\d+ \|$/,
     );
   });
 });

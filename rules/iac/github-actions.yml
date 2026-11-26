@@ -1,4 +1,11 @@
 version: 1
+definitions:
+  # Text between "${{" and the context that is being tested for. Bounded, and
+  # it cannot run past the end of the expression.
+  EXPR_OPEN: \$\{\{(?:(?!\}\})[^\n]){0,300}?
+  # Event fields whose text an outside contributor chooses (GitHub's list of
+  # untrusted input, plus discussions).
+  UNTRUSTED_FIELD: (?:github\.head_ref\b|github\.event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.(?:ref|label)|head\.repo\.default_branch)|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|author\.(?:name|email))|commits(?:\.\*|\[[^\]\n]{0,20}\])?\.(?:message|author\.(?:name|email))|pages(?:\.\*|\[[^\]\n]{0,20}\])?\.page_name|workflow_run\.(?:head_branch|head_commit\.message|display_title|pull_requests(?:\.\*|\[[^\]\n]{0,20}\])?\.head\.ref))\b)
 rules:
   - id: gha-pull-request-target
     title: GitHub Actions uses pull_request_target with checkout
@@ -19,6 +26,35 @@ rules:
     references:
       - CWE-829
       - OWASP A08:2021
+  # Script injection. "${{ ... }}" is expanded by the runner before the shell
+  # (or the JavaScript of actions/github-script) sees the text, so a value an
+  # attacker chooses becomes code. That is only true inside the body of a
+  # `run:` step or a `script:` input; the same expression in `with:`, `env:`,
+  # `if:` or `concurrency:` is passed as data and is not matched here
+  # (withinKeys). `script:` is treated as code for every action: all the
+  # actions that take such an input (github-script, ssh-action, ...) run it.
+  #
+  # How withinKeys is evaluated (packages/core/src/yamlValues.ts): the workflow
+  # is parsed and the patterns below are matched against the VALUE of every
+  # `run` / `script` key, wherever and however it is written (alias, flow
+  # mapping, quoted / escaped / tagged / anchored key, continued scalar).
+  # Before matching, each expression is put in a canonical form: one line,
+  # lower case, `github['event']['issue']` written as `github.event.issue`.
+  # An expression that reads `env.X` or `matrix.X` is followed by the
+  # expressions of the definitions of X in the enclosing step, job and
+  # workflow, so `env: { T: ${{ github.event.issue.title }} }` + `run: echo
+  # ${{ env.T }}` is reported on the `run` line. A shell variable (`$T`,
+  # `"${T}"`) is NOT reported: the shell receives it as data, which is the
+  # fix these rules recommend. A file that cannot be parsed (or exceeds the
+  # parser bounds) is matched line by line in full, with a warning.
+  #
+  # Severity policy, one rule each; the three share a group, so one line
+  # produces one result, the strongest:
+  #   - fields an outside contributor controls            -> high / high
+  #   - workflow_dispatch / workflow_call inputs           -> medium / medium
+  #     (triggering needs write access or a calling workflow)
+  #   - any other github.event field                       -> hotspot
+  #   - numeric ids and commit hashes (.number, .id, .sha) -> not reported
   - id: gha-script-injection
     title: GitHub Actions script injection
     title_zh: GitHub Actions 脚本注入
@@ -26,14 +62,65 @@ rules:
     confidence: high
     cwe: CWE-94
     owasp: A03:2021
+    group: gha-expression-injection
     languages:
       - yaml
-    pattern: \$\{\{\s*github\.event\.
+    pattern: "{{EXPR_OPEN}}{{UNTRUSTED_FIELD}}"
+    withinKeys:
+      - run
+      - script
     pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
-    message: Event fields are interpolated directly into a run script, allowing command injection.
-    message_zh: 事件字段直接插入 run 脚本，攻击者可构造命令注入。
-    remediation: Pass event fields through env, or handle them as data inside the script with strict quoting.
-    remediation_zh: 通过 env 传递事件字段，或在脚本中按数据处理并严格引用。
+    message: An event field that an outside contributor controls (title, body, branch name, commit message) is expanded into a run script before the shell parses it, allowing command injection.
+    message_zh: 外部贡献者可控的事件字段（标题、正文、分支名、提交信息）在 shell 解析前被展开进 run 脚本，可导致命令注入。
+    remediation: Pass the value through env (env FOO set to the expression) and use "$FOO" in the script, so the shell receives it as data.
+    remediation_zh: 通过 env 传递该值并在脚本中使用 "$FOO"，使 shell 将其作为数据处理。
+    references:
+      - CWE-94
+      - OWASP A03:2021
+      - https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#understanding-the-risk-of-script-injections
+  - id: gha-script-injection-input
+    title: GitHub Actions workflow input expanded into a script
+    title_zh: GitHub Actions 工作流输入被展开进脚本
+    severity: medium
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    group: gha-expression-injection
+    languages:
+      - yaml
+    pattern: "{{EXPR_OPEN}}(?<![\\w.])(?:github\\.event\\.)?inputs\\.[\\w-]+"
+    withinKeys:
+      - run
+      - script
+    filePattern: \bworkflow_dispatch\b|\bworkflow_call\b
+    pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
+    message: A workflow_dispatch / workflow_call input is expanded into a run script before the shell parses it. Whoever can start the workflow (write access, or a workflow that calls this one with data it does not control) can inject commands.
+    message_zh: workflow_dispatch / workflow_call 的输入在 shell 解析前被展开进 run 脚本；能够触发该工作流的人（写权限，或以不可信数据调用它的工作流）可以注入命令。
+    remediation: Pass the input through env and use the environment variable in the script.
+    remediation_zh: 通过 env 传递该输入，并在脚本中使用环境变量。
+    references:
+      - CWE-94
+      - OWASP A03:2021
+  - id: gha-event-field-in-script
+    title: GitHub Actions event field expanded into a script
+    title_zh: GitHub Actions 事件字段被展开进脚本
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    group: gha-expression-injection
+    languages:
+      - yaml
+    pattern: "{{EXPR_OPEN}}(?<![\\w.])github\\s*(?:\\.\\s*event\\b|\\[\\s*['\"]event['\"]\\s*\\])(?!(?:\\.[a-z_]+)*\\.(?:number|id|sha)\\b(?![\\w.\\[]))"
+    withinKeys:
+      - run
+      - script
+    pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
+    message: A github.event field is expanded into a run script. Check whether someone outside the project can choose its text; numeric ids and commit hashes are not reported.
+    message_zh: github.event 字段被展开进 run 脚本。请确认项目外部人员是否能控制其内容；数字 id 和提交哈希不会被报告。
+    remediation: Pass the value through env and use the environment variable in the script.
+    remediation_zh: 通过 env 传递该值，并在脚本中使用环境变量。
     references:
       - CWE-94
       - OWASP A03:2021

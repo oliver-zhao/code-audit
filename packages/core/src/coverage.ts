@@ -5,6 +5,8 @@ export interface CoverageFile {
   language: string;
   loc: number;
   engines: string[];
+  /** Path classification of the file; absent for ordinary source. */
+  pathContext?: "test" | "docs" | "example" | "vendored" | "generated";
 }
 
 export interface CoverageSkip {
@@ -44,6 +46,14 @@ export interface CoverageReport {
     line: number;
     reason: string;
   }>;
+  /**
+   * Files per path context, and whether findings in them had their
+   * confidence lowered (`--include-tests` turns that off).
+   */
+  pathContext?: {
+    lowering: boolean;
+    files: Record<"test" | "docs" | "example" | "vendored" | "generated", number>;
+  };
   /** Present when --since limited the report to changed files. */
   scope?: {
     since: string | null;

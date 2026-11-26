@@ -54,6 +54,15 @@ export const SuppressionSchema = z.object({
 });
 export type Suppression = z.infer<typeof SuppressionSchema>;
 
+export const PATH_CONTEXTS = ["test", "docs", "example", "vendored", "generated"] as const;
+
+/**
+ * What kind of non-product file a finding is in, decided from the file's path
+ * (and, for `generated`, a header comment). Absent for ordinary source.
+ */
+export const PathContextSchema = z.enum(PATH_CONTEXTS);
+export type PathContext = z.infer<typeof PathContextSchema>;
+
 export const FindingCategorySchema = z.enum([
   "sast",
   "secrets",
@@ -115,6 +124,27 @@ export const FindingSchema = z
     dependencyPath: z.string().optional(),
     reachable: z.enum(["yes", "no", "unknown"]).optional(),
     dependencyScope: z.enum(["runtime", "optional", "dev", "unknown"]).optional(),
+    /** Path classification of `file`; absent for ordinary source. */
+    pathContext: PathContextSchema.optional(),
+    /**
+     * The confidence the engine reported, present only when `confidence` was
+     * lowered because of `pathContext`, a placeholder value or a dev-only
+     * dependency. `adjustments` says why.
+     */
+    confidenceOriginal: ConfidenceSchema.optional(),
+    /**
+     * Machine-readable reasons `confidence` was lowered, in the order they
+     * were applied: `path-context:<context>`, `placeholder-value`,
+     * `dev-dependency`, `optional-dependency`. A reason is listed only when it
+     * changed the confidence.
+     */
+    adjustments: z.array(z.string()).optional(),
+    /**
+     * The confidence the scan left, present only while a `confirmed` or
+     * `likely` verdict has raised `confidence` (see `applyVerdictConfidence`
+     * in report.ts).
+     */
+    confidenceBeforeVerdict: ConfidenceSchema.optional(),
   })
   .passthrough();
 
@@ -155,6 +185,9 @@ export interface FindingInit {
   dependencyPath?: string;
   reachable?: "yes" | "no" | "unknown";
   dependencyScope?: "runtime" | "optional" | "dev" | "unknown";
+  pathContext?: PathContext;
+  confidenceOriginal?: Confidence;
+  adjustments?: string[];
 }
 
 /**
@@ -181,6 +214,42 @@ export function computeFingerprint(
     .createHash("sha256")
     .update(`${ruleId}\n${relativePath.split("\\").join("/")}\n${normalized}`)
     .digest("hex");
+}
+
+export const ADJUSTMENT_PLACEHOLDER = "placeholder-value";
+export const ADJUSTMENT_DEV_DEPENDENCY = "dev-dependency";
+export const ADJUSTMENT_OPTIONAL_DEPENDENCY = "optional-dependency";
+export const ADJUSTMENT_PATH_CONTEXT_PREFIX = "path-context:";
+
+/**
+ * Lower the confidence of a finding and record why. `to` is either one step
+ * down (high -> medium -> low) or straight to low. When the confidence does not
+ * change (it is already low) the finding is returned as is: an adjustment is
+ * recorded only when it had an effect. The finding is never dropped.
+ */
+export function lowerConfidence<T extends { confidence: Confidence; confidenceOriginal?: Confidence; adjustments?: string[] }>(
+  finding: T,
+  reason: string,
+  to: "step" | "low",
+): T {
+  const lowered: Confidence =
+    to === "low" || finding.confidence === "medium" ? "low" : finding.confidence === "high" ? "medium" : "low";
+  if (lowered === finding.confidence) return finding;
+  return {
+    ...finding,
+    confidence: lowered,
+    confidenceOriginal: finding.confidenceOriginal ?? finding.confidence,
+    adjustments: [...(finding.adjustments ?? []), reason],
+  };
+}
+
+/** Undo every confidence adjustment of a finding. */
+export function restoreConfidence<T extends { confidence: Confidence; confidenceOriginal?: Confidence; adjustments?: string[] }>(
+  finding: T,
+): T {
+  if (finding.confidenceOriginal === undefined && finding.adjustments === undefined) return finding;
+  const { confidenceOriginal, adjustments: _adjustments, ...rest } = finding;
+  return { ...(rest as unknown as T), confidence: confidenceOriginal ?? finding.confidence };
 }
 
 let tempCounter = 0;

@@ -1,11 +1,12 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { z } from "zod";
 import {
   assignFindingIds,
   computeFingerprint,
   createFinding,
   dedupeFindings,
-  isActionable,
   sortFindings,
   type Confidence,
   type Finding,
@@ -17,14 +18,23 @@ import {
   type InventoryResult,
   type InventoryFile,
 } from "./inventory.js";
-import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
+import { defaultRulesDir, LATEST_OUTPUT_FILES, TOOL_VERSION } from "./meta.js";
+import { countPathContexts } from "./pathContext.js";
 import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
 import {
+  applyVerdictConfidence,
+  buildReportContext,
+  countAdjustments,
+  findingsJsonRun,
   renderFindingsJson,
   renderMarkdown,
   renderSarif,
+  runPolicy,
+  summarizeRun,
+  summaryCountFields,
+  type FindingSummary,
   type ReportContext,
-  type ReportLang,
+  type RunPolicy,
 } from "./report.js";
 import { loadRules, redactionsForFile, type LoadedRule, type RuleSet } from "./rules.js";
 import {
@@ -40,6 +50,27 @@ import {
   splitLines,
   type RedactRange,
 } from "./redact.js";
+import {
+  AgentFindingsSchema,
+  CoverageSchema,
+  FindingsEnvelopeSchema,
+  MAX_RUN_FILE_BYTES,
+  RunFileError,
+  RunIndexSchema,
+  RunRecordSchema,
+  RunStateSchema,
+  VerdictsSchema,
+  parseRunFile,
+} from "./runSchemas.js";
+import {
+  SafeFsError,
+  canonicalPath,
+  ensureDirInside,
+  isPathInside,
+  printable,
+  readFileNoFollow,
+  writeFileAtomicNoFollow,
+} from "./safeFs.js";
 
 export class RunStoreError extends Error {
   readonly code: string;
@@ -116,133 +147,525 @@ export interface VerdictsDocument {
 
 export type CurrentVerdicts = Record<string, VerdictRecord>;
 
+/** How the audit root of a loaded run was established. */
+export type RunRootSource =
+  /** The run directory is `<root>/.audit/<run-id>`: the root is where it sits. */
+  | "location"
+  /** The user named the root on this command line (`--root`, MCP `root`). */
+  | "confirmed";
+
 export interface LoadedRun {
+  /** Canonical path of the run directory. */
   runDir: string;
   runId: string;
-  root: string;
+  /**
+   * The audit root, or undefined when the run directory does not show which
+   * project it belongs to and the user has not named one. It never comes
+   * from the content of the run directory alone. Commands that read project
+   * files get it through `requireAuditRoot`.
+   */
+  root: string | undefined;
+  rootSource?: RunRootSource;
+  /** The root written in run.json, for display only; not trusted. */
+  recordedRoot?: string;
   run: Record<string, unknown>;
   findings: Finding[];
   hotspots: Finding[];
+  /** coverage.json, validated; empty when missing or invalid (see `requireCoverage`). */
   coverage: Record<string, unknown>;
   state: RunState | undefined;
   verdicts: CurrentVerdicts;
   verdictsDocument: VerdictsDocument;
+  /** Things the user should see about this run (printed as warnings). */
+  notices: string[];
+  /** Shared across copies of this object; holds what is loaded on demand. */
+  session: RunSession;
 }
 
-function writeJsonAtomic(file: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(temp, file);
+interface RunSession {
+  /** `--rules` of this command line. */
+  rulesDir?: string;
+  ruleSet?: RuleSet | null;
+  rootProblem?: string;
+  coverageProblem?: string;
 }
 
-function readJson<T>(file: string): T | undefined {
+/** Run ids are one path component: letters, digits, `.`, `_`, `-`. */
+const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+function isRunId(value: string): boolean {
+  return RUN_ID_PATTERN.test(value) && value !== "latest";
+}
+
+function storeError(error: unknown): never {
+  if (error instanceof RunFileError) throw new RunStoreError(error.message, error.code);
+  if (error instanceof SafeFsError) throw new RunStoreError(error.message, error.code);
+  throw error;
+}
+
+/** Write a file of the tool into `dir`, which must be a canonical path. */
+function writeText(dir: string, name: string, text: string): string {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+    return writeFileAtomicNoFollow(path.join(dir, name), text, { expectedDir: dir });
   } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === "ENOENT") return undefined;
-    throw new RunStoreError(
-      `cannot read ${path.basename(file)} in ${path.dirname(file)}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      "RUN_STORE_READ",
-    );
+    return storeError(error);
   }
 }
 
-export function writeRunState(runDir: string, state: RunState): void {
-  writeJsonAtomic(path.join(runDir, "state.json"), state);
-}
-
-export function readRunState(runDir: string): RunState | undefined {
-  return readJson<RunState>(path.join(runDir, "state.json"));
-}
-
-function indexFile(projectRoot: string): string {
-  return path.join(projectRoot, ".audit", "index.json");
-}
-
-export function registerRunIndex(
-  projectRoot: string,
-  entry: RunIndexEntry,
-): void {
-  const file = indexFile(projectRoot);
-  const existing = readJson<RunIndexDocument>(file) ?? {
-    schemaVersion: 1 as const,
-    runs: [],
-  };
-  const runs = existing.runs.filter((run) => run.runId !== entry.runId);
-  runs.push(entry);
-  runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  writeJsonAtomic(file, { schemaVersion: 1, runs } satisfies RunIndexDocument);
-}
-
-function maybeAddRunIndex(
-  document: LoadedRun,
-  entry: RunIndexEntry,
-): void {
-  const file = indexFile(document.root);
-  const existing = readJson<RunIndexDocument>(file);
-  if (!existing) return;
-  const runs = existing.runs.filter((run) => run.runId !== entry.runId);
-  runs.push(entry);
-  writeJsonAtomic(file, { schemaVersion: 1, runs } satisfies RunIndexDocument);
-}
-
-function isRunDirectory(candidate: string): boolean {
-  return fs.existsSync(path.join(candidate, "run.json"));
-}
-
-export interface ResolveRunOptions {
-  /** Extra project roots to search for `.audit/index.json`. */
-  roots?: string[];
-  cwd?: string;
+function writeJson(dir: string, name: string, value: unknown): string {
+  return writeText(dir, name, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 /**
- * Resolve a run id or a run directory. Runs started by the MCP server or the
- * CLI with the default output live under `<root>/.audit/<run-id>` and are also
- * listed in `<root>/.audit/index.json`.
+ * Read and validate a JSON file of a run directory or of `.audit`. Returns
+ * undefined when the file does not exist. A symbolic link, an oversized file,
+ * invalid JSON or a document that does not match the schema is an error with
+ * a one-line message.
  */
-export function resolveRunDir(
-  ref: string,
-  options: ResolveRunOptions = {},
-): string {
+function readRunFile<S extends z.ZodTypeAny>(
+  dir: string,
+  name: string,
+  schema: S,
+): z.infer<S> | undefined {
+  const label = `${name} in ${dir}`;
+  try {
+    const buffer = readFileNoFollow(path.join(dir, name), MAX_RUN_FILE_BYTES);
+    if (buffer === undefined) return undefined;
+    return parseRunFile(buffer.toString("utf8"), schema, label);
+  } catch (error) {
+    if (error instanceof SafeFsError) {
+      throw new RunStoreError(`cannot use ${label}: ${error.message}`, "RUN_STORE_READ");
+    }
+    return storeError(error);
+  }
+}
+
+/** `runDir` must be the canonical path of the run directory. */
+export function writeRunState(runDir: string, state: RunState): void {
+  writeJson(runDir, "state.json", state);
+}
+
+export function readRunState(runDir: string): RunState | undefined {
+  return readRunFile(runDir, "state.json", RunStateSchema);
+}
+
+/** Where a scan writes: see `prepareRunOutput`. */
+export interface RunOutput {
+  /** Canonical path of the new run directory. */
+  runDir: string;
+  /** Canonical path of the directory that holds run directories and `latest/`. */
+  outDir: string;
+  /** The directory no write may leave: the audit root, or an external `--out`. */
+  base: string;
+  /** True when the output directory is inside the audit root. */
+  insideRoot: boolean;
+}
+
+/**
+ * The part of `target` below the audit root when one of its ancestors is the
+ * root under any spelling (a symlinked parent, `/tmp` vs `/private/tmp`).
+ */
+function relativeToRoot(rootReal: string, target: string): string | undefined {
+  let current = target;
+  for (;;) {
+    try {
+      if (canonicalPath(current) === rootReal) return path.relative(current, target);
+    } catch {
+      // does not exist (yet): look further up
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/**
+ * Create the run directory of a scan.
+ *
+ * The default output `<root>/.audit` and any `--out` located inside the audit
+ * root are created one component at a time below the root: when `.audit`, the
+ * `--out` directory or a component of it is a symbolic link that leaves the
+ * root, the scan is refused instead of writing the run somewhere else. An
+ * `--out` outside the root is a directory the user named and is used as is;
+ * nothing below it may leave it either.
+ */
+export function prepareRunOutput(
+  root: string,
+  out: string | undefined,
+  runId: string,
+): RunOutput {
+  if (!isRunId(runId)) {
+    throw new RunStoreError(`invalid run id: ${printable(runId)}`, "INVALID_RUN_ID");
+  }
+  try {
+    const rootReal = canonicalPath(root);
+    let base = rootReal;
+    let outDir: string;
+    if (out === undefined) {
+      outDir = ensureDirInside(rootReal, path.join(rootReal, ".audit"));
+    } else {
+      const absolute = path.resolve(out);
+      const relative = relativeToRoot(rootReal, absolute);
+      if (relative !== undefined) {
+        outDir = ensureDirInside(rootReal, path.join(rootReal, relative));
+      } else {
+        fs.mkdirSync(absolute, { recursive: true });
+        outDir = canonicalPath(absolute);
+        if (!isPathInside(rootReal, outDir)) base = outDir;
+      }
+    }
+    const runDir = ensureDirInside(base, path.join(outDir, runId));
+    return { runDir, outDir, base, insideRoot: base === rootReal };
+  } catch (error) {
+    return storeError(error);
+  }
+}
+
+/**
+ * Copy report files of a run to `<outDir>/latest/` (`--latest-link`). The
+ * copies are regular files written through `writeFileAtomicNoFollow`: a
+ * symbolic link planted at `latest/report.md` is replaced, never written
+ * through, and a `latest` that is a link leaving the output base is refused.
+ */
+export function writeLatestCopies(output: RunOutput, names: readonly string[]): string {
+  try {
+    const latestDir = ensureDirInside(output.base, path.join(output.outDir, "latest"));
+    for (const name of names) {
+      if (!LATEST_OUTPUT_FILES.has(name)) continue;
+      const buffer = readFileNoFollow(path.join(output.runDir, name), MAX_RUN_FILE_BYTES);
+      if (buffer === undefined) continue;
+      writeFileAtomicNoFollow(path.join(latestDir, name), buffer, { expectedDir: latestDir });
+    }
+    return latestDir;
+  } catch (error) {
+    return storeError(error);
+  }
+}
+
+/** Write a file of a scan into its run directory (canonical path). */
+export function writeRunFile(runDir: string, name: string, text: string): string {
+  return writeText(runDir, name, text);
+}
+
+/** Entries kept in `.audit/index.json`. */
+const MAX_INDEX_RUNS = 500;
+
+interface AuditDir {
+  /** Canonical audit root. */
+  root: string;
+  /** Canonical path of `<root>/.audit`. */
+  auditDir: string;
+}
+
+/**
+ * `<root>/.audit` of a project root, when it exists. Throws when `.audit` is
+ * a symbolic link that leaves the root: run directories behind such a link
+ * belong to something else.
+ */
+function auditDirOf(rootInput: string): AuditDir | undefined {
+  let root: string;
+  try {
+    root = canonicalPath(path.resolve(rootInput));
+  } catch {
+    return undefined;
+  }
+  const candidate = path.join(root, ".audit");
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(candidate);
+  } catch {
+    return undefined;
+  }
+  let auditDir = candidate;
+  if (stat.isSymbolicLink()) {
+    try {
+      auditDir = canonicalPath(candidate);
+    } catch {
+      return undefined;
+    }
+    if (auditDir === root || !isPathInside(root, auditDir)) {
+      throw new RunStoreError(
+        `${candidate} is a symbolic link that leaves the project (-> ${auditDir}); refusing to use the run directories behind it`,
+        "RUN_DIR_ESCAPE",
+      );
+    }
+  }
+  try {
+    if (!fs.statSync(auditDir).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return { root, auditDir };
+}
+
+function hasRunJson(dir: string): boolean {
+  try {
+    return fs.lstatSync(path.join(dir, "run.json")).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The run directory `candidate` (a path at or below an audit directory) when
+ * its canonical path is a directory inside that audit directory. A symbolic
+ * link that leads anywhere else is refused: it would make `verdict`,
+ * `add-finding` and `report` write into another project's run.
+ */
+function runInAuditDir(audit: AuditDir, candidate: string): string | undefined {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(candidate);
+  } catch {
+    return undefined;
+  }
+  let real: string;
+  try {
+    real = canonicalPath(candidate);
+  } catch {
+    return undefined;
+  }
+  if (real === audit.auditDir || !isPathInside(audit.auditDir, real)) {
+    throw new RunStoreError(
+      stat.isSymbolicLink()
+        ? `${candidate} is a symbolic link that leaves ${audit.auditDir} (-> ${real}); refusing to use it as a run directory`
+        : `${candidate} is not inside ${audit.auditDir}; refusing to use it as a run directory`,
+      "RUN_DIR_ESCAPE",
+    );
+  }
+  try {
+    if (!fs.statSync(real).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return real;
+}
+
+function readIndex(audit: AuditDir): { document?: RunIndexDocument; problem?: string } {
+  try {
+    const document = readRunFile(audit.auditDir, "index.json", RunIndexSchema);
+    return document ? { document } : {};
+  } catch (error) {
+    return { problem: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Index entries for the run directories that are really in `.audit`. */
+function rebuildIndex(audit: AuditDir): RunIndexEntry[] {
+  const runs: RunIndexEntry[] = [];
+  let names: string[];
+  try {
+    names = fs.readdirSync(audit.auditDir).filter(isRunId).sort().reverse();
+  } catch {
+    return runs;
+  }
+  for (const name of names.slice(0, MAX_INDEX_RUNS)) {
+    const dir = path.join(audit.auditDir, name);
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) continue;
+      const state = readRunState(dir);
+      if (!state || state.runId !== name) continue;
+      runs.push({
+        runId: name,
+        runDir: dir,
+        root: audit.root,
+        phase: state.phase,
+        startedAt: state.startedAt,
+        updatedAt: state.updatedAt,
+      });
+    } catch {
+      // not a readable run directory: leave it out
+    }
+  }
+  return runs;
+}
+
+/**
+ * Add or replace the entry of a run in `<projectRoot>/.audit/index.json`.
+ * An index that is not valid is rebuilt from the run directories in `.audit`.
+ * Returns warnings for the caller to show.
+ */
+export function registerRunIndex(
+  projectRoot: string,
+  entry: RunIndexEntry,
+): string[] {
+  const warnings: string[] = [];
+  let audit: AuditDir;
+  try {
+    const root = canonicalPath(projectRoot);
+    audit = { root, auditDir: ensureDirInside(root, path.join(root, ".audit")) };
+  } catch (error) {
+    return storeError(error);
+  }
+  const { document, problem } = readIndex(audit);
+  let existing: RunIndexEntry[];
+  if (document) {
+    existing = document.runs;
+  } else {
+    existing = problem ? rebuildIndex(audit) : [];
+    if (problem) {
+      warnings.push(
+        `.audit/index.json was not valid and has been rebuilt from the run directories (${problem})`,
+      );
+    }
+  }
+  const runs = existing.filter((run) => run.runId !== entry.runId);
+  runs.push(entry);
+  runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  writeJson(audit.auditDir, "index.json", {
+    schemaVersion: 1,
+    runs: runs.slice(0, MAX_INDEX_RUNS),
+  } satisfies RunIndexDocument);
+  return warnings;
+}
+
+export interface ResolveRunOptions {
+  /** Extra project roots whose `.audit` is searched for a run id. */
+  roots?: string[];
+  cwd?: string;
+  /**
+   * The audit root the user named on this command line (`--root`, MCP
+   * `root`). Its `.audit` is searched first, and it confirms the root of a
+   * run directory that does not sit at `<root>/.audit/<run-id>`.
+   */
+  root?: string;
+  /** Rules directory named on this command line (`--rules`). */
+  rulesDir?: string;
+  /** Accept run ids only, never a path (the MCP tools). */
+  idsOnly?: boolean;
+}
+
+export interface ResolvedRun {
+  /** Canonical path of the run directory. */
+  runDir: string;
+  /**
+   * The directory that contains `.audit` when the run directory is
+   * `<root>/.audit/<run-id>`; undefined for a run directory anywhere else.
+   */
+  derivedRoot?: string;
+}
+
+/**
+ * Resolve a run id or a run directory.
+ *
+ * A run id is looked up only as `<root>/.audit/<run-id>` of the current
+ * directory, of `options.root` and of `options.roots`. A path is the run
+ * directory the user named. In both cases the canonical run directory must be
+ * a real directory: under `.audit` it has to stay inside the canonical
+ * `<root>/.audit`, and a path that is itself a symbolic link is refused, so a
+ * link planted in a repository cannot direct a command at another project's
+ * run. `.audit/index.json` is consulted for ids, under the same rule.
+ */
+export function resolveRun(ref: string, options: ResolveRunOptions = {}): ResolvedRun {
   const value = ref.trim();
   if (!value) throw new RunStoreError("run id or run directory is required", "RUN_ID_REQUIRED");
+  const shown = printable(value);
 
-  const direct = path.resolve(value);
-  if (fs.existsSync(direct) && fs.statSync(direct).isDirectory()) {
-    if (isRunDirectory(direct)) return direct;
+  if (!options.idsOnly) {
+    const direct = path.resolve(options.cwd ?? process.cwd(), value);
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.lstatSync(direct);
+    } catch {
+      stat = undefined;
+    }
+    if (stat && (stat.isDirectory() || stat.isSymbolicLink())) {
+      if (path.basename(path.dirname(direct)) === ".audit") {
+        const audit = auditDirOf(path.dirname(path.dirname(direct)));
+        const runDir = audit
+          ? runInAuditDir(audit, path.join(audit.auditDir, path.basename(direct)))
+          : undefined;
+        if (audit && runDir && hasRunJson(runDir)) return { runDir, derivedRoot: audit.root };
+        throw new RunStoreError(
+          `not an audit run directory (missing run.json): ${shown}`,
+          "RUN_NOT_FOUND",
+        );
+      }
+      let real: string;
+      try {
+        real = canonicalPath(direct);
+      } catch {
+        throw new RunStoreError(`audit run not found: ${shown}`, "RUN_NOT_FOUND");
+      }
+      if (stat.isSymbolicLink()) {
+        throw new RunStoreError(
+          `${shown} is a symbolic link (-> ${real}); pass the run directory itself`,
+          "RUN_DIR_ESCAPE",
+        );
+      }
+      if (!hasRunJson(real)) {
+        throw new RunStoreError(
+          `not an audit run directory (missing run.json): ${shown}`,
+          "RUN_NOT_FOUND",
+        );
+      }
+      // The same directory reached through another spelling of its path.
+      if (path.basename(path.dirname(real)) === ".audit") {
+        const audit = auditDirOf(path.dirname(path.dirname(real)));
+        if (audit && audit.auditDir === path.dirname(real)) {
+          return { runDir: real, derivedRoot: audit.root };
+        }
+      }
+      return { runDir: real };
+    }
+  }
+
+  if (!isRunId(value)) {
     throw new RunStoreError(
-      `not an audit run directory (missing run.json): ${value}`,
+      options.idsOnly
+        ? `audit run not found: ${shown} (a run id is expected, not a path)`
+        : `audit run not found: ${shown}`,
       "RUN_NOT_FOUND",
     );
   }
 
   const searchRoots = [
+    ...(options.root ? [options.root] : []),
     options.cwd ?? process.cwd(),
     ...(options.roots ?? []),
   ];
+  const audits: AuditDir[] = [];
+  let refusal: RunStoreError | undefined;
   for (const root of searchRoots) {
-    const candidate = path.join(path.resolve(root), ".audit", value);
-    if (isRunDirectory(candidate)) return candidate;
+    try {
+      const audit = auditDirOf(root);
+      if (!audit || audits.some((known) => known.auditDir === audit.auditDir)) continue;
+      audits.push(audit);
+      const runDir = runInAuditDir(audit, path.join(audit.auditDir, value));
+      if (runDir && hasRunJson(runDir)) return { runDir, derivedRoot: audit.root };
+    } catch (error) {
+      if (!(error instanceof RunStoreError)) throw error;
+      refusal ??= error;
+    }
   }
-  for (const root of searchRoots) {
-    const index = readJson<RunIndexDocument>(indexFile(path.resolve(root)));
-    const entry = index?.runs.find((run) => run.runId === value);
-    if (entry && isRunDirectory(entry.runDir)) return entry.runDir;
+  for (const audit of audits) {
+    const entry = readIndex(audit).document?.runs.find((run) => run.runId === value);
+    if (!entry) continue;
+    // The index is a file in the project, so it is not trusted to name a
+    // directory anywhere on the machine: every run it lists was written to
+    // `<root>/.audit/`, and only such a directory is accepted.
+    try {
+      const runDir = runInAuditDir(audit, path.resolve(audit.root, entry.runDir));
+      if (runDir && hasRunJson(runDir)) return { runDir, derivedRoot: audit.root };
+    } catch (error) {
+      if (!(error instanceof RunStoreError)) throw error;
+      refusal ??= error;
+    }
   }
+  if (refusal) throw refusal;
+  throw new RunStoreError(`audit run not found: ${shown}`, "RUN_NOT_FOUND");
+}
 
-  // A bare id can also be a path relative to the current directory.
-  if (isRunDirectory(direct)) return direct;
-  throw new RunStoreError(`audit run not found: ${value}`, "RUN_NOT_FOUND");
+export function resolveRunDir(
+  ref: string,
+  options: ResolveRunOptions = {},
+): string {
+  return resolveRun(ref, options).runDir;
 }
 
 export function readVerdicts(runDir: string): VerdictsDocument {
   return (
-    readJson<VerdictsDocument>(path.join(runDir, "verdicts.json")) ?? {
+    readRunFile(runDir, "verdicts.json", VerdictsSchema) ?? {
       schemaVersion: 1,
       runId: path.basename(runDir),
       entries: [],
@@ -251,7 +674,8 @@ export function readVerdicts(runDir: string): VerdictsDocument {
 }
 
 export function currentVerdicts(document: VerdictsDocument): CurrentVerdicts {
-  const current: CurrentVerdicts = {};
+  // No prototype: a fingerprint is a key chosen by a file in the repository.
+  const current = Object.create(null) as CurrentVerdicts;
   for (const entry of document.entries) {
     current[entry.fingerprint] = entry;
   }
@@ -259,10 +683,7 @@ export function currentVerdicts(document: VerdictsDocument): CurrentVerdicts {
 }
 
 function readAgentFindings(runDir: string): Finding[] {
-  const document = readJson<{ findings?: Finding[] }>(
-    path.join(runDir, "agent-findings.json"),
-  );
-  return document?.findings ?? [];
+  return readRunFile(runDir, "agent-findings.json", AgentFindingsSchema)?.findings ?? [];
 }
 
 function loadInventoryForRun(root: string): InventoryResult {
@@ -270,27 +691,81 @@ function loadInventoryForRun(root: string): InventoryResult {
 }
 
 /**
+ * A hash of the rule files of a rule set (paths relative to the rules
+ * directory, and contents). Recorded in run.json by the scan; a later command
+ * compares it with the rule set it loaded.
+ */
+export function ruleSetHash(ruleSet: RuleSet): string {
+  const hash = crypto.createHash("sha256");
+  const files = [...ruleSet.files].sort();
+  for (const file of files) {
+    hash.update(path.relative(ruleSet.rulesDir, file).split(path.sep).join("/"));
+    hash.update("\0");
+    try {
+      hash.update(fs.readFileSync(file));
+    } catch {
+      hash.update("<unreadable>");
+    }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * The rule set a command after the scan works with: the rules bundled with
+ * the tool, or the directory given with `--rules` on that command line. The
+ * `rulesDir` written in run.json is never loaded: that file is part of the
+ * audited repository and could name rules prepared by its author. When the
+ * rule set in use is not the one the run was scanned with, a notice says so.
+ */
+function runRuleSet(run: LoadedRun): RuleSet | null {
+  const session = run.session;
+  if (session.ruleSet !== undefined) return session.ruleSet;
+  const explicit = session.rulesDir;
+  const dir = explicit ?? defaultRulesDir();
+  let ruleSet: RuleSet | null;
+  try {
+    ruleSet = loadRules(dir);
+  } catch (error) {
+    // A directory the user named must load; the bundled rules degrade.
+    if (explicit !== undefined) throw error;
+    ruleSet = null;
+  }
+  session.ruleSet = ruleSet;
+  if (ruleSet) {
+    const recordedHash = run.run.rulesHash;
+    const recordedDir = run.run.rulesDir;
+    if (typeof recordedHash === "string") {
+      if (recordedHash !== ruleSetHash(ruleSet)) {
+        run.notices.push(
+          `the rule set in use (${ruleSet.rulesDir}) is not the one this run was scanned with` +
+            (typeof recordedDir === "string" ? ` (run.json names ${printable(recordedDir)})` : "") +
+            "; redaction and rule details come from the rules in use. Pass --rules <dir> to choose the rule set.",
+        );
+      }
+    } else if (typeof recordedDir === "string" && path.resolve(recordedDir) !== ruleSet.rulesDir) {
+      run.notices.push(
+        `run.json names the rules directory ${printable(recordedDir)}; a path from a run file is not loaded. Using ${ruleSet.rulesDir}. Pass --rules <dir> to choose the rule set.`,
+      );
+    }
+  }
+  return ruleSet;
+}
+
+/**
  * Redaction of source lines shown outside a scan (read, search, agent-added
  * findings). Uses the shared `redactLine`, the multi-line state of
- * `sensitiveLines`, and what the run's `redactEvidence` rules match in the
- * file, so these tools mask exactly what the scan masks.
+ * `sensitiveLines`, and what the `redactEvidence` rules of the rule set in
+ * use match in the file, so these tools mask what the scan masks.
  */
 class SourceRedactor {
-  private ruleSet: RuleSet | null | undefined;
   private readonly ranges = new Map<string, Map<number, RedactRange[]>>();
 
-  constructor(private readonly rulesDir: string) {}
+  constructor(private readonly ruleSet: RuleSet | null) {}
 
   private rangesFor(entry: InventoryFile): Map<number, RedactRange[]> {
     const cached = this.ranges.get(entry.relPath);
     if (cached) return cached;
-    if (this.ruleSet === undefined) {
-      try {
-        this.ruleSet = loadRules(this.rulesDir);
-      } catch {
-        this.ruleSet = null;
-      }
-    }
     let result = new Map<number, RedactRange[]>();
     if (this.ruleSet && entry.scannable) {
       try {
@@ -302,7 +777,6 @@ class SourceRedactor {
     this.ranges.set(entry.relPath, result);
     return result;
   }
-
   /**
    * A function that redacts line `index` (zero-based) of `lines`. With
    * `evidence` the line is trimmed and cut like scan evidence (starting at
@@ -345,25 +819,109 @@ class SourceRedactor {
   }
 }
 
-function sourceRedactor(run: { run: Record<string, unknown> }): SourceRedactor {
-  return new SourceRedactor(
-    typeof run.run.rulesDir === "string" ? run.run.rulesDir : defaultRulesDir(),
-  );
+function sourceRedactor(run: LoadedRun): SourceRedactor {
+  return new SourceRedactor(runRuleSet(run));
+}
+
+function recordedRootOf(run: Record<string, unknown>): string | undefined {
+  const args = run.args as Record<string, unknown> | undefined;
+  if (typeof args?.resolvedRoot === "string" && args.resolvedRoot) return args.resolvedRoot;
+  if (typeof args?.root === "string" && args.root) return args.root;
+  return undefined;
+}
+
+function canonicalIfAbsolute(target: string | undefined): string | undefined {
+  if (target === undefined || !path.isAbsolute(target)) return undefined;
+  try {
+    return canonicalPath(target);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The audit root of a run.
+ *
+ * It is taken from where the run directory is, never from what the run
+ * directory contains: for `<root>/.audit/<run-id>` it is the directory that
+ * contains `.audit`. A run directory anywhere else (an external `--out`, a
+ * copy) does not show which project it belongs to; the root written in its
+ * run.json is used only when the user names the same directory with `--root`
+ * (compared as canonical paths). Otherwise the run has no root, and the
+ * commands that read project files refuse.
+ */
+function establishRoot(
+  resolved: ResolvedRun,
+  run: Record<string, unknown>,
+  options: ResolveRunOptions,
+  notices: string[],
+  session: RunSession,
+): { root: string | undefined; rootSource?: RunRootSource; recordedRoot?: string } {
+  const recordedRoot = recordedRootOf(run);
+  const recordedReal = canonicalIfAbsolute(recordedRoot);
+  const derived = resolved.derivedRoot;
+  const shownRecorded = recordedRoot === undefined ? "none" : printable(recordedRoot);
+
+  if (options.root !== undefined && options.root !== "") {
+    const named = validateAuditRoot(options.root).root;
+    if (named === derived) return { root: named, rootSource: "location", recordedRoot };
+    if (recordedReal !== undefined && named === recordedReal) {
+      return { root: named, rootSource: "confirmed", recordedRoot };
+    }
+    throw new RunStoreError(
+      `--root ${named} is neither the directory that contains this run (${
+        derived ?? `none: ${resolved.runDir} is not at <root>/.audit/<run-id>`
+      }) nor the root recorded in its run.json (${shownRecorded})`,
+      "ROOT_MISMATCH",
+    );
+  }
+  if (derived !== undefined) {
+    if (recordedRoot !== undefined && recordedReal !== derived) {
+      notices.push(
+        `run.json records the audit root ${shownRecorded}; the root in use is ${derived}, the directory that contains this run`,
+      );
+    }
+    return { root: derived, rootSource: "location", recordedRoot };
+  }
+  session.rootProblem =
+    `the audit root of this run is not established: ${resolved.runDir} is not at <root>/.audit/<run-id>, ` +
+    `and the root named in its run.json (${shownRecorded}) is not trusted on its own. ` +
+    "Pass --root <dir> (MCP: the root argument) with that directory to confirm it.";
+  return { root: undefined, recordedRoot };
+}
+
+/** The audit root of a run, for commands that read files of the project. */
+export function requireAuditRoot(run: LoadedRun): string {
+  if (run.root === undefined) {
+    throw new RunStoreError(
+      run.session.rootProblem ?? "the audit root of this run is not established",
+      "ROOT_UNCONFIRMED",
+    );
+  }
+  return validateAuditRoot(run.root).root;
+}
+
+/** coverage.json of a run, validated; an error when it is missing or invalid. */
+function requireCoverage(run: LoadedRun): ReportContext["coverage"] {
+  if (run.session.coverageProblem !== undefined) {
+    throw new RunStoreError(run.session.coverageProblem, "RUN_STORE_CORRUPT");
+  }
+  return run.coverage as unknown as ReportContext["coverage"];
 }
 
 export function loadRun(
   ref: string,
   options: ResolveRunOptions = {},
 ): LoadedRun {
-  const runDir = resolveRunDir(ref, options);
-  const run = readJson<Record<string, unknown>>(path.join(runDir, "run.json"));
+  const resolved = resolveRun(ref, options);
+  const runDir = resolved.runDir;
+  const run = readRunFile(runDir, "run.json", RunRecordSchema) as
+    | Record<string, unknown>
+    | undefined;
   if (!run) {
     throw new RunStoreError(`run.json is missing in ${runDir}`, "RUN_NOT_FOUND");
   }
-  const envelope = readJson<{
-    findings?: Finding[];
-    hotspots?: Finding[];
-  }>(path.join(runDir, "findings.json"));
+  const envelope = readRunFile(runDir, "findings.json", FindingsEnvelopeSchema);
   const baseFindings = envelope?.findings ?? [];
   const baseHotspots = envelope?.hotspots ?? [];
   const added = readAgentFindings(runDir);
@@ -372,16 +930,29 @@ export function loadRun(
   const hotspots = baseHotspots.filter(
     (hotspot) => !addedFingerprints.has(hotspot.fingerprint),
   );
-  const coverage =
-    readJson<Record<string, unknown>>(path.join(runDir, "coverage.json")) ?? {};
+  const notices: string[] = [];
+  const session: RunSession = {
+    ...(options.rulesDir !== undefined && options.rulesDir !== ""
+      ? { rulesDir: options.rulesDir }
+      : {}),
+  };
+  let coverage: Record<string, unknown> = {};
+  try {
+    const document = readRunFile(runDir, "coverage.json", CoverageSchema);
+    if (document) coverage = document as Record<string, unknown>;
+    else session.coverageProblem = `coverage.json is missing in ${runDir}`;
+  } catch (error) {
+    if (!(error instanceof RunStoreError)) throw error;
+    // Only the Markdown and SARIF reports need it: they fail with this message.
+    session.coverageProblem = error.message;
+  }
   const state = readRunState(runDir);
   const verdictsDocument = readVerdicts(runDir);
-  const root = runRoot(run);
   const runId = typeof run.runId === "string" ? run.runId : path.basename(runDir);
   return {
     runDir,
     runId,
-    root,
+    ...establishRoot(resolved, run, options, notices, session),
     run,
     findings,
     hotspots,
@@ -389,31 +960,29 @@ export function loadRun(
     state,
     verdicts: currentVerdicts(verdictsDocument),
     verdictsDocument,
+    notices,
+    session,
   };
 }
 
-function runRoot(run: Record<string, unknown>): string {
-  const args = run.args as Record<string, unknown> | undefined;
-  const resolved = args?.resolvedRoot;
-  if (typeof resolved === "string") return validateAuditRoot(resolved).root;
-  if (typeof args?.root === "string") return validateAuditRoot(args.root).root;
-  throw new RunStoreError("run.json has no audit root", "RUN_STORE_CORRUPT");
+/**
+ * A stored record with the current verdict of the run applied: the status of
+ * the verdict, and the confidence that status implies (`applyVerdictConfidence`
+ * raises a confidence the scan lowered when a reviewer confirmed the finding,
+ * and restores the scan's value when a later verdict says otherwise). Every
+ * reader - `findings`, `status`, the reports, the files - sees this form.
+ */
+function withVerdict(run: LoadedRun, finding: Finding): Finding {
+  const verdict = run.verdicts[finding.fingerprint];
+  return applyVerdictConfidence(verdict ? { ...finding, status: verdict.status } : finding);
 }
 
 export function effectiveFindings(run: LoadedRun): Finding[] {
-  const apply = (finding: Finding): Finding => {
-    const verdict = run.verdicts[finding.fingerprint];
-    return verdict ? { ...finding, status: verdict.status } : finding;
-  };
-  return run.findings.map(apply);
+  return run.findings.map((finding) => withVerdict(run, finding));
 }
 
 export function effectiveHotspots(run: LoadedRun): Finding[] {
-  const apply = (finding: Finding): Finding => {
-    const verdict = run.verdicts[finding.fingerprint];
-    return verdict ? { ...finding, status: verdict.status } : finding;
-  };
-  return run.hotspots.map(apply);
+  return run.hotspots.map((finding) => withVerdict(run, finding));
 }
 
 function findTarget(run: LoadedRun, target: string): Finding {
@@ -441,6 +1010,7 @@ export interface RecordVerdictInput {
 
 export interface RecordVerdictResult {
   runId: string;
+  runDir: string;
   fingerprint: string;
   findingId: string;
   status: VerdictStatus;
@@ -448,6 +1018,9 @@ export interface RecordVerdictResult {
   history: number;
   reviewed: number;
   total: number;
+  /** Derived files re-rendered with this verdict applied. */
+  refreshed: string[];
+  notices: string[];
 }
 
 export function recordVerdict(
@@ -471,7 +1044,6 @@ export function recordVerdict(
   }
   const run = loadRun(ref, options);
   const finding = findTarget(run, target);
-  const document = run.verdictsDocument;
   const entry: VerdictRecord = {
     fingerprint: finding.fingerprint,
     findingId: finding.id,
@@ -486,13 +1058,22 @@ export function recordVerdict(
     ...(input.actor ? { actor: input.actor } : {}),
     ...(input.reviewer ? { reviewer: input.reviewer } : {}),
   };
-  document.entries.push(entry);
-  document.runId = run.runId;
-  writeJsonAtomic(path.join(run.runDir, "verdicts.json"), document);
+  const document: VerdictsDocument = {
+    schemaVersion: 1,
+    runId: run.runId,
+    entries: [...run.verdictsDocument.entries, entry],
+  };
   const current = currentVerdicts(document);
+  const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
+  // Every derived file is rendered before anything is written, so a run that
+  // cannot be rendered is left as it was.
+  const artifacts = renderDerived(updated);
+  writeJson(run.runDir, "verdicts.json", document);
+  const refreshed = writeDerived(updated, artifacts);
   const total = run.findings.length + run.hotspots.length;
   return {
     runId: run.runId,
+    runDir: run.runDir,
     fingerprint: finding.fingerprint,
     findingId: finding.id,
     status: input.status,
@@ -502,6 +1083,8 @@ export function recordVerdict(
     ).length,
     reviewed: Object.keys(current).length,
     total,
+    refreshed,
+    notices: run.notices,
   };
 }
 
@@ -592,6 +1175,9 @@ export interface ReadSnippetResult {
   truncated: boolean;
   content: string;
   lines: Array<{ number: number; text: string }>;
+  /** The audit root the file was read from. */
+  root: string;
+  notices: string[];
 }
 
 const MAX_SNIPPET_LINES = 400;
@@ -612,7 +1198,8 @@ export function readSnippet(
   options: ResolveRunOptions = {},
 ): ReadSnippetResult {
   const run = loadRun(ref, options);
-  const inv = loadInventoryForRun(run.root);
+  const root = requireAuditRoot(run);
+  const inv = loadInventoryForRun(root);
   const entry = findInventoryFile(inv, file);
   if (!entry) {
     throw new RunStoreError(
@@ -626,7 +1213,7 @@ export function readSnippet(
       "FILE_TOO_LARGE",
     );
   }
-  const absolute = resolveInside(run.root, entry.relPath);
+  const absolute = resolveInside(root, entry.relPath);
   const text = fs.readFileSync(absolute, "utf8");
   const allLines = splitLines(text);
   const totalLines = allLines.length;
@@ -657,6 +1244,8 @@ export function readSnippet(
     truncated,
     content: lines.map((line) => line.text).join("\n"),
     lines,
+    root,
+    notices: run.notices,
   };
 }
 
@@ -680,6 +1269,9 @@ export interface SearchResult {
   truncated: boolean;
   searchedFiles: number;
   pattern: string;
+  /** The audit root that was searched. */
+  root: string;
+  notices: string[];
 }
 
 const MAX_PATTERN_LENGTH = 256;
@@ -746,6 +1338,7 @@ export function searchCode(
   options: ResolveRunOptions = {},
 ): SearchResult {
   const run = loadRun(ref, options);
+  const root = requireAuditRoot(run);
   const pattern = input.pattern;
   if (!pattern) {
     throw new RunStoreError("search pattern is required", "PATTERN_REQUIRED");
@@ -758,7 +1351,7 @@ export function searchCode(
     1,
     Math.min(MAX_SEARCH_RESULTS, input.maxResults ?? 50),
   );
-  const inv = loadInventoryForRun(run.root);
+  const inv = loadInventoryForRun(root);
   const matches: SearchMatch[] = [];
   const redactor = sourceRedactor(run);
   let truncated = false;
@@ -773,7 +1366,7 @@ export function searchCode(
       truncated = true;
       break;
     }
-    const absolute = resolveInside(run.root, entry.relPath);
+    const absolute = resolveInside(root, entry.relPath);
     const text = fs.readFileSync(absolute, "utf8");
     consumed += Buffer.byteLength(text, "utf8");
     searchedFiles += 1;
@@ -803,6 +1396,8 @@ export function searchCode(
     truncated,
     searchedFiles,
     pattern,
+    root,
+    notices: run.notices,
   };
 }
 
@@ -826,8 +1421,12 @@ export interface AddFindingInput {
 
 export interface AddFindingResult {
   runId: string;
+  runDir: string;
   finding: Finding;
   promoted: boolean;
+  /** Derived files re-rendered with the new finding. */
+  refreshed: string[];
+  notices: string[];
 }
 
 function nextFindingId(existing: Finding[], year: number): string {
@@ -971,7 +1570,8 @@ export function addFinding(
     if (!input.cwe?.trim()) {
       throw new RunStoreError("cwe is required", "CWE_REQUIRED");
     }
-    const inv = loadInventoryForRun(run.root);
+    const root = requireAuditRoot(run);
+    const inv = loadInventoryForRun(root);
     const entry = findInventoryFile(inv, input.file);
     if (!entry) {
       throw new RunStoreError(
@@ -1003,7 +1603,7 @@ export function addFinding(
     const ruleId = input.ruleId ?? `agent-${slugify(input.title)}`;
     const maskedValues: string[] = [];
     const evidence = readEvidenceForRange(
-      run.root,
+      root,
       entry,
       sourceRedactor(run),
       isCredentialFinding({ cwe: input.cwe, title: input.title, ruleId }),
@@ -1049,46 +1649,78 @@ export function addFinding(
   }
   const existing = readAgentFindings(run.runDir);
   const merged = dedupeFindings([...existing, finding]);
-  writeJsonAtomic(path.join(run.runDir, "agent-findings.json"), {
-    schemaVersion: 1,
-    runId: run.runId,
-    findings: merged,
-  });
-
   const allFindings = sortFindings(dedupeFindings([...run.findings, ...merged]));
   const remainingHotspots = run.hotspots.filter(
     (hotspot) => hotspot.fingerprint !== finding.fingerprint,
   );
-  writeJsonAtomic(
-    path.join(run.runDir, "findings.json"),
-    {
-      schemaVersion: 1,
-      run: {
-        runId: run.runId,
-        tool: { name: TOOL_NAME, version: TOOL_VERSION },
-        findingCounts: countBySeverity(allFindings),
-        hotspotCount: remainingHotspots.length,
-      },
-      findings: allFindings,
-      hotspots: remainingHotspots,
-    },
-  );
-  return { runId: run.runId, finding, promoted };
+  // findings.json keeps its `run` record (identity, thresholds, baseline);
+  // it, the counts in run.json and the reports the run has are rendered again
+  // with the new finding and the recorded verdicts, before anything is
+  // written.
+  const updated: LoadedRun = { ...run, findings: allFindings, hotspots: remainingHotspots };
+  const artifacts = renderDerived(updated);
+  writeJson(run.runDir, "agent-findings.json", {
+    schemaVersion: 1,
+    runId: run.runId,
+    findings: merged,
+  });
+  const refreshed = writeDerived(updated, artifacts);
+  return {
+    runId: run.runId,
+    runDir: run.runDir,
+    finding,
+    promoted,
+    refreshed,
+    notices: run.notices,
+  };
 }
 
-function countBySeverity(findings: Finding[]): Record<string, number> {
-  const counts: Record<string, number> = {
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    info: 0,
+/** findings.json of a stored run with its verdicts applied. */
+function findingsJsonText(run: LoadedRun): string {
+  return renderFindingsJson(
+    { ...findingsJsonRun(run.run), review: reviewStats(run) },
+    effectiveFindings(run),
+    effectiveHotspots(run),
+  );
+}
+
+/**
+ * The counting model applied to a stored run: its findings and hotspots with
+ * the recorded verdicts, counted with the policy recorded in run.json. Every
+ * later command (`status`, `report`, the MCP tools) gets its numbers here.
+ */
+export function runSummary(run: LoadedRun): FindingSummary {
+  return summarizeRun(run.run, effectiveFindings(run), effectiveHotspots(run));
+}
+
+export interface RunSummaryFields {
+  /** Headline: active findings at confidence >= the run's `--min-confidence`. */
+  findings: number;
+  /** The headline by severity. */
+  findingCounts: FindingSummary["headline"]["bySeverity"];
+  /** Active findings below the threshold; never part of `findings`. */
+  lowConfidenceCandidates: number;
+  /** Active hotspots (not suppressed, not marked false positive). */
+  hotspots: number;
+  /** Every stored record whatever its status; `reviewed` / `unreviewed` refer to these. */
+  records: { findings: number; hotspots: number };
+  /** The thresholds and switches the run was scanned with. */
+  policy: RunPolicy;
+  summary: FindingSummary;
+}
+
+/** The count fields shared by `status` and `report --format summary`. */
+export function runSummaryFields(run: LoadedRun): RunSummaryFields {
+  const counts = summaryCountFields(runSummary(run));
+  return {
+    findings: counts.findings,
+    findingCounts: counts.findingCounts,
+    lowConfidenceCandidates: counts.lowConfidenceCandidates,
+    hotspots: counts.hotspotCount,
+    records: { findings: run.findings.length, hotspots: run.hotspots.length },
+    policy: runPolicy(run.run),
+    summary: counts.summary,
   };
-  for (const finding of findings) {
-    if (!isActionable(finding)) continue;
-    counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
-  }
-  return counts;
 }
 
 export interface ReviewStats {
@@ -1119,6 +1751,8 @@ export type ReportOutputFormat = "md" | "json" | "sarif" | "summary";
 export interface RunReportResult {
   runId: string;
   runDir: string;
+  /** The audit root in use, when established; see `LoadedRun.root`. */
+  root?: string;
   format: ReportOutputFormat;
   text: string;
   reviewed: number;
@@ -1126,31 +1760,26 @@ export interface RunReportResult {
   falsePositive: number;
   total: number;
   path?: string;
+  /** Every file this call wrote (the requested one and the refreshed ones). */
+  refreshed: string[];
+  notices: string[];
 }
 
-function reportRules(run: LoadedRun): LoadedRule[] {
-  const dir =
-    typeof run.run.rulesDir === "string" ? run.run.rulesDir : defaultRulesDir();
+const REPORT_FILE: Record<Exclude<ReportOutputFormat, "summary">, string> = {
+  md: "report.md",
+  json: "findings.json",
+  sarif: "results.sarif",
+};
+
+function existsNoFollow(file: string): boolean {
   try {
-    return loadRules(dir).rules;
+    return !fs.lstatSync(file).isDirectory();
   } catch {
-    return [];
+    return false;
   }
 }
 
-export function renderRunReport(
-  ref: string,
-  format: ReportOutputFormat = "summary",
-  options: ResolveRunOptions = {},
-): RunReportResult {
-  const run = loadRun(ref, options);
-  const stats = reviewStats(run);
-  const findings = effectiveFindings(run);
-  const hotspots = effectiveHotspots(run);
-  const args = (run.run.args ?? {}) as Record<string, unknown>;
-  const tool = (run.run.tool ?? {}) as Record<string, unknown>;
-  const lang: ReportLang = args.lang === "zh" ? "zh" : "en";
-  const coverage = run.coverage as unknown as ReportContext["coverage"];
+function reportContextOf(run: LoadedRun): ReportContext {
   const reviewerSet = new Set<string>();
   for (const entry of run.verdictsDocument.entries) {
     if (entry.reviewer) reviewerSet.add(entry.reviewer);
@@ -1164,86 +1793,147 @@ export function renderRunReport(
     reviewers.length > 0 ||
     run.verdictsDocument.entries.length > 0 ||
     run.findings.some((finding) => finding.provenance.engine === "agent");
-  const summary = {
-    runId: run.runId,
-    phase: run.state?.phase ?? "complete",
-    findings: findings.filter(isActionable).length,
-    hotspots: hotspots.length,
-    reviewed: stats.reviewed,
-    unreviewed: stats.unreviewed,
-    falsePositive: stats.falsePositive,
-    findingCounts: countBySeverity(findings),
-    warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],
+  return buildReportContext(run.run, {
+    findings: effectiveFindings(run),
+    hotspots: effectiveHotspots(run),
+    coverage: requireCoverage(run),
+    rules: runRuleSet(run)?.rules ?? [],
+    reviewStats: reviewStats(run),
+    reviewers,
+    agentReviewed,
+  });
+}
+
+interface DerivedArtifacts {
+  /** The run with the refreshed run.json record. */
+  run: LoadedRun;
+  /** File name in the run directory -> new text. */
+  files: Map<string, string>;
+}
+
+/**
+ * Everything in a run directory that is computed from the findings, the
+ * agent-added findings and the verdicts: findings.json, the counts in
+ * run.json, and report.md / results.sarif when the run has them (or when
+ * `also` asks for them). All of it comes from the one counting model, with
+ * the verdicts applied, so `status`, the files and the reports cannot
+ * disagree. Nothing is written here.
+ */
+function renderDerived(
+  run: LoadedRun,
+  also: ReadonlyArray<Exclude<ReportOutputFormat, "summary">> = [],
+): DerivedArtifacts {
+  const findings = effectiveFindings(run);
+  const hotspots = effectiveHotspots(run);
+  const { findings: _headline, ...countFields } = summaryCountFields(
+    summarizeRun(run.run, findings, hotspots),
+  );
+  const record: Record<string, unknown> = {
+    ...run.run,
+    ...countFields,
+    pathContext: countPathContexts(findings),
+    adjustments: countAdjustments(findings),
+    review: reviewStats(run),
   };
+  const current: LoadedRun = { ...run, run: record };
+  const files = new Map<string, string>();
+  files.set("run.json", `${JSON.stringify(record, null, 2)}\n`);
+  files.set("findings.json", findingsJsonText(current));
+  const wants = (format: "md" | "sarif"): boolean =>
+    also.includes(format) || existsNoFollow(path.join(run.runDir, REPORT_FILE[format]));
+  if (wants("md") || wants("sarif")) {
+    const context = reportContextOf(current);
+    if (wants("md")) files.set("report.md", renderMarkdown(context));
+    if (wants("sarif")) files.set("results.sarif", renderSarif(context));
+  }
+  return { run: current, files };
+}
+
+/**
+ * Write what `renderDerived` produced: into the run directory and, when
+ * `<out>/latest/` holds copies of this very run, over those copies as well.
+ * Returns the paths written.
+ */
+function writeDerived(run: LoadedRun, artifacts: DerivedArtifacts): string[] {
+  const written: string[] = [];
+  for (const [name, text] of artifacts.files) {
+    written.push(writeText(run.runDir, name, text));
+  }
+  const latestDir = path.join(path.dirname(run.runDir), "latest");
+  let latest: fs.Stats | undefined;
+  try {
+    latest = fs.lstatSync(latestDir);
+  } catch {
+    latest = undefined;
+  }
+  if (!latest) return written;
+  if (!latest.isDirectory()) {
+    run.notices.push(`${latestDir} is not a directory; the copies in it were not refreshed`);
+    return written;
+  }
+  let latestRunId: unknown;
+  try {
+    const envelope = readRunFile(latestDir, "findings.json", FindingsEnvelopeSchema) as
+      | { run?: { runId?: unknown } }
+      | undefined;
+    latestRunId = envelope?.run?.runId;
+  } catch {
+    latestRunId = undefined;
+  }
+  // `latest/` may hold another (newer) run: only copies of this run change.
+  if (latestRunId !== run.runId) return written;
+  for (const name of LATEST_OUTPUT_FILES) {
+    const text = artifacts.files.get(name);
+    if (text === undefined || !existsNoFollow(path.join(latestDir, name))) continue;
+    written.push(writeText(latestDir, name, text));
+  }
+  return written;
+}
+
+export function renderRunReport(
+  ref: string,
+  format: ReportOutputFormat = "summary",
+  options: ResolveRunOptions = {},
+): RunReportResult {
+  const run = loadRun(ref, options);
+  const stats = reviewStats(run);
+  const warnings = Array.isArray(run.run.warnings) ? run.run.warnings : [];
 
   let text: string;
   let outputPath: string | undefined;
+  let refreshed: string[] = [];
   if (format === "summary") {
-    text = JSON.stringify(summary, null, 2);
-  } else if (format === "json") {
-    text = renderFindingsJson(
+    const runRecord = run.run as { baseline?: unknown; scope?: unknown };
+    text = JSON.stringify(
       {
         runId: run.runId,
-        tool,
-        startedAt: run.run.startedAt,
-        finishedAt: run.run.finishedAt,
-        durationMs: run.run.durationMs,
-        rulesCount: run.run.rulesCount,
-        profile: args.profile ?? "standard",
-        offline: Boolean(args.offline),
-        failOn: args.failOn ?? "high",
-        minConfidence: args.minConfidence ?? "medium",
-        findingCounts: summary.findingCounts,
-        confidenceCounts: (run.run.confidenceCounts ?? {}) as Record<string, number>,
-        suppressedCount: run.run.suppressedCount ?? 0,
-        warnings: summary.warnings,
-        review: stats,
+        runDir: run.runDir,
+        root: run.root ?? null,
+        phase: run.state?.phase ?? "complete",
+        ...runSummaryFields(run),
+        reviewed: stats.reviewed,
+        unreviewed: stats.unreviewed,
+        falsePositive: stats.falsePositive,
+        ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
+        ...(runRecord.scope ? { scope: runRecord.scope } : {}),
+        warnings,
       },
-      findings,
-      hotspots,
+      null,
+      2,
     );
   } else {
-    const context: ReportContext = {
-      runId: run.runId,
-      target:
-        typeof args.root === "string"
-          ? args.root
-          : typeof run.run.resolvedRoot === "string"
-            ? run.run.resolvedRoot
-            : run.root,
-      startedAt: typeof run.run.startedAt === "string" ? run.run.startedAt : "",
-      finishedAt: typeof run.run.finishedAt === "string" ? run.run.finishedAt : "",
-      durationMs:
-        typeof run.run.durationMs === "number" ? run.run.durationMs : 0,
-      toolVersion:
-        typeof tool.version === "string" ? tool.version : TOOL_VERSION,
-      nodeVersion:
-        typeof tool.node === "string" ? tool.node : process.version,
-      profile: typeof args.profile === "string" ? args.profile : "standard",
-      offline: Boolean(args.offline),
-      lang,
-      rules: reportRules(run),
-      findings,
-      hotspots,
-      coverage,
-      warnings: summary.warnings,
-      reviewStats: stats,
-      reviewers,
-      agentReviewed,
-    };
-    if (format === "md") {
-      text = renderMarkdown(context);
-      outputPath = path.join(run.runDir, "report.md");
-    } else {
-      text = renderSarif(context);
-      outputPath = path.join(run.runDir, "results.sarif");
-    }
-    fs.writeFileSync(outputPath, text, "utf8");
+    // The requested file is written and every other derived file of the run
+    // is refreshed with it, all from the same state.
+    const artifacts = renderDerived(run, [format]);
+    refreshed = writeDerived(run, artifacts);
+    text = artifacts.files.get(REPORT_FILE[format]) ?? "";
+    outputPath = path.join(run.runDir, REPORT_FILE[format]);
   }
 
   return {
     runId: run.runId,
     runDir: run.runDir,
+    ...(run.root !== undefined ? { root: run.root } : {}),
     format,
     text,
     reviewed: stats.reviewed,
@@ -1251,6 +1941,8 @@ export function renderRunReport(
     falsePositive: stats.falsePositive,
     total: stats.total,
     ...(outputPath ? { path: outputPath } : {}),
+    refreshed,
+    notices: run.notices,
   };
 }
 
@@ -1259,24 +1951,29 @@ export function runStatus(ref: string, options: ResolveRunOptions = {}) {
   const stats = reviewStats(run);
   const runRecord = run.run as {
     baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
+    scope?: { since: string; changedFiles: number };
   };
   return {
     runId: run.runId,
     runDir: run.runDir,
-    root: run.root,
+    /** Where the run directory is; null when that does not show the project. */
+    root: run.root ?? null,
+    rootSource: run.rootSource ?? null,
+    ...(run.recordedRoot !== undefined ? { recordedRoot: run.recordedRoot } : {}),
     phase: run.state?.phase ?? "unknown",
     startedAt: run.state?.startedAt ?? run.run.startedAt,
     finishedAt: run.state?.finishedAt ?? run.run.finishedAt,
     updatedAt: run.state?.updatedAt,
     progress: run.state?.progress,
     error: run.state?.error,
-    findings: run.findings.length,
-    hotspots: run.hotspots.length,
+    // Headline numbers of the counting model; `records` are the raw totals.
+    ...runSummaryFields(run),
     reviewed: stats.reviewed,
     unreviewed: stats.unreviewed,
     falsePositive: stats.falsePositive,
-    findingCounts: countBySeverity(effectiveFindings(run)),
     ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
+    ...(runRecord.scope ? { scope: runRecord.scope } : {}),
     warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],
+    notices: run.notices,
   };
 }

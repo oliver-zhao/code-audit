@@ -3,12 +3,17 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CoverageReport, CoverageEngine } from "./coverage.js";
 import {
+  ADJUSTMENT_DEV_DEPENDENCY,
+  ADJUSTMENT_OPTIONAL_DEPENDENCY,
+  ADJUSTMENT_PLACEHOLDER,
+  PATH_CONTEXTS,
   assignFindingIds,
   assignHotspotIds,
   createFinding,
+  lowerConfidence,
+  restoreConfidence,
   dedupeFindings,
   disambiguateFingerprints,
-  isActionable,
   sortFindings,
   type Confidence,
   type Finding,
@@ -18,7 +23,25 @@ import { inventory, type InventoryResult } from "./inventory.js";
 import { SOURCE_LANGUAGES, type Language } from "./language.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
 import { validateAuditRoot } from "./pathJail.js";
-import { renderFindingsJson, renderMarkdown, renderSarif, type ReportLang } from "./report.js";
+import {
+  applyPathContext,
+  countPathContexts,
+  type PathContextFile,
+} from "./pathContext.js";
+import {
+  buildReportContext,
+  countAdjustments,
+  findingsJsonRun,
+  renderFindingsJson,
+  renderMarkdown,
+  renderSarif,
+  singleLineText,
+  summarizeRun,
+  summaryCountFields,
+  type FindingSummary,
+  type ReportLang,
+  type RepositoryControls,
+} from "./report.js";
 import {
   loadRules,
   scanRules,
@@ -28,7 +51,14 @@ import {
   type RuleSet,
 } from "./rules.js";
 import { isCredentialFinding, redactText } from "./redact.js";
-import { registerRunIndex, writeRunState } from "./runstore.js";
+import {
+  prepareRunOutput,
+  registerRunIndex,
+  ruleSetHash,
+  writeLatestCopies,
+  writeRunFile,
+  writeRunState,
+} from "./runstore.js";
 import { runSca, manifestLockfileIssues, type HttpClient, type ScaResult } from "./sca.js";
 import { scanSecrets } from "./secrets.js";
 import {
@@ -60,6 +90,7 @@ import {
 } from "./external/index.js";
 
 export { defaultRulesDir, TOOL_NAME, TOOL_VERSION };
+export type { RepositoryControls };
 
 export type ReportFormat = "md" | "json" | "sarif";
 export const ALL_FORMATS: ReportFormat[] = ["md", "json", "sarif"];
@@ -120,7 +151,50 @@ export interface ScanOptions {
   baselineOutput?: string;
   /** Copy the produced report files to `<out>/latest/` after a successful write. */
   latestLink?: boolean;
+  /**
+   * Do not lower the confidence of findings in test, docs, example, vendored
+   * and generated files. The path context is still recorded on each finding.
+   */
+  includeTests?: boolean;
+  /** Do not lower the confidence of advisories in dev-only dependencies. */
+  includeDev?: boolean;
+  /**
+   * Report secrets whose value looks like a placeholder (`changeme`,
+   * `AKIA...EXAMPLE`) at the detector's normal confidence.
+   */
+  includePlaceholders?: boolean;
+  /**
+   * Audit of a repository that is not trusted. Turns off everything the
+   * audited repository could use to lower what counts toward the exit code:
+   * implies `noIgnoreFile`, `noBaseline`, `noInlineIgnore`, `includeTests`,
+   * `includeDev` and `includePlaceholders`, scans default-excluded directories
+   * (all but `.git`) and the tool's own adapter files.
+   */
+  untrusted?: boolean;
 }
+
+/** True when `file` is `root` or lies below it (both absolute). */
+function isInsideRoot(root: string, file: string): boolean {
+  let real = file;
+  try {
+    real = fs.realpathSync(file);
+  } catch {
+    real = path.resolve(file);
+  }
+  const relative = path.relative(root, real);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Configuration files of the external engines. Each engine reads its own from
+ * the directory it scans, so the audited repository can narrow what that
+ * engine reports; the scan says so when one is present.
+ */
+const EXTERNAL_CONTROL_FILES: ReadonlyArray<{ engines: EngineName[]; files: string[] }> = [
+  { engines: ["gitleaks"], files: [".gitleaks.toml", ".gitleaksignore"] },
+  { engines: ["opengrep", "semgrep"], files: [".semgrepignore"] },
+  { engines: ["osv-scanner"], files: ["osv-scanner.toml"] },
+];
 
 export interface ScanResult {
   runId: string;
@@ -130,6 +204,11 @@ export interface ScanResult {
   coverage: CoverageReport;
   warnings: string[];
   run: Record<string, unknown>;
+  /**
+   * The counting model applied with the policy recorded in `run.args`; the
+   * same object as `run.summary` and `run.summary` in findings.json.
+   */
+  summary: FindingSummary;
   durationMs: number;
 }
 
@@ -145,30 +224,6 @@ function categoryFor(rule: LoadedRule, language: Language): "sast" | "config" {
   return SOURCE_LANGUAGES.includes(language) ? "sast" : "config";
 }
 
-function countSeverities(findings: Finding[]): Record<string, number> {
-  const counts: Record<string, number> = {
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    info: 0,
-  };
-  for (const finding of findings) {
-    if (!isActionable(finding)) continue;
-    counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
-  }
-  return counts;
-}
-
-function countConfidences(findings: Finding[]): Record<string, number> {
-  const counts: Record<string, number> = { high: 0, medium: 0, low: 0 };
-  for (const finding of findings) {
-    if (!isActionable(finding)) continue;
-    counts[finding.confidence] = (counts[finding.confidence] ?? 0) + 1;
-  }
-  return counts;
-}
-
 function buildCoverage(
   inv: InventoryResult,
   ruleSet: RuleSet,
@@ -178,7 +233,14 @@ function buildCoverage(
   warnings: string[],
   suppressed: CoverageReport["suppressed"],
   scope?: { outOfScope: number; sinceRef?: string; changedFileCount: number },
+  pathContextLowering = true,
 ): CoverageReport {
+  const pathContextFiles = Object.fromEntries(
+    PATH_CONTEXTS.map((context) => [context, 0]),
+  ) as NonNullable<CoverageReport["pathContext"]>["files"];
+  for (const file of inv.files) {
+    if (file.pathContext) pathContextFiles[file.pathContext] += 1;
+  }
   const scannedFiles = inv.files.map((file) => {
     const fileEngines: string[] = [];
     if (file.isLockfile) fileEngines.push("sca");
@@ -194,6 +256,7 @@ function buildCoverage(
       language: file.language,
       loc: file.loc,
       engines: fileEngines,
+      ...(file.pathContext ? { pathContext: file.pathContext } : {}),
     };
   });
 
@@ -211,6 +274,7 @@ function buildCoverage(
     rulesCount: ruleSet.rules.length,
     warnings,
     suppressed,
+    pathContext: { lowering: pathContextLowering, files: pathContextFiles },
     ...(scope
       ? {
           scope: {
@@ -296,14 +360,30 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const minConfidence = options.minConfidence ?? "medium";
   const ruleSet = loadRules(options.rulesDir ?? defaultRulesDir());
   const selected = resolveEngines(options);
+  // `--untrusted`: nothing the audited repository contains may lower the result.
+  const untrusted = options.untrusted === true;
+  const noIgnoreFile = untrusted || options.noIgnoreFile === true;
+  const noBaseline = untrusted || options.noBaseline === true;
+  const noInlineIgnore = untrusted || options.noInlineIgnore === true;
   const builtinEnabled = selected.has("builtin");
   const pathEnv = options.pathEnv;
 
   const runId = options.runId ?? makeRunId(started);
-  const runDir = options.out
-    ? path.join(path.resolve(options.out), runId)
-    : path.join(validated.root, ".audit", runId);
-  fs.mkdirSync(runDir, { recursive: true });
+  // The run directory is created below the audit root (or below an `--out`
+  // outside it) one component at a time: a `.audit`, `--out` or `latest` that
+  // is a symbolic link leaving that directory is refused, and every file is
+  // written without following a link at its path.
+  const output = prepareRunOutput(validated.root, options.out, runId);
+  const runDir = output.runDir;
+  // Runs in the project's own `.audit` are listed in `.audit/index.json`.
+  const indexed = ((): boolean => {
+    try {
+      return fs.realpathSync.native(path.join(validated.root, ".audit")) === output.outDir;
+    } catch {
+      return false;
+    }
+  })();
+  const outputWarnings: string[] = [];
   writeRunState(runDir, {
     schemaVersion: 1,
     runId,
@@ -314,6 +394,18 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     updatedAt: started.toISOString(),
     progress: { engine: "inventory" },
   });
+  if (indexed) {
+    outputWarnings.push(
+      ...registerRunIndex(validated.root, {
+        runId,
+        runDir,
+        root: validated.root,
+        phase: "running",
+        startedAt: started.toISOString(),
+        updatedAt: started.toISOString(),
+      }),
+    );
+  }
 
   try {
     return await executeScan();
@@ -329,16 +421,28 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       finishedAt: new Date().toISOString(),
       error: error instanceof Error ? error.message : String(error),
     });
+    if (indexed) {
+      registerRunIndex(validated.root, {
+        runId,
+        runDir,
+        root: validated.root,
+        phase: "failed",
+        startedAt: started.toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
     throw error;
   }
 
   async function executeScan(): Promise<ScanResult> {
-    const inv = inventory(validated.root);
+    const inv = inventory(validated.root, { ownRunDirs: [runDir], untrusted });
     const ruleScan = builtinEnabled
-      ? scanRules(inv.files, ruleSet, { inlineIgnore: !options.noInlineIgnore })
+      ? scanRules(inv.files, ruleSet, { inlineIgnore: !noInlineIgnore })
       : emptyRuleScan();
+    // Files recognised as the tool's own output are not matched against rules
+    // but still go through the secret detectors.
     const secretScan = builtinEnabled
-      ? scanSecrets(inv.files, {
+      ? scanSecrets([...inv.files, ...inv.toolOutput], {
           lineRedactions: (file) => ruleScan.redactions.get(file),
         })
       : emptySecretScan();
@@ -420,6 +524,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       : [];
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
+    warnings.push(...outputWarnings);
     if (ruleScan.suppressed.length > 0) {
       warnings.push(
         `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore comments in the audited repository; they are listed under suppressed findings (use --no-inline-ignore to report them as active)`,
@@ -675,11 +780,51 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
               : ""),
     });
 
-    const mergedSca = mergeScaFindings(scaResult.findings, externalSca);
+    // ---- Confidence adjustments (never drop, always say why) ----
+    // Path context: what the inventory knows about each file. A file reported
+    // only by an external engine (the inventory skipped it) is classified by
+    // its path alone.
+    const fileInfo = new Map<string, PathContextFile>();
+    for (const file of inv.files) {
+      fileInfo.set(file.relPath, {
+        pathContext: file.pathContext,
+        pathContextSource: file.pathContextSource,
+        kind: file.kind,
+        language: file.language,
+      });
+    }
+    const includeTests = untrusted || options.includeTests === true;
+    const includeDev = untrusted || options.includeDev === true;
+    const includePlaceholders = untrusted || options.includePlaceholders === true;
+    // Placeholder classification is made by the secret detectors; with
+    // `--include-placeholders` the detector's own confidence is kept.
+    const withPlaceholderPolicy = (finding: Finding): Finding =>
+      includePlaceholders && finding.adjustments?.includes(ADJUSTMENT_PLACEHOLDER)
+        ? restoreConfidence(finding)
+        : finding;
+    const withPathContext = (finding: Finding): Finding =>
+      applyPathContext(finding, fileInfo.get(finding.file), { includeTests });
+    // Dev-only dependencies: an advisory in build or test tooling rarely
+    // affects what is shipped. It becomes a low-confidence candidate (out of
+    // the headline and the exit code at the default threshold) and stays
+    // listed with full data; an optional dependency is lowered one step.
+    // `--include-dev` restores full weight for both.
+    const withDevScope = (finding: Finding): Finding => {
+      if (includeDev || finding.category !== "sca") return finding;
+      if (finding.dependencyScope === "dev") {
+        return lowerConfidence(finding, ADJUSTMENT_DEV_DEPENDENCY, "low");
+      }
+      if (finding.dependencyScope === "optional") {
+        return lowerConfidence(finding, ADJUSTMENT_OPTIONAL_DEPENDENCY, "step");
+      }
+      return finding;
+    };
+
+    const mergedSca = mergeScaFindings(scaResult.findings, externalSca).map(withDevScope);
     const mergedSastSecrets = crossEngineDedupe([
       ...ruleFindings,
-      ...secretScan.findings,
-      ...externalSastSecrets,
+      ...secretScan.findings.map(withPlaceholderPolicy),
+      ...externalSastSecrets.map(withPlaceholderPolicy),
     ]);
     const merged = dedupeFindings(
       disambiguateFingerprints([
@@ -687,7 +832,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         ...mergedSca,
         ...inlineSuppressedFindings,
       ]),
-    );
+    ).map(withPathContext);
     const sorted = sortFindings(merged);
     let findings = assignFindingIds(sorted, started.getUTCFullYear());
     let hotspots = assignHotspotIds(
@@ -698,7 +843,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
             ...lockfileHotspots,
             ...inlineSuppressedHotspots,
           ]),
-        ),
+        ).map(withPathContext),
       ),
       started.getUTCFullYear(),
     );
@@ -707,7 +852,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     const ignorePath = resolveIgnoreFile({
       root: validated.root,
       ignoreFile: options.ignoreFile,
-      noIgnoreFile: options.noIgnoreFile,
+      noIgnoreFile,
     });
     let ignoreEntries: IgnoreEntry[] = [];
     if (ignorePath) {
@@ -763,6 +908,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     if (options.since) {
       const scope = await listChangedFiles(validated.root, options.since, {
         pathEnv,
+        outputDir: path.dirname(runDir),
       });
       sinceRef = scope.ref;
       for (const warning of scope.warnings) warnings.push(warning);
@@ -782,7 +928,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     let baselinePath: string | undefined;
     let baselineCounts: BaselineComparison | undefined;
     let baselineFixed: BaselineEntry[] = [];
-    if (!options.noBaseline) {
+    if (!noBaseline) {
       const explicit = options.baseline
         ? path.isAbsolute(options.baseline)
           ? path.resolve(options.baseline)
@@ -803,6 +949,40 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       }
     }
 
+    // ---- What the audited repository itself contributed to the result ----
+    const repositoryControls: RepositoryControls = {
+      untrusted,
+      baselineFromRepository: baselinePath !== undefined && isInsideRoot(validated.root, baselinePath),
+      ignoreFileFromRepository:
+        ignorePath !== undefined &&
+        fs.existsSync(ignorePath) &&
+        isInsideRoot(validated.root, ignorePath),
+      // With `--untrusted` only the tool's own `.audit/` directory is left.
+      toolOutputFiles: untrusted ? 0 : inv.toolOutput.length + inv.toolOutputUnread,
+      excludedSourceFiles: inv.excludedSource,
+    };
+    if (inv.toolOutputUnread > 0) {
+      warnings.push(
+        `${inv.toolOutputUnread} file(s) recognised as code-audit output were too large or unreadable and were not scanned for secrets`,
+      );
+    }
+    for (const control of EXTERNAL_CONTROL_FILES) {
+      if (!control.engines.some((engine) => selected.has(engine))) continue;
+      const present = control.files.filter((name) => fs.existsSync(path.join(validated.root, name)));
+      if (present.length > 0) {
+        warnings.push(
+          `the audited repository supplies ${present.join(" and ")}: ${control.engines.join(" / ")} reads it and may report less because of it (run with --engines builtin, or remove the file from a copy, to rule that out)`,
+        );
+      }
+    }
+
+    // Warnings quote file names of the audited repository: one line each,
+    // control characters replaced, capped. (In place: coverage and the run
+    // record share this array.)
+    for (let index = 0; index < warnings.length; index += 1) {
+      warnings[index] = singleLineText(warnings[index] as string, 500);
+    }
+
     const coverage = buildCoverage(
       inv,
       ruleSet,
@@ -812,13 +992,35 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       warnings,
       ruleScan.suppressed,
       { outOfScope, sinceRef, changedFileCount: changedFiles?.size ?? 0 },
+      !includeTests,
     );
+
+    // The path classification comes from the audited repository. Counts go
+    // into the run so every report can show how much it changed.
+    const pathContextCounts = countPathContexts(findings);
+    const adjustmentCounts = countAdjustments(findings);
+    const sourceFiles = inv.files.filter((file) => file.kind === "source");
+    const contextSourceFiles = sourceFiles.filter((file) => file.pathContext).length;
+    // A project whose code mostly sits in such paths is either laid out
+    // unusually or laid out to be overlooked: say it once, in words.
+    if (
+      !includeTests &&
+      pathContextCounts.lowered > 0 &&
+      sourceFiles.length >= 4 &&
+      contextSourceFiles * 2 > sourceFiles.length
+    ) {
+      warnings.push(
+        `${contextSourceFiles} of ${sourceFiles.length} source files are classified as test, docs, example, vendored or generated by their path; the confidence of ${pathContextCounts.lowered} finding(s) was lowered for that reason (use --include-tests to keep the reported confidence)`,
+      );
+    }
 
     const finished = new Date();
     const durationMs = Math.max(0, Date.now() - startedMs);
 
-    const findingCounts = countSeverities(findings);
-    const run = {
+    // Everything a later `report` / `status` needs to print the same numbers
+    // is recorded here: the effective policy in `args`, the baseline result.
+    const baselineUsed = Boolean(baselineDoc && baselinePath && baselineCounts);
+    const runRecord: Record<string, unknown> = {
       runId,
       tool: {
         name: TOOL_NAME,
@@ -834,15 +1036,24 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         offline,
         failOn,
         minConfidence,
+        failOnExisting: options.failOnExisting === true,
+        baselineUsed,
         lang,
         engines: [...selected],
-        inlineIgnore: !options.noInlineIgnore,
+        inlineIgnore: !noInlineIgnore,
+        noInlineIgnore,
+        includeTests,
+        includeDev,
+        includePlaceholders,
+        untrusted,
       },
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
       durationMs,
       rulesCount: ruleSet.rules.length,
       rulesDir: ruleSet.rulesDir,
+      rulesHash: ruleSetHash(ruleSet),
+      repositoryControls,
       externalTools,
       inventory: {
         files: inv.stats.files,
@@ -858,50 +1069,11 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         unresolvedManifests: scaResult.unresolvedManifests,
         degraded: scaResult.degraded,
       },
-      findingCounts,
-      confidenceCounts: countConfidences(findings),
-      hotspotCount: hotspots.length,
-      suppressedCount:
-        findings.filter((finding) => finding.status === "suppressed").length +
-        hotspots.filter((hotspot) => hotspot.status === "suppressed").length,
       ...(baselineDoc && baselinePath && baselineCounts
         ? {
             baseline: {
               path: baselinePath,
               entries: baselineDoc.entries.length,
-              new: baselineCounts.new,
-              existing: baselineCounts.existing,
-              fixed: baselineCounts.fixed,
-            },
-          }
-        : {}),
-      ...(sinceRef
-        ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
-        : {}),
-      warnings,
-    };
-
-    const reportContext = {
-      runId,
-      target: validated.input,
-      startedAt: started.toISOString(),
-      finishedAt: finished.toISOString(),
-      durationMs,
-      toolVersion: TOOL_VERSION,
-      nodeVersion: process.version,
-      profile,
-      offline,
-      lang,
-      rules: ruleSet.rules,
-      findings,
-      hotspots,
-      coverage,
-      warnings,
-      ...(baselineCounts
-        ? {
-            baseline: {
-              path: baselinePath as string,
-              entries: baselineDoc?.entries.length ?? 0,
               new: baselineCounts.new,
               existing: baselineCounts.existing,
               fixed: baselineCounts.fixed,
@@ -912,72 +1084,46 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       ...(sinceRef
         ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
         : {}),
+      warnings,
+    };
+    // One summary for run.json, findings.json, the reports and the caller.
+    const summary = summarizeRun(runRecord, findings, hotspots);
+    const { findings: _headlineTotal, ...countFields } = summaryCountFields(summary);
+    const run: Record<string, unknown> = {
+      ...runRecord,
+      ...countFields,
+      pathContext: pathContextCounts,
+      adjustments: adjustmentCounts,
     };
 
-    fs.writeFileSync(
-      path.join(runDir, "run.json"),
-      `${JSON.stringify(run, null, 2)}\n`,
-      "utf8",
-    );
-    fs.writeFileSync(
-      path.join(runDir, "coverage.json"),
-      `${JSON.stringify(coverage, null, 2)}\n`,
-      "utf8",
-    );
-    fs.writeFileSync(
-      path.join(runDir, "findings.json"),
-      renderFindingsJson(
-        {
-          runId,
-          tool: run.tool,
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          durationMs,
-          rulesCount: run.rulesCount,
-          profile,
-          offline,
-          failOn,
-          minConfidence,
-          findingCounts,
-          confidenceCounts: run.confidenceCounts,
-          suppressedCount: run.suppressedCount,
-          ...(run.baseline ? { baseline: run.baseline } : {}),
-          ...(run.scope ? { scope: run.scope } : {}),
-          warnings,
-        },
-        findings,
-        hotspots,
-      ),
-      "utf8",
+    const reportContext = buildReportContext(run, {
+      findings,
+      hotspots,
+      coverage,
+      rules: ruleSet.rules,
+    });
+
+    writeRunFile(runDir, "run.json", `${JSON.stringify(run, null, 2)}\n`);
+    writeRunFile(runDir, "coverage.json", `${JSON.stringify(coverage, null, 2)}\n`);
+    writeRunFile(
+      runDir,
+      "findings.json",
+      renderFindingsJson(findingsJsonRun(run), findings, hotspots),
     );
     if (formats.includes("md")) {
-      fs.writeFileSync(
-        path.join(runDir, "report.md"),
-        renderMarkdown(reportContext),
-        "utf8",
-      );
+      writeRunFile(runDir, "report.md", renderMarkdown(reportContext));
     }
     if (formats.includes("sarif")) {
-      fs.writeFileSync(
-        path.join(runDir, "results.sarif"),
-        renderSarif(reportContext),
-        "utf8",
-      );
+      writeRunFile(runDir, "results.sarif", renderSarif(reportContext));
     }
 
     // --latest-link: plain copies (never a symlink) of the produced report
     // files under `<out>/latest/`, so CI can reference a stable path.
     if (options.latestLink) {
-      const latestDir = options.out
-        ? path.join(path.resolve(options.out), "latest")
-        : path.join(validated.root, ".audit", "latest");
-      fs.mkdirSync(latestDir, { recursive: true });
       const produced = ["findings.json"];
       if (formats.includes("md")) produced.push("report.md");
       if (formats.includes("sarif")) produced.push("results.sarif");
-      for (const name of produced) {
-        fs.copyFileSync(path.join(runDir, name), path.join(latestDir, name));
-      }
+      writeLatestCopies(output, produced);
     }
 
     const completedState = {
@@ -998,10 +1144,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       warnings,
     };
     writeRunState(runDir, completedState);
-    if (
-      !options.out ||
-      path.resolve(options.out) === path.join(validated.root, ".audit")
-    ) {
+    if (indexed) {
       registerRunIndex(validated.root, {
         runId,
         runDir,
@@ -1012,6 +1155,6 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       });
     }
 
-    return { runId, runDir, findings, hotspots, coverage, warnings, run, durationMs };
+    return { runId, runDir, findings, hotspots, coverage, warnings, run, summary, durationMs };
   }
 }

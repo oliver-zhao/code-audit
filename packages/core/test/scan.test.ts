@@ -160,16 +160,24 @@ describe("secret handling", () => {
     expect(aws?.evidence).not.toContain("FAKEFIXTURE");
   });
 
-  it("ignores obvious placeholders", () => {
-    const genericLines = vulnerable.findings
+  it("reports an obvious placeholder with low confidence and skips an environment reference", () => {
+    const generic = vulnerable.findings
       .filter(
         (finding) =>
           finding.ruleId === "secret-generic-assignment" &&
           finding.file === "secrets/secrets.txt",
       )
-      .map((finding) => finding.startLine)
-      .sort((a, b) => a - b);
-    expect(genericLines).toEqual([4, 5]);
+      .sort((a, b) => a.startLine - b.startLine);
+    // Line 6 is `password = "changeme"`: never dropped, low confidence.
+    // Line 7 is `api_key = "${API_KEY}"`: a reference, not a secret.
+    expect(generic.map((finding) => `${finding.startLine}:${finding.confidence}`)).toEqual([
+      "4:high",
+      "5:high",
+      "6:low",
+    ]);
+    expect(generic[2]?.confidenceOriginal).toBe("high");
+    expect(generic[2]?.adjustments).toEqual(["placeholder-value"]);
+    expect(generic[0]?.adjustments).toBeUndefined();
   });
 
   it("keeps the private key body out of every output", () => {

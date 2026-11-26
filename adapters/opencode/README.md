@@ -17,14 +17,46 @@ From the project you want to audit:
 code-audit install --host opencode --project .
 ```
 
-`code-audit` is not installed by this adapter. Make sure `code-audit-mcp` (from
-this repo: add `packages/cli/node_modules/.bin` to `PATH`) resolves in the
-environment that starts OpenCode.
+`code-audit` is not installed by this adapter. The config uses the bare command
+`code-audit-mcp`, which must be on the `PATH` of the OpenCode process (from this
+repo: `pnpm run link:local`, then add `bin/` to `PATH`). If that is not possible
+(GUI or service launches often have a minimal `PATH`), install with
+`--absolute` (writes the absolute path of this checkout's `bin/code-audit-mcp`;
+do not commit the resulting config) or `--mcp-command <path>`.
+`code-audit doctor --project .` reports whether the configured command resolves.
 
-The installer merges into an existing `opencode.json`/`opencode.jsonc`
-(comments and trailing commas are tolerated) and backs up every changed file as
-`<file>.code-audit-backup-<stamp>`. `--dry-run` prints the planned changes.
-It never edits `~/.config/opencode`.
+The installer merges into an existing `opencode.json`/`opencode.jsonc` and
+never edits `~/.config/opencode`.
+`code-audit install --uninstall --host opencode --project .` removes the
+`code-audit` entry and the files install created.
+
+What the installer does with a project it did not create:
+
+- It plans first and writes second: every target is checked before anything is
+  written, a failure half-way is rolled back, and `--dry-run` prints the whole
+  plan, refusals included. A refusal exits with status 2 and changes nothing.
+- The MCP command comes from `--mcp-command`, `--absolute` or the default
+  `code-audit-mcp`, never from a file in the project. A re-install without the
+  option goes back to the default and prints the old and the new command.
+- Symbolic links at a target path, and directories that lead out of the
+  project, are refused.
+- Plain JSON is edited in place: indentation, key order and every other
+  setting stay byte for byte as they were (a UTF-8 BOM is kept, an empty file
+  counts as `{}`).
+- A config with comments or trailing commas is not rewritten, because the
+  comments would be lost. The installer prints the entry to add by hand:
+
+  ```jsonc
+  "mcp": { "servers": { "code-audit": { "type": "local", "command": ["code-audit-mcp"] } } }
+  ```
+
+  `--force` rewrites the file as plain JSON without comments instead and keeps
+  the original as `.code-audit/backups/<path>`.
+- A `mcp.servers.code-audit` entry that the installer did not write is left
+  alone (`--force` replaces it, with a backup). Uninstall removes the entry
+  only when it is what the installer writes.
+- There is one backup per file, under `.code-audit/backups/`; a replaced file
+  of yours is put back by uninstall.
 
 Manual equivalent: copy `opencode.json` to the project root, copy
 `skills/code-audit/SKILL.md` to `.opencode/skills/code-audit/SKILL.md`, and copy

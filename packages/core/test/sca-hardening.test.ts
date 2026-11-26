@@ -340,10 +340,14 @@ describe("secret detection in dependency files", () => {
       `[[package]]\nname = "x"\nversion = "1"\n\n[package.source]\nurl = "https://ci:${password}@pypi.internal.example.org/simple"\n`,
     );
     const found = secretsIn(root);
-    expect(found.map((f) => `${f.file}:${f.startLine} ${f.ruleId}`).sort()).toEqual([
-      "poetry.lock:6 secret-url-credentials",
-      "requirements.txt:1 secret-url-credentials",
+    // The `${PIP_PASSWORD}` reference is not a secret. `user:password` is a
+    // placeholder as a whole: reported (it used to be dropped), low confidence.
+    expect(found.map((f) => `${f.file}:${f.startLine} ${f.ruleId} ${f.confidence}`).sort()).toEqual([
+      "poetry.lock:6 secret-url-credentials high",
+      "requirements.txt:1 secret-url-credentials high",
+      "requirements.txt:3 secret-url-credentials low",
     ]);
+    expect(found.find((f) => f.startLine === 3)?.adjustments).toEqual(["placeholder-value"]);
     expect(JSON.stringify(found)).not.toContain(password);
     const requirement = found.find((f) => f.file === "requirements.txt");
     // Only the first 2 and last 2 characters of a long secret stay visible.

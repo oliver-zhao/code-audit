@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import {
   CONFIDENCES,
   SEVERITIES,
@@ -8,11 +7,15 @@ import {
   readSnippet,
   recordVerdict,
   renderRunReport,
+  renderRunScopeText,
+  renderSummaryText,
   runStatus,
   searchCode,
+  writeFileAtomicNoFollow,
   type Confidence,
   type FindingsFilter,
   type ReportOutputFormat,
+  type ResolveRunOptions,
   type Severity,
 } from "@code-audit/core";
 
@@ -76,7 +79,7 @@ function parseRunCommand(
       throw new QueryError(`${command}: see code-audit --help`);
     } else if (arg.startsWith("--")) {
       const name = arg.slice(2);
-      if (!allowedFlags.includes(name)) {
+      if (!allowedFlags.includes(name) && !COMMON_FLAGS.includes(name)) {
         throw new QueryError(`${command} unknown flag: --${name}`);
       }
       if (booleanFlags.includes(name)) {
@@ -109,25 +112,67 @@ function single(
   return flags.get(name)?.[0];
 }
 
+/**
+ * Flags every run command accepts. `--root <dir>` names the audit root on
+ * this command line: its `.audit` is searched for the run id, and it confirms
+ * the root of a run directory that is not at `<root>/.audit/<run-id>`.
+ * `--rules <dir>` chooses the rule set for this command; without it the
+ * bundled rules are used, never a directory named inside the run.
+ */
+const COMMON_FLAGS = ["root", "rules"];
+
+function runOptions(parsed: ParsedRunCommand): ResolveRunOptions {
+  const root = single(parsed.flags, "root");
+  const rulesDir = single(parsed.flags, "rules");
+  return {
+    ...(root !== undefined ? { root } : {}),
+    ...(rulesDir !== undefined ? { rulesDir } : {}),
+  };
+}
+
+function printNotices(notices: readonly string[] | undefined): void {
+  for (const notice of new Set(notices ?? [])) {
+    process.stderr.write(`warning: ${notice}\n`);
+  }
+}
+
+/** What the user is looking at: the run directory and how its root is known. */
+function locationLines(run: {
+  runDir: string;
+  root?: string | null;
+  rootSource?: string | null;
+}): string[] {
+  const root =
+    run.root === undefined || run.root === null
+      ? "not established (the run directory is not at <root>/.audit/<run-id>; pass --root <dir> to confirm it)"
+      : run.rootSource === "confirmed"
+        ? `${run.root} (confirmed with --root)`
+        : `${run.root} (the directory that contains this run)`;
+  return [`Directory: ${run.runDir}`, `Root: ${root}`];
+}
+
 function runStatusCommand(args: string[], command: string): number {
   const parsed = parseRunCommand(args, [], 1, command);
-  const status = runStatus(parsed.ref);
+  const status = runStatus(parsed.ref, runOptions(parsed));
+  printNotices(status.notices);
   if (parsed.json) {
     printJson(status);
     return 0;
   }
   process.stdout.write(
     [
+      // First, so it is clear which directory these numbers were read from.
+      ...locationLines(status),
       `Run: ${status.runId}`,
       `Phase: ${status.phase}`,
-      `Root: ${status.root}`,
-      `Directory: ${status.runDir}`,
       `Started: ${status.startedAt ?? "?"}`,
       `Finished: ${status.finishedAt ?? "?"}`,
-      `Findings: ${status.findings}`,
-      `Hotspots: ${status.hotspots}`,
-      `Reviewed: ${status.reviewed} / ${status.findings + status.hotspots}`,
-      `False positives: ${status.falsePositive}`,
+      ...renderRunScopeText(status),
+      // The same lines as the scan printed, recomputed with the recorded
+      // thresholds and the verdicts recorded since.
+      ...renderSummaryText(status.summary),
+      `Records: ${status.records.findings} findings, ${status.records.hotspots} hotspots (every status, any confidence)`,
+      `Reviewed: ${status.reviewed} / ${status.records.findings + status.records.hotspots}`,
       ...(status.error ? [`Error: ${status.error}`] : []),
       "",
     ].join("\n"),
@@ -189,6 +234,7 @@ function runFindingsCommand(args: string[]): number {
     buildFindingsFilter(parsed),
     single(parsed.flags, "cursor"),
     limitValue ? parseInteger(limitValue, "--limit") : 20,
+    runOptions(parsed),
   );
   if (parsed.json) {
     printJson({
@@ -224,7 +270,9 @@ function runReadCommand(args: string[]): number {
     parsed.positionals[1] ?? "",
     startValue ? parseInteger(startValue, "--start") || 1 : 1,
     endValue ? parseInteger(endValue, "--end") || undefined : undefined,
+    runOptions(parsed),
   );
+  printNotices(snippet.notices);
   if (parsed.json) {
     printJson(snippet);
     return 0;
@@ -248,12 +296,17 @@ function runSearchCommand(args: string[]): number {
     ["regex"],
   );
   const maxValue = single(parsed.flags, "max-results");
-  const result = searchCode(parsed.ref, {
-    pattern: parsed.positionals[1] ?? "",
-    glob: single(parsed.flags, "glob"),
-    regex: parsed.flags.has("regex"),
-    maxResults: maxValue ? parseInteger(maxValue, "--max-results") || 1 : 50,
-  });
+  const result = searchCode(
+    parsed.ref,
+    {
+      pattern: parsed.positionals[1] ?? "",
+      glob: single(parsed.flags, "glob"),
+      regex: parsed.flags.has("regex"),
+      maxResults: maxValue ? parseInteger(maxValue, "--max-results") || 1 : 50,
+    },
+    runOptions(parsed),
+  );
+  printNotices(result.notices);
   if (parsed.json) {
     printJson({
       run_id: parsed.ref,
@@ -286,13 +339,19 @@ function runVerdictCommand(args: string[]): number {
   if (!statusValue) throw new QueryError("verdict requires --status");
   const rationale = single(parsed.flags, "rationale");
   if (!rationale) throw new QueryError("verdict requires --rationale");
-  const result = recordVerdict(parsed.ref, parsed.positionals[1] ?? "", {
-    status: assertChoice(statusValue, VERDICT_STATUSES, "--status"),
-    rationale,
-    evidenceLines: parsed.flags.get("evidence-line"),
-    actor: single(parsed.flags, "actor"),
-    reviewer: single(parsed.flags, "reviewer"),
-  });
+  const result = recordVerdict(
+    parsed.ref,
+    parsed.positionals[1] ?? "",
+    {
+      status: assertChoice(statusValue, VERDICT_STATUSES, "--status"),
+      rationale,
+      evidenceLines: parsed.flags.get("evidence-line"),
+      actor: single(parsed.flags, "actor"),
+      reviewer: single(parsed.flags, "reviewer"),
+    },
+    runOptions(parsed),
+  );
+  printNotices(result.notices);
   if (parsed.json) {
     printJson(result);
     return 0;
@@ -346,7 +405,8 @@ function runAddFindingCommand(args: string[]): number {
     source: single(parsed.flags, "source"),
     ruleId: single(parsed.flags, "rule-id"),
     reviewer: single(parsed.flags, "reviewer"),
-  });
+  }, runOptions(parsed));
+  printNotices(result.notices);
   if (parsed.json) {
     printJson(result);
     return 0;
@@ -365,10 +425,15 @@ function runReportCommand(args: string[]): number {
     ["md", "json", "sarif", "summary"] as const,
     "--format",
   ) as ReportOutputFormat;
-  const report = renderRunReport(parsed.ref, format);
+  const report = renderRunReport(parsed.ref, format, runOptions(parsed));
+  printNotices(report.notices);
+  // The report itself goes to stdout or a file; what was read goes to stderr.
+  for (const line of locationLines(report)) process.stderr.write(`${line}\n`);
   const output = single(parsed.flags, "output");
   if (output) {
-    fs.writeFileSync(output, report.text, "utf8");
+    // A path the user named: its directory is followed, a symbolic link at
+    // the file itself is replaced, not written through.
+    writeFileAtomicNoFollow(output, report.text);
     process.stdout.write(`report written to ${output}\n`);
     return 0;
   }

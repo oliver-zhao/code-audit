@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { canonicalExpressionLine, yamlKeyValues, type YamlKeyValue } from "./yamlValues.js";
 import { z } from "zod";
 import type { InventoryFile } from "./inventory.js";
 import type { Confidence, Severity } from "./finding.js";
@@ -65,6 +66,17 @@ const RuleSchema = z
      * not for rules that legitimately read literals (SQL text, URLs, hosts).
      */
     codeOnly: z.boolean().optional(),
+    /**
+     * YAML only: match only inside the value of one of these mapping keys.
+     * The file is parsed and the patterns see the value of each such key
+     * (aliases resolved, `${{ }}` expressions in canonical form, `env` /
+     * `matrix` indirection resolved one level); see `yamlValues.ts`. A file
+     * that cannot be parsed is matched line by line in full, with a warning.
+     */
+    withinKeys: z
+      .array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "withinKeys entries must be plain YAML keys"))
+      .min(1)
+      .optional(),
     message: z.string().min(1),
     message_zh: z.string().min(1).optional(),
     remediation: z.string().min(1),
@@ -84,6 +96,13 @@ const RuleSchema = z
         code: z.ZodIssueCode.custom,
         message: "pattern and patterns are mutually exclusive",
         path: ["patterns"],
+      });
+    }
+    if (rule.withinKeys && rule.languages.some((language) => language !== "yaml")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "withinKeys is only supported for rules whose languages are [yaml]",
+        path: ["withinKeys"],
       });
     }
   });
@@ -1585,6 +1604,28 @@ export function scanRules(
     const cappedRules = new Set<string>();
     let cappedAt = -1;
 
+    // Rules with `withinKeys` are matched against the parsed values of
+    // those YAML keys, after the line loop. When the file cannot be parsed
+    // the rules fail open: they are matched against every line instead.
+    const keyValues = new Map<string, YamlKeyValue[] | undefined>();
+    const keyValuesOf = (keys: readonly string[]): YamlKeyValue[] | undefined => {
+      const cacheKey = keys.join("\u0000");
+      if (keyValues.has(cacheKey)) return keyValues.get(cacheKey);
+      const parsed = yamlKeyValues(content, keys);
+      if (!parsed.ok) {
+        warnings.push(
+          `${file.relPath}: ${parsed.reason}; rules limited to the value of ${keys.map((key) => `${key}:`).join(" / ")} were matched against every line of the file instead`,
+        );
+      }
+      const result = parsed.ok ? parsed.values : undefined;
+      keyValues.set(cacheKey, result);
+      return result;
+    };
+    const structuredRules = fileRules.filter(
+      (rule) => rule.withinKeys !== undefined && keyValuesOf(rule.withinKeys) !== undefined,
+    );
+    const structured = new Set(structuredRules);
+
     // One hit per rule and physical line.
     const reported = new Set<string>();
     for (const unit of units) {
@@ -1613,7 +1654,14 @@ export function scanRules(
 
       for (const rule of fileRules) {
         if (maskedIsBlank && !rule.matchDeclarations) continue;
-        const text = rule.matchDeclarations ? unit.text : masked;
+        if (structured.has(rule)) continue;
+        let text = rule.matchDeclarations ? unit.text : masked;
+        // Fail-open path of a `withinKeys` rule (the file could not be
+        // parsed): every line is matched, with its expressions in the same
+        // canonical form the structured path uses.
+        if (rule.withinKeys && unit.column === undefined && unit.offsets.length === 1) {
+          text = canonicalExpressionLine(lines, unit.start);
+        }
         // Long units are where a careless pattern could be slow.
         if (text.length > 200 && performance.now() > deadline) {
           outOfTime = true;
@@ -1728,6 +1776,65 @@ export function scanRules(
                 rule.id,
               );
             }
+            if (suppression.suppressed) hit.suppressedBy = suppression.reason;
+          }
+          pending.push(hit);
+        }
+      }
+    }
+    // Structured matching of `withinKeys` rules; see `yamlValues.ts`.
+    for (const rule of structuredRules) {
+      if (outOfTime) break;
+      const values = keyValuesOf(rule.withinKeys as string[]) ?? [];
+      const compiled = rule.compiled;
+      const locator = compiled.locator;
+      if (!locator) continue;
+      const rest = compiled.patterns?.slice(1);
+      for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+        const value = values[valueIndex] as YamlKeyValue;
+        if (!(rule.withinKeys as string[]).includes(value.key)) continue;
+        if (performance.now() > deadline) {
+          outOfTime = true;
+          break;
+        }
+        const text = value.text;
+        if (rest && !rest.every((pattern) => pattern.test(text))) continue;
+        locator.lastIndex = 0;
+        let found = 0;
+        let match: RegExpExecArray | null;
+        while ((match = locator.exec(text)) !== null) {
+          if (match[0].length === 0) locator.lastIndex += 1;
+          found += 1;
+          if (found > MAX_MATCHES_PER_LINE * 100) {
+            cappedRules.add(rule.id);
+            if (cappedAt < 0) cappedAt = value.lineAt(match.index);
+            break;
+          }
+          const matchStart = match.index;
+          const matchEnd = match.index + match[0].length;
+          if (compiled.notPattern !== undefined) {
+            const lineStart = text.lastIndexOf("\n", matchStart) + 1;
+            const lineEnd = text.indexOf("\n", matchEnd);
+            if (compiled.notPattern.test(text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd))) {
+              continue;
+            }
+          }
+          const index = Math.min(value.lineAt(matchStart), Math.max(0, lines.length - 1));
+          const key = `${rule.id}\u0000${index}`;
+          if (reported.has(key)) continue;
+          reported.add(key);
+          const line = lines[index] ?? "";
+          // Spans of different values never overlap; rules of one group that
+          // match the same expression of one value do.
+          const base = valueIndex * 0x1000000;
+          const hit: PendingHit = {
+            rule,
+            index,
+            column: Math.max(0, line.indexOf("${{")),
+            placement: { unitStart: index, spanStart: base + matchStart, spanEnd: base + matchEnd },
+          };
+          if (inlineIgnore) {
+            const suppression = isSuppressed(line, lines[index - 1], rule.id);
             if (suppression.suppressed) hit.suppressedBy = suppression.reason;
           }
           pending.push(hit);

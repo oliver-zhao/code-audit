@@ -1,9 +1,12 @@
 import { countLines as countPhysicalLines, splitLines } from "./redact.js";
 import fs from "node:fs";
 import path from "node:path";
-import { detectLanguage, type Language } from "./language.js";
+import { SOURCE_LANGUAGES, detectLanguage, type Language } from "./language.js";
 import { toPosixRelative, validateAuditRoot } from "./pathJail.js";
 import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
+import type { PathContext } from "./finding.js";
+import { classifyFileDetailed, type PathContextSource } from "./pathContext.js";
+import { LATEST_OUTPUT_FILES, RUN_OUTPUT_FILES, TOOL_NAME, toolRootDir } from "./meta.js";
 
 export const DEFAULT_EXCLUDED_DIRS = [
   "node_modules",
@@ -104,6 +107,23 @@ export interface InventoryFile {
   /** True when the file is a dependency source for the SCA engine. */
   isLockfile: boolean;
   manifestType?: ManifestType;
+  /**
+   * Test, docs, example, vendored or generated file, by path (and, for
+   * generated, a header comment). Absent for ordinary source. See
+   * `pathContext.ts`.
+   */
+  pathContext?: PathContext;
+  /**
+   * What decided `pathContext`: the path, or a generated-file header comment.
+   * Only a path classification lowers confidence.
+   */
+  pathContextSource?: PathContextSource;
+  /**
+   * True for an entry of `InventoryResult.toolOutput`: a file that carries
+   * the tool's own output name inside a directory recognised as one of its
+   * run directories. Secret detectors run on it; rules do not.
+   */
+  toolOutput?: boolean;
 }
 
 export interface SkippedFile {
@@ -139,6 +159,24 @@ export interface InventoryResult {
   manifests: ManifestRef[];
   lockfiles: ManifestRef[];
   warnings: string[];
+  /**
+   * Files recognised as the tool's own output (reports of earlier runs in an
+   * `--out` directory inside the audit root). They are listed in `skipped`
+   * and are exempt from rule matching (a report quotes vulnerable code), but
+   * the scan still runs every secret detector on them: genuine output never
+   * holds a secret in clear text, and the marker that makes a directory a run
+   * directory is data of the audited repository. Files of the run being
+   * written, and files over the size limit (`toolOutputUnread`), are not here.
+   */
+  toolOutput: InventoryFile[];
+  /** Recognised tool-output files that were too large or unreadable. */
+  toolOutputUnread: number;
+  /**
+   * Source files (by extension) inside default-excluded directories, which
+   * were not read. Counted per excluded directory name; `truncated` when the
+   * count stopped at `EXCLUDED_COUNT_MAX_ENTRIES` directory entries.
+   */
+  excludedSource: { total: number; truncated: boolean; byDirectory: Record<string, number> };
 }
 
 interface Marker {
@@ -330,31 +368,155 @@ function looksBinary(buffer: Buffer): boolean {
 export interface InventoryOptions {
   excludes?: string[];
   maxFileSize?: number;
+  /**
+   * Run directories the caller itself is writing to (absolute paths), for a
+   * scan whose `--out` is inside the audit root: the run has no `run.json`
+   * yet, so it cannot be recognised by its content.
+   */
+  ownRunDirs?: string[];
+  /**
+   * Audit of a repository that is not trusted: default-excluded directories
+   * (all but `.git`) are scanned like any other, and files that are
+   * byte-identical to the tool's shipped adapter files are scanned too.
+   */
+  untrusted?: boolean;
 }
 
 /**
- * Read the manifest written by `code-audit install` and return the set of
- * project-relative files that the installer created or owns. Those files are
- * adapter plumbing, not user code, so the inventory skips them. A user's own
- * `opencode.json` or `SKILL.md` that predates the install is not listed.
+ * Adapter files that `code-audit install` writes verbatim, by project-relative
+ * path, and the shipped file each one is a copy of (relative to the tool
+ * root). `packages/cli/src/install.ts` writes exactly these (a test compares
+ * the two); the plugin layout of releases up to 0.1.0 is included.
+ *
+ * The inventory skips such a file ONLY when its content is identical to the
+ * shipped file (after newline normalisation). Nothing inside the audited
+ * repository -- not `.code-audit/installed.json`, not the path -- can make
+ * the scanner skip a file: a `SKILL.md` with one changed byte is audited.
+ *
+ * Files the installer merges into (`.mcp.json`, `AGENTS.md`, `opencode.json`,
+ * `.codex/config.toml`, `dsh/cordis.patch.yml`) hold user content and are
+ * always scanned in full.
  */
-function readAdapterFileManifest(root: string): Set<string> {
-  const file = path.join(root, ".code-audit", "installed.json");
-  let document: unknown;
+export const ADAPTER_OWNED_FILES: Readonly<Record<string, string>> = {
+  ".opencode/skills/code-audit/SKILL.md": "skills/code-audit/SKILL.md",
+  ".dsh/skills/code-audit/SKILL.md": "skills/code-audit/SKILL.md",
+  ".claude/skills/code-audit/SKILL.md": "skills/code-audit/SKILL.md",
+  ".agents/skills/code-audit/SKILL.md": "skills/code-audit/SKILL.md",
+  ".opencode/commands/audit.md": "adapters/opencode/commands/audit.md",
+  ".claude/commands/audit.md": "adapters/claude-code/commands/audit.md",
+  // Plugin layout written into the project root by releases up to 0.1.0.
+  "skills/code-audit/SKILL.md": "skills/code-audit/SKILL.md",
+  "commands/audit.md": "adapters/claude-code/commands/audit.md",
+  ".claude-plugin/plugin.json": "adapters/claude-code/.claude-plugin/plugin.json",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const normalizeNewlines = (text: string): string => text.replace(/\r\n?/g, "\n");
+
+const shippedAdapterCache = new Map<string, string | undefined>();
+
+function shippedAdapterText(source: string): string | undefined {
+  if (shippedAdapterCache.has(source)) return shippedAdapterCache.get(source);
+  let text: string | undefined;
   try {
-    document = JSON.parse(fs.readFileSync(file, "utf8"));
+    text = normalizeNewlines(fs.readFileSync(path.join(toolRootDir(), source), "utf8"));
   } catch {
-    return new Set<string>();
+    // Packaged without the adapter sources: nothing can be recognised, so
+    // nothing is skipped.
+    text = undefined;
   }
-  const files = (document as { files?: unknown } | null)?.files;
-  const skip = new Set<string>();
-  if (!Array.isArray(files)) return skip;
-  for (const entry of files) {
-    const record = entry as { path?: unknown; skip?: unknown };
-    if (typeof record.path !== "string" || record.skip !== true) continue;
-    skip.add(record.path.split("\\").join("/").replace(/^\.\//, ""));
+  shippedAdapterCache.set(source, text);
+  return text;
+}
+
+/**
+ * True when `relPath` is one of the fixed adapter paths and `text` is exactly
+ * what this version of the tool installs there.
+ */
+export function isShippedAdapterFile(relPath: string, text: string): boolean {
+  if (!Object.prototype.hasOwnProperty.call(ADAPTER_OWNED_FILES, relPath)) return false;
+  const shipped = shippedAdapterText(ADAPTER_OWNED_FILES[relPath] as string);
+  return shipped !== undefined && shipped.length > 0 && normalizeNewlines(text) === shipped;
+}
+
+/** Directory entries looked at while counting source files in excluded directories. */
+export const EXCLUDED_COUNT_MAX_ENTRIES = 50_000;
+
+/** Excluded directories that are never scanned or counted, even for `untrusted`. */
+const NEVER_SCANNED_DIRS = new Set([".git"]);
+
+const MARKER_FILE_LIMIT = 64 * 1024 * 1024;
+
+function readMarkerJson(file: string): unknown {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.size > MARKER_FILE_LIMIT) return undefined;
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
   }
-  return skip;
+}
+
+/**
+ * The output file names of this tool in `dir`, when `dir` is one of its run
+ * directories; otherwise undefined. A run directory is recognised by content,
+ * not by name:
+ *
+ * - `run.json` whose `tool.name` is this tool, next to a `findings.json`
+ *   (a finished run, wherever `--out` put it);
+ * - a `latest/` directory whose `findings.json` carries the same marker
+ *   (`--latest-link` copies);
+ * - `state.json` of this tool whose `runId` is the directory name (a run that
+ *   failed or is still running).
+ *
+ * The marker is data in the audited repository, so it decides little: only
+ * files with the tool's own fixed output names are skipped, each one is listed
+ * in coverage, and anything else in the directory (a `.py` next to a planted
+ * `run.json`) is inventoried as usual.
+ */
+export function ownOutputFileNames(
+  dir: string,
+  fileNames: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+  if (fileNames.has("run.json") && fileNames.has("findings.json")) {
+    const run = readMarkerJson(path.join(dir, "run.json"));
+    if (
+      isRecord(run) &&
+      isRecord(run.tool) &&
+      run.tool.name === TOOL_NAME &&
+      typeof run.runId === "string"
+    ) {
+      return RUN_OUTPUT_FILES;
+    }
+  }
+  if (path.basename(dir) === "latest" && fileNames.has("findings.json")) {
+    const document = readMarkerJson(path.join(dir, "findings.json"));
+    if (
+      isRecord(document) &&
+      isRecord(document.run) &&
+      isRecord(document.run.tool) &&
+      document.run.tool.name === TOOL_NAME &&
+      Array.isArray(document.findings)
+    ) {
+      return LATEST_OUTPUT_FILES;
+    }
+  }
+  if (fileNames.has("state.json")) {
+    const state = readMarkerJson(path.join(dir, "state.json"));
+    if (
+      isRecord(state) &&
+      state.schemaVersion === 1 &&
+      state.runId === path.basename(dir) &&
+      typeof state.phase === "string" &&
+      typeof state.runDir === "string"
+    ) {
+      return new Set(["state.json"]);
+    }
+  }
+  return undefined;
 }
 
 export function inventory(
@@ -366,7 +528,16 @@ export function inventory(
     (options.excludes ?? DEFAULT_EXCLUDED_DIRS).map((name) => name.toLowerCase()),
   );
   const maxFileSize = options.maxFileSize ?? MAX_TEXT_FILE_BYTES;
-  const adapterFiles = readAdapterFileManifest(root);
+  const untrusted = options.untrusted === true;
+  const ownRunDirs = new Set(
+    (options.ownRunDirs ?? []).map((dir) => {
+      try {
+        return fs.realpathSync(dir);
+      } catch {
+        return path.resolve(dir);
+      }
+    }),
+  );
 
   const files: InventoryFile[] = [];
   const skipped: SkippedFile[] = [];
@@ -377,6 +548,38 @@ export function inventory(
   let totalBytes = 0;
   let totalLoc = 0;
   let partialFiles = 0;
+  const toolOutput: InventoryFile[] = [];
+  let toolOutputUnread = 0;
+  const excludedSource = { total: 0, truncated: false, byDirectory: {} as Record<string, number> };
+  let excludedEntries = 0;
+
+  // Excluded directories are not read. Their source files are counted (names
+  // only, bounded) so the report can say how much code was left out.
+  const countExcluded = (dir: string, name: string, depth: number): void => {
+    if (excludedSource.truncated || depth > 40) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      excludedEntries += 1;
+      if (excludedEntries > EXCLUDED_COUNT_MAX_ENTRIES) {
+        excludedSource.truncated = true;
+        return;
+      }
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!NEVER_SCANNED_DIRS.has(entry.name.toLowerCase())) {
+          countExcluded(path.join(dir, entry.name), name, depth + 1);
+        }
+      } else if (entry.isFile() && SOURCE_LANGUAGES.includes(detectLanguage(entry.name))) {
+        excludedSource.total += 1;
+        excludedSource.byDirectory[name] = (excludedSource.byDirectory[name] ?? 0) + 1;
+      }
+    }
+  };
 
   const walk = (dir: string): void => {
     let entries: fs.Dirent[];
@@ -393,6 +596,21 @@ export function inventory(
 
     entries.sort((a, b) => a.name.localeCompare(b.name));
 
+    // Reports of earlier runs (an `--out` directory inside the audit root)
+    // are not part of the audited project.
+    const ownRun = ownRunDirs.has(dir);
+    // For an untrusted repository a run directory is recognised only below
+    // `<root>/.audit/`, where the tool itself writes; a marker anywhere else
+    // changes nothing and the files are scanned in full.
+    const recognise =
+      !ownRun && (!untrusted || `${toPosixRelative(root, dir)}/`.startsWith(".audit/"));
+    const ownOutput = !recognise
+      ? undefined
+      : ownOutputFileNames(
+          dir,
+          new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name)),
+        );
+
     for (const entry of entries) {
       const abs = path.join(dir, entry.name);
       const rel = toPosixRelative(root, abs);
@@ -406,8 +624,10 @@ export function inventory(
       }
 
       if (entry.isDirectory()) {
-        if (excludedDirs.has(entry.name.toLowerCase())) {
+        const lowerName = entry.name.toLowerCase();
+        if (excludedDirs.has(lowerName) && (!untrusted || NEVER_SCANNED_DIRS.has(lowerName))) {
           skipped.push({ relPath: `${rel}/`, reason: "default-excluded directory" });
+          if (!NEVER_SCANNED_DIRS.has(lowerName)) countExcluded(abs, lowerName, 0);
           continue;
         }
         walk(abs);
@@ -419,8 +639,33 @@ export function inventory(
         continue;
       }
 
-      if (adapterFiles.has(rel)) {
-        skipped.push({ relPath: rel, reason: "code-audit adapter file" });
+      // The run this scan is writing right now is not input.
+      if (ownRun && RUN_OUTPUT_FILES.has(entry.name)) {
+        skipped.push({ relPath: rel, reason: "code-audit output" });
+        continue;
+      }
+      if (ownOutput?.has(entry.name)) {
+        skipped.push({ relPath: rel, reason: "code-audit output" });
+        let size = -1;
+        try {
+          size = fs.statSync(abs).size;
+        } catch {
+          size = -1;
+        }
+        if (size < 0 || size > maxFileSize) toolOutputUnread += 1;
+        else {
+          toolOutput.push({
+            relPath: rel,
+            absPath: abs,
+            language: detectLanguage(rel),
+            size,
+            loc: 0,
+            kind: "other",
+            scannable: true,
+            isLockfile: false,
+            toolOutput: true,
+          });
+        }
         continue;
       }
 
@@ -465,6 +710,10 @@ export function inventory(
       }
 
       const text = buffer.toString("utf8");
+      if (!untrusted && isShippedAdapterFile(rel, text)) {
+        skipped.push({ relPath: rel, reason: "code-audit adapter file" });
+        continue;
+      }
       const loc = countLines(text);
       const language = detectLanguage(rel);
       const marker = classifyManifest(entry.name, rel, text);
@@ -485,6 +734,8 @@ export function inventory(
         }
       }
 
+      const classification = classifyFileDetailed(rel, text, language);
+      const pathContext = classification.context;
       files.push({
         relPath: rel,
         absPath: abs,
@@ -495,6 +746,7 @@ export function inventory(
         scannable,
         isLockfile,
         manifestType: marker?.type,
+        ...(pathContext ? { pathContext, pathContextSource: classification.source } : {}),
       });
 
       totalBytes += stat.size;
@@ -535,5 +787,8 @@ export function inventory(
     manifests,
     lockfiles,
     warnings,
+    toolOutput,
+    toolOutputUnread,
+    excludedSource,
   };
 }

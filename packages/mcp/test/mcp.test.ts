@@ -128,6 +128,12 @@ describe("MCP server", () => {
     expect(
       Object.keys((start?.inputSchema as { properties?: object }).properties ?? {}),
     ).toContain("noInlineIgnore");
+    // ... and the confidence lowering for test / docs paths and dev dependencies.
+    const startProperties = Object.keys(
+      (start?.inputSchema as { properties?: object }).properties ?? {},
+    );
+    expect(startProperties).toContain("includeTests");
+    expect(startProperties).toContain("includeDev");
     for (const name of ["audit_read", "audit_search", "audit_findings"]) {
       const description =
         tools.tools.find((tool) => tool.name === name)?.description ?? "";
@@ -312,6 +318,127 @@ describe("MCP server", () => {
     expect(markdown.text).toContain("Review progress");
     expect(fs.existsSync(markdown.path)).toBe(true);
   });
+
+  it("returns the same counting summary from audit_status and audit_report", async () => {
+    interface Summary {
+      thresholds: { minConfidence: string; failOn: string };
+      headline: { total: number; bySeverity: Record<string, number>; byCategory: Record<string, number> };
+      lowConfidence: { total: number };
+      hotspots: number;
+      falsePositives: number;
+      exitCode: { counting: number; code: number };
+    }
+    interface Shape {
+      findings: number;
+      findingCounts: Record<string, number>;
+      lowConfidenceCandidates: number;
+      hotspots: number;
+      records: { findings: number; hotspots: number };
+      summary: Summary;
+    }
+    const status = (await call("audit_status", { run_id: runId })) as unknown as Shape;
+    const report = (await call("audit_report", { run_id: runId, format: "summary" })) as { text: string };
+    const parsed = JSON.parse(report.text) as Shape;
+    for (const shape of [status, parsed]) {
+      expect(shape.summary.thresholds).toMatchObject({ minConfidence: "medium", failOn: "high" });
+      // Headline: active findings at confidence >= medium, not every record.
+      expect(shape.findings).toBe(shape.summary.headline.total);
+      expect(shape.findingCounts).toEqual(shape.summary.headline.bySeverity);
+      expect(shape.lowConfidenceCandidates).toBe(shape.summary.lowConfidence.total);
+      expect(shape.hotspots).toBe(shape.summary.hotspots);
+      const sum = (values: Record<string, number>): number =>
+        Object.values(values).reduce((a, b) => a + b, 0);
+      expect(sum(shape.summary.headline.bySeverity)).toBe(shape.findings);
+      expect(sum(shape.summary.headline.byCategory)).toBe(shape.findings);
+      expect(shape.findings + shape.lowConfidenceCandidates + shape.summary.falsePositives).toBeLessThanOrEqual(
+        shape.records.findings,
+      );
+      expect(shape.summary.exitCode.code).toBe(shape.summary.exitCode.counting > 0 ? 1 : 0);
+    }
+    expect(parsed.summary).toEqual(status.summary);
+    expect(status.lowConfidenceCandidates).toBeGreaterThan(0);
+
+    // The numbers are those of findings.json, recomputed with verdicts applied.
+    const listed = (await call("audit_findings", {
+      run_id: runId,
+      kind: "finding",
+      minConfidence: "medium",
+      limit: 1,
+    })) as { total: number };
+    expect(status.findings).toBeLessThanOrEqual(listed.total);
+
+    // A false-positive verdict takes a finding out of the headline.
+    const page = (await call("audit_findings", {
+      run_id: runId,
+      kind: "finding",
+      minConfidence: "medium",
+      status: "candidate",
+      limit: 1,
+    })) as { items: Array<{ id: string }> };
+    const target = page.items[0]?.id;
+    expect(target).toBeTruthy();
+    await call("audit_verdict", {
+      run_id: runId,
+      finding: target,
+      status: "false_positive",
+      rationale: "constant input in a fixture",
+    });
+    const after = (await call("audit_status", { run_id: runId })) as unknown as Shape;
+    expect(after.findings).toBe(status.findings - 1);
+    expect(after.summary.falsePositives).toBe(status.summary.falsePositives + 1);
+    expect(after.records).toEqual(status.records);
+  });
+
+  it("counts a run with the thresholds it was started with, like the report cover", async () => {
+    interface Summary {
+      thresholds: { minConfidence: string; failOn: string; newOnly: boolean };
+      headline: { total: number };
+      exitCode: { counting: number; code: number };
+    }
+    const numbers: Record<string, { headline: number; counting: number }> = {};
+    for (const [name, args] of Object.entries({
+      defaults: {},
+      "low-medium": { minConfidence: "low", failOn: "medium" },
+    })) {
+      const started = await call("audit_start", {
+        root: project,
+        offline: true,
+        engines: ["builtin"],
+        noBaseline: true,
+        ...args,
+      });
+      const id = String(started.run_id);
+      const status = (await waitForCompletion(id)) as unknown as {
+        phase: string;
+        runDir: string;
+        findings: number;
+        policy: { minConfidence: string; failOn: string };
+        summary: Summary;
+      };
+      expect(status.phase).toBe("complete");
+      const report = (await call("audit_report", { run_id: id, format: "summary" })) as { text: string };
+      const parsed = JSON.parse(report.text) as { findings: number; summary: Summary };
+      const cover = fs.readFileSync(path.join(status.runDir, "report.md"), "utf8");
+      const onDisk = JSON.parse(fs.readFileSync(path.join(status.runDir, "findings.json"), "utf8")) as {
+        run: { summary: Summary };
+      };
+      const counting = status.summary.exitCode.counting;
+      // audit_status, audit_report, findings.json and the cover agree.
+      expect(parsed.summary).toEqual(status.summary);
+      expect(onDisk.run.summary).toEqual(status.summary);
+      expect(parsed.findings).toBe(status.findings);
+      expect(status.findings).toBe(status.summary.headline.total);
+      expect(cover).toContain(`**${counting} findings count toward the exit code**`);
+      expect(cover).toMatch(new RegExp(`\\| \\*\\*${status.summary.headline.total}\\*\\* \\|$`, "m"));
+      expect(status.policy).toMatchObject({
+        minConfidence: (args as { minConfidence?: string }).minConfidence ?? "medium",
+        failOn: (args as { failOn?: string }).failOn ?? "high",
+      });
+      numbers[name] = { headline: status.findings, counting };
+    }
+    expect(numbers["low-medium"]?.headline).toBeGreaterThan(numbers.defaults?.headline ?? Infinity);
+    expect(numbers["low-medium"]?.counting).toBeGreaterThan(numbers.defaults?.counting ?? Infinity);
+  });
 });
 
 /**
@@ -430,6 +557,191 @@ describe("MCP server with a root below a symlinked directory", () => {
       });
       expect(error.code, baseline).toBe("PATH_OUTSIDE_ROOT");
     }
+  });
+});
+
+describe("MCP trust boundary", () => {
+  const RUN_TOOLS = [
+    "audit_status",
+    "audit_findings",
+    "audit_read",
+    "audit_search",
+    "audit_verdict",
+    "audit_add_finding",
+    "audit_report",
+  ];
+
+  async function finishedRun(root: string, args: Record<string, unknown> = {}): Promise<{ id: string; runDir: string }> {
+    const started = await call("audit_start", {
+      root,
+      offline: true,
+      engines: ["builtin"],
+      noBaseline: true,
+      ...args,
+    });
+    const id = String(started.run_id);
+    const status = await waitForCompletion(id);
+    expect(status.phase).toBe("complete");
+    return { id, runDir: String(status.runDir) };
+  }
+
+  function makeProject(name: string, files: Record<string, string>): string {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(temp, `${name}-`)));
+    for (const [file, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), content);
+    }
+    return root;
+  }
+
+  it("says where run ids are resolved and takes a root on every run tool", async () => {
+    const tools = (await client.listTools()).tools;
+    for (const name of RUN_TOOLS) {
+      const tool = tools.find((item) => item.name === name);
+      expect(tool?.description ?? "", name).toContain("<root>/.audit/<run_id>");
+      expect(tool?.description ?? "", name).toContain("a root the client named");
+      expect(Object.keys((tool?.inputSchema as { properties?: object }).properties ?? {}), name).toContain("root");
+    }
+    const start = tools.find((item) => item.name === "audit_start");
+    const properties = Object.keys((start?.inputSchema as { properties?: object }).properties ?? {});
+    for (const option of ["untrusted", "failOnExisting", "noIgnoreFile", "includePlaceholders", "profile", "since", "latestLink"]) {
+      expect(properties, option).toContain(option);
+    }
+  });
+
+  it("passes untrusted through to the scan", async () => {
+    const root = makeProject("untrusted", { "app.py": 'import os\nos.system("ls " + input())  # code-audit:ignore *\n' });
+    const run = await finishedRun(root, { untrusted: true });
+    const record = JSON.parse(fs.readFileSync(path.join(run.runDir, "run.json"), "utf8")) as {
+      args: { untrusted?: boolean; noInlineIgnore?: boolean };
+    };
+    expect(record.args.untrusted).toBe(true);
+    expect(record.args.noInlineIgnore).toBe(true);
+  });
+
+  it("does not read another project through a planted run, a path or a link", async () => {
+    const victim = makeProject("victim", { "notes.txt": "codename BLUEHERON\n", "app.py": "x = 1\n" });
+    const genuine = await finishedRun(victim);
+    const victimBefore = fs.readdirSync(genuine.runDir).sort();
+
+    const hostile = makeProject("hostile", { "main.py": "y = 2\n" });
+    const own = await finishedRun(hostile);
+    // The repository now carries a prepared run that names the victim ...
+    const planted = path.join(hostile, ".audit", "EVIL");
+    fs.renameSync(own.runDir, planted);
+    const record = JSON.parse(fs.readFileSync(path.join(planted, "run.json"), "utf8")) as Record<string, unknown>;
+    record.runId = "EVIL";
+    record.args = { ...(record.args as object), root: victim, resolvedRoot: victim };
+    record.rulesDir = path.join(hostile, "rules");
+    fs.writeFileSync(path.join(planted, "run.json"), JSON.stringify(record));
+    // ... and a link to the victim's genuine run.
+    fs.symlinkSync(genuine.runDir, path.join(hostile, ".audit", "LINK"));
+
+    // Not found without a root: the server cwd is not that project.
+    expect((await callError("audit_status", { run_id: "EVIL" })).code).toBe("RUN_NOT_FOUND");
+
+    const read = await callError("audit_read", { run_id: "EVIL", root: hostile, file: "notes.txt" });
+    expect(read.code).toBe("FILE_NOT_IN_INVENTORY");
+    const search = await call("audit_search", { run_id: "EVIL", root: hostile, pattern: "BLUEHERON" });
+    expect(search.total).toBe(0);
+    expect(search.root).toBe(hostile);
+    expect(search.matches).toEqual([]);
+    const added = await callError("audit_add_finding", {
+      run_id: "EVIL",
+      root: hostile,
+      file: "notes.txt",
+      startLine: 1,
+      title: "t",
+      severity: "low",
+      cwe: "CWE-1",
+      rationale: "r",
+    });
+    expect(added.code).toBe("FILE_NOT_IN_INVENTORY");
+    const status = await call("audit_status", { run_id: "EVIL", root: hostile });
+    expect(status.runDir).toBe(planted);
+    expect(status.root).toBe(hostile);
+
+    // A path is not a run id, wherever it points.
+    for (const runId of [genuine.runDir, planted, `../${path.basename(victim)}/.audit/${genuine.id}`, ".audit/EVIL"]) {
+      for (const tool of ["audit_status", "audit_findings", "audit_report"]) {
+        expect((await callError(tool, { run_id: runId, root: hostile })).code, `${tool} ${runId}`).toBe("RUN_NOT_FOUND");
+      }
+    }
+    // A link in .audit that leaves it is refused, for reads and for writes.
+    expect((await callError("audit_findings", { run_id: "LINK", root: hostile })).code).toBe("RUN_DIR_ESCAPE");
+    const verdict = await callError("audit_verdict", {
+      run_id: "LINK",
+      root: hostile,
+      finding: "AUD-2026-0001",
+      status: "false_positive",
+      rationale: "planted",
+    });
+    expect(verdict.code).toBe("RUN_DIR_ESCAPE");
+    expect((await callError("audit_report", { run_id: "LINK", root: hostile, format: "md" })).code).toBe("RUN_DIR_ESCAPE");
+    expect(fs.readdirSync(genuine.runDir).sort()).toEqual(victimBefore);
+  });
+
+  it("re-renders every derived file after a verdict and an added finding", async () => {
+    const root = makeProject("channels", {
+      "app.py": 'import os\n\n\ndef run(c):\n    os.system("ls " + c)\n\n\ndef other(c):\n    os.system("rm " + c)\n',
+    });
+    const run = await finishedRun(root, { latestLink: true });
+    const check = async (label: string): Promise<{ headline: { total: number }; falsePositives: number }> => {
+      const status = (await call("audit_status", { run_id: run.id })) as unknown as {
+        summary: { headline: { total: number }; exitCode: { counting: number }; falsePositives: number };
+      };
+      for (const dir of [run.runDir, path.join(root, ".audit", "latest")]) {
+        const findings = JSON.parse(fs.readFileSync(path.join(dir, "findings.json"), "utf8")) as {
+          run: { summary: unknown };
+        };
+        expect(findings.run.summary, `${label}: ${dir}/findings.json`).toEqual(status.summary);
+        const cover = fs.readFileSync(path.join(dir, "report.md"), "utf8");
+        expect(cover, `${label}: ${dir}/report.md`).toMatch(
+          new RegExp(`\\| \\*\\*Total\\*\\* \\|.*\\| \\*\\*${status.summary.headline.total}\\*\\* \\|`),
+        );
+        const sarif = JSON.parse(fs.readFileSync(path.join(dir, "results.sarif"), "utf8")) as {
+          runs: Array<{ properties: { headline: { total: number }; exitCode: { counting: number } } }>;
+        };
+        expect(sarif.runs[0]?.properties.headline.total, `${label}: ${dir}/results.sarif`).toBe(
+          status.summary.headline.total,
+        );
+        expect(sarif.runs[0]?.properties.exitCode.counting, `${label}: ${dir}/results.sarif`).toBe(
+          status.summary.exitCode.counting,
+        );
+      }
+      const record = JSON.parse(fs.readFileSync(path.join(run.runDir, "run.json"), "utf8")) as { summary: unknown };
+      expect(record.summary, `${label}: run.json`).toEqual(status.summary);
+      return status.summary;
+    };
+    const before = await check("after the scan");
+    expect(before.headline.total).toBeGreaterThan(0);
+
+    const page = (await call("audit_findings", { run_id: run.id, kind: "finding", limit: 1 })) as {
+      items: Array<{ id: string }>;
+    };
+    const verdict = (await call("audit_verdict", {
+      run_id: run.id,
+      finding: page.items[0]?.id,
+      status: "false_positive",
+      rationale: "checked",
+    })) as { refreshed: string[] };
+    expect(verdict.refreshed.length).toBeGreaterThanOrEqual(7);
+    const afterVerdict = await check("after the verdict");
+    expect(afterVerdict.headline.total).toBe(before.headline.total - 1);
+    expect(afterVerdict.falsePositives).toBe(1);
+
+    await call("audit_add_finding", {
+      run_id: run.id,
+      file: "app.py",
+      startLine: 1,
+      title: "Manual finding",
+      severity: "critical",
+      confidence: "high",
+      cwe: "CWE-20",
+      rationale: "by hand",
+    });
+    const afterAdd = await check("after the added finding");
+    expect(afterAdd.headline.total).toBe(before.headline.total);
   });
 });
 

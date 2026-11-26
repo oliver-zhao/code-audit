@@ -9,6 +9,42 @@ DSH's `dsh-skill-filesystem` provider registers it as source `project-dsh` with
 rank 100 (`.agents/skills` is `project-agents`, rank 200); see
 `node_modules/@deepseek-ai/dsh-skill-filesystem/README.md`.
 
+## Install
+
+```sh
+code-audit install --host dsh --project .
+```
+
+writes a managed block into `dsh/cordis.patch.yml` and the skill into
+`.dsh/skills/code-audit/SKILL.md`;
+`code-audit install --uninstall --host dsh --project .` removes both again.
+DSH does not load the patch on its own: pass it with `--patch` as shown below.
+
+What the installer does with a project it did not create:
+
+- It plans first and writes second: every target is checked before anything is
+  written, a failure half-way is rolled back, and `--dry-run` prints the whole
+  plan, refusals included. A refusal exits with status 2 and changes nothing.
+- The MCP command comes from `--mcp-command`, `--absolute` or the default
+  `code-audit-mcp`, never from a file in the project. A re-install without the
+  option goes back to the default and prints the old and the new command.
+- Symbolic links at a target path, and directories that lead out of the
+  project, are refused.
+- The command is always written as a quoted YAML string
+  (`command: 'code-audit-mcp'`), so a value such as `true`, `123` or `a: b`
+  stays a string. Line breaks and control characters in `--mcp-command` are
+  refused.
+- A managed block is a begin-marker line followed by its end-marker line. An
+  orphan begin marker, a stray end marker or a second block is refused with
+  the line number; nothing is appended to such a file.
+- A file of yours that has to be replaced is copied to
+  `.code-audit/backups/<path>` first (one backup per file).
+
+The patch uses the bare command `code-audit-mcp`, which must be on the `PATH`
+of the DSH process. Otherwise install with `--absolute` (do not commit the
+resulting patch) or `--mcp-command <path>`; `code-audit doctor --project .`
+reports whether the configured command resolves.
+
 ## Use without changing your profile
 
 From the project root:

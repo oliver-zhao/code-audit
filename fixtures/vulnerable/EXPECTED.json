@@ -1136,6 +1136,20 @@
       "kind": "finding"
     },
     {
+      "file": ".github/workflows/release.yml",
+      "line": 19,
+      "ruleId": "gha-script-injection-input",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "line": 22,
+      "ruleId": "gha-event-field-in-script",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
       "file": "agents/.mcp.json",
       "line": 5,
       "ruleId": "agent-curl-sh",

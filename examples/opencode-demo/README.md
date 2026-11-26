@@ -9,7 +9,8 @@ Make `code-audit-mcp` resolvable on `PATH`. From the repository root:
 
 ```sh
 pnpm build
-export PATH="$PWD/packages/cli/node_modules/.bin:$PATH"
+pnpm run link:local
+export PATH="$PWD/bin:$PATH"
 ```
 
 ## Verify the host sees the server and its tools

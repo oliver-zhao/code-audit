@@ -32,6 +32,20 @@ describe("shared skill", () => {
     }
     expect(skill).toContain("untrusted");
     expect(skill).toContain("code-audit-mcp");
+    for (const option of ["engines", "baseline", "noInlineIgnore", "reading list"]) {
+      expect(skill).toContain(option);
+    }
+  });
+
+  it("names tools by their bare names and explains host prefixes once", () => {
+    const skill = read("skills/code-audit/SKILL.md");
+    const prefixed = skill.match(/\b(?:mcp__code[-_]audit__|code-audit_)audit_\w+/g) ?? [];
+    expect(prefixed.sort()).toEqual([
+      "code-audit_audit_start",
+      "mcp__code-audit__audit_start",
+      "mcp__code_audit__audit_start",
+    ]);
+    expect(skill).toContain("bare name");
   });
 
   it("is copied into every host adapter", () => {
@@ -84,6 +98,17 @@ describe("host adapters", () => {
   it("declares a Claude Code plugin, MCP config and command", () => {
     const plugin = parseJson("adapters/claude-code/.claude-plugin/plugin.json");
     expect(plugin.name).toBe("code-audit");
+    expect((plugin.author as { name?: string }).name).toBeTruthy();
+    // Shape accepted by `claude plugin validate --strict .` (Claude Code 2.1.183).
+    const marketplace = parseJson(".claude-plugin/marketplace.json") as {
+      name: string;
+      owner: { name: string };
+      plugins: Array<{ name: string; source: string }>;
+    };
+    expect(marketplace.owner.name).toBeTruthy();
+    expect(marketplace.plugins).toHaveLength(1);
+    expect(marketplace.plugins[0]?.name).toBe(plugin.name);
+    expect(marketplace.plugins[0]?.source).toBe("./adapters/claude-code");
     const mcp = parseJson("adapters/claude-code/.mcp.json") as {
       mcpServers: Record<string, { command: string }>;
     };
@@ -91,6 +116,21 @@ describe("host adapters", () => {
     expect(read("adapters/claude-code/commands/audit.md")).toContain(
       "argument-hint:",
     );
+  });
+
+  it("documents the installer's safety rules in every adapter README", () => {
+    for (const host of ["opencode", "dsh", "claude-code", "codex"]) {
+      const readme = read(`adapters/${host}/README.md`);
+      expect(readme, host).toContain(`code-audit install --host ${host}`);
+      expect(readme, host).toContain("never from a file in the project");
+      expect(readme, host).toContain(".code-audit/backups/");
+      expect(readme, host).toContain("--dry-run");
+      // Backups next to the file were replaced by one backup per file.
+      expect(readme, host).not.toContain(".code-audit-backup-");
+    }
+    expect(read("adapters/dsh/README.md")).toContain("command: 'code-audit-mcp'");
+    expect(read("adapters/opencode/README.md")).toContain("--force");
+    expect(read("adapters/claude-code/README.md")).toContain("--force");
   });
 
   it("declares Codex MCP TOML, skills and an AGENTS.md snippet", () => {

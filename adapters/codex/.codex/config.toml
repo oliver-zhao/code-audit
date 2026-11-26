@@ -1,6 +1,17 @@
 # code-audit MCP server (project scope).
-# This file is merged by `code-audit install --host codex`.
-# Do not point this at a global config.
+# `code-audit install --host codex` merges this table into .codex/config.toml
+# as a managed block.
+#
+# Codex only reads a project-level .codex/config.toml for projects you have
+# marked as trusted (`[projects."<path>"] trust_level = "trusted"` in your own
+# ~/.codex/config.toml). Alternatives that need no project trust:
+#   codex mcp add code-audit -- /absolute/path/to/code-audit-mcp
+#   codex exec -c 'mcp_servers.code-audit.command="/absolute/path/to/code-audit-mcp"' \
+#              -c 'mcp_servers.code-audit.args=[]' \
+#              -c 'mcp_servers.code-audit.default_tools_approval_mode="approve"' "<prompt>"
+# `codex exec` rejects MCP tool calls that are not pre-approved; add
+# `default_tools_approval_mode = "approve"` below only if you want that for
+# every headless run in this project.
 
 [mcp_servers.code-audit]
 command = "code-audit-mcp"

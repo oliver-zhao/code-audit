@@ -1,4 +1,17 @@
-import type { Finding } from "./finding.js";
+import {
+  SEVERITY_ORDER,
+  type Confidence,
+  type Finding,
+  type Severity,
+} from "./finding.js";
+import {
+  countsTowardExitCode,
+  escapeMarkdown,
+  groupVulnerablePackages,
+  renderHeadlineMarkdown,
+  renderRunScopeText,
+  type FindingSummary,
+} from "./report.js";
 
 /** GitHub workflow-command escaping for a message property value. */
 export function escapeAnnotationMessage(message: string): string {
@@ -20,6 +33,12 @@ export interface AnnotationOptions {
   env?: NodeJS.ProcessEnv;
   /** Maximum number of annotation lines; defaults to 50. */
   cap?: number;
+  /** `--fail-on` of the run; defaults to high. */
+  failOn?: Severity;
+  /** `--min-confidence` of the run; defaults to medium. */
+  minConfidence?: Confidence;
+  /** True when a baseline is active: existing findings are not annotated. */
+  newOnly?: boolean;
 }
 
 /**
@@ -39,9 +58,13 @@ export function renderWarningAnnotations(
 }
 
 /**
- * Render one GitHub workflow annotation per actionable finding that counts
- * toward the exit code. Critical/high findings use `::error`; medium and below
- * use `::warning`. Evidence of a secret finding is never included.
+ * Render GitHub workflow annotations for the findings that count toward the
+ * exit code (active, severity >= failOn, confidence >= minConfidence, new when
+ * a baseline is active) and for nothing else, so the annotations explain a
+ * failed job. Code, secret and configuration findings get one annotation each;
+ * dependency advisories are folded into one annotation per vulnerable package
+ * per lockfile. Critical/high use `::error`, medium and below `::warning`.
+ * Highest severity first, capped at 50. Evidence is never included.
  */
 export function renderAnnotations(
   findings: readonly Finding[],
@@ -50,61 +73,86 @@ export function renderAnnotations(
   const env = options.env ?? process.env;
   if (env.GITHUB_ACTIONS !== "true") return [];
   const cap = Math.max(0, Math.trunc(options.cap ?? 50));
-  const lines: string[] = [];
-  for (const finding of findings) {
-    if (lines.length >= cap) break;
-    if (finding.status === "suppressed" || finding.status === "false_positive") {
-      continue;
-    }
-    const level =
-      finding.severity === "critical" || finding.severity === "high"
-        ? "error"
-        : "warning";
-    const file = escapeAnnotationProperty(finding.file);
-    const title = escapeAnnotationProperty(finding.ruleId);
-    const message = escapeAnnotationMessage(
-      finding.message ?? finding.title,
-    );
-    lines.push(
-      `::${level} file=${file},line=${finding.startLine},title=${title}::${message}`,
-    );
+  const counting = findings.filter((finding) =>
+    countsTowardExitCode(finding, {
+      failOn: options.failOn,
+      minConfidence: options.minConfidence,
+      newOnly: options.newOnly,
+    }),
+  );
+  interface Item {
+    severity: Severity;
+    file: string;
+    line: number;
+    title: string;
+    message: string;
   }
-  return lines;
+  const items: Item[] = [];
+  for (const finding of counting) {
+    if (finding.category === "sca") continue;
+    items.push({
+      severity: finding.severity,
+      file: finding.file,
+      line: finding.startLine,
+      title: finding.ruleId,
+      message: finding.message ?? finding.title,
+    });
+  }
+  for (const pkg of groupVulnerablePackages(counting)) {
+    const shown = pkg.advisoryIds.slice(0, 5).join(", ");
+    const more = pkg.advisoryIds.length - 5;
+    items.push({
+      severity: pkg.maxSeverity,
+      file: pkg.file,
+      line: pkg.line,
+      title: `${pkg.package}@${pkg.installed}`,
+      message:
+        `${pkg.package} ${pkg.installed} (${pkg.scope} dependency): ` +
+        `${pkg.advisories.length} ${pkg.advisories.length === 1 ? "advisory" : "advisories"}, ` +
+        `highest severity ${pkg.maxSeverity}: ${shown}${more > 0 ? ` +${more} more` : ""}. ` +
+        (pkg.recommendedUpgrade === "—"
+          ? "No fixed version known."
+          : `Recommended upgrade: ${pkg.recommendedUpgrade}.`),
+    });
+  }
+  // Stable sort: input order is kept within one severity.
+  items.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]);
+  return items.slice(0, cap).map((item) => {
+    const level =
+      item.severity === "critical" || item.severity === "high" ? "error" : "warning";
+    return `::${level} file=${escapeAnnotationProperty(item.file)},line=${item.line},title=${escapeAnnotationProperty(item.title)}::${escapeAnnotationMessage(item.message)}`;
+  });
 }
 
 /**
- * Build a short Markdown summary table (the same shape as the report cover) for
- * the GitHub Actions job summary.
+ * Markdown summary for the GitHub Actions job summary and the `--ci` output.
+ * It shows the same headline block (verdict line, severity x category table,
+ * separate low-confidence and hotspot numbers) as the report cover.
  */
 export function renderStepSummaryMarkdown(input: {
-  findingCounts: Record<string, number>;
-  total: number;
-  hotspots: number;
+  summary: FindingSummary;
   baseline?: { new: number; existing: number; fixed: number };
+  /** Present when `--since` limited the run to changed files. */
+  scope?: { since: string; changedFiles: number };
   reportPaths: string[];
   warnings?: string[];
 }): string {
   const lines: string[] = [];
   lines.push("## code-audit summary", "");
-  lines.push(`- Total findings: **${input.total}**`);
-  lines.push(
-    `- ${["critical", "high", "medium", "low", "info"]
-      .map((severity) => `${severity}: ${input.findingCounts[severity] ?? 0}`)
-      .join(" · ")}`,
-  );
-  lines.push(`- Hotspots: ${input.hotspots}`);
-  if (input.baseline) {
-    lines.push(
-      `- Baseline: New: ${input.baseline.new} · Existing: ${input.baseline.existing} · Fixed: ${input.baseline.fixed}`,
-    );
+  lines.push(...renderHeadlineMarkdown(input.summary, "en"));
+  for (const line of renderRunScopeText(input)) {
+    // The git ref of `--since` is a command-line value, but it is still
+    // escaped like every other text that reaches Markdown.
+    lines.push(`- ${escapeMarkdown(line)}`);
   }
   for (const reportPath of input.reportPaths) {
-    lines.push(`- Report: \`${reportPath}\``);
+    lines.push(`- Report: \`${reportPath.replace(/`/g, "'")}\``);
   }
   if (input.warnings && input.warnings.length > 0) {
     lines.push("", "### Warnings", "");
     for (const warning of input.warnings) {
-      lines.push(`- ${warning}`);
+      // Warnings can quote file names from the audited repository.
+      lines.push(`- ${escapeMarkdown(warning)}`);
     }
   }
   lines.push("");

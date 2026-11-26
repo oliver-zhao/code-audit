@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { Finding } from "./finding.js";
 import { BASELINE_FILE_NAME } from "./ignore.js";
+import { writeFileAtomicNoFollow } from "./safeFs.js";
 
 export const BASELINE_SCHEMA_VERSION = 1;
 
@@ -85,17 +86,23 @@ export function readBaseline(file: string): BaselineDocument {
  * Build a baseline document from a run's active findings. Hotspots, suppressed
  * findings and false positives are excluded. Entries are sorted by fingerprint
  * so the file is diff-friendly and never contain evidence or secret values.
+ *
+ * With `includeFalsePositives` findings a reviewer marked false positive are
+ * recorded too. `code-audit baseline <run>` does that: a verdict lives in its
+ * run only, and the baseline is how the decision reaches the next scan (the
+ * finding is then `existing` there instead of new).
  */
 export function buildBaseline(
   findings: readonly Finding[],
   createdAt: string,
   tool: string,
+  options: { includeFalsePositives?: boolean } = {},
 ): BaselineDocument {
   const entries: BaselineEntry[] = findings
     .filter(
       (finding) =>
         finding.status !== "suppressed" &&
-        finding.status !== "false_positive" &&
+        (options.includeFalsePositives === true || finding.status !== "false_positive") &&
         finding.kind !== "hotspot",
     )
     .map((finding) => ({
@@ -164,4 +171,56 @@ export function compareBaseline(
     counts: { new: fresh, existing, fixed: fixed.length },
     fixed,
   };
+}
+/**
+ * Where `code-audit baseline <run>` writes the baseline file.
+ *
+ * With an explicit `output` that path is used. Without one the file goes to
+ * `<root>/.code-audit-baseline.json`, where `root` is the audit root derived
+ * from where the run directory is: the directory that contains `.audit` for
+ * a run at `<root>/.audit/<run-id>`.
+ *
+ * Nothing written inside the run directory (run.json, state.json) decides
+ * the destination: those files are part of the audited repository, and a
+ * prepared run could otherwise name another project, whose baseline would be
+ * overwritten with findings to accept. A run directory anywhere else (an
+ * external `--out`, a copy) has no derived root; this throws and asks for
+ * `--output`.
+ */
+export function resolveBaselineOutput(input: {
+  runDir: string;
+  /** The audit root derived from the location of the run directory, if any. */
+  root?: string;
+  output?: string;
+}): string {
+  if (input.output !== undefined && input.output !== "") {
+    return path.resolve(input.output);
+  }
+  if (input.root === undefined || input.root === "") {
+    throw new BaselineError(
+      `refusing to write a baseline: the run directory ${input.runDir} is not at <root>/.audit/<run-id>, so it does not show which project it belongs to, and the root named in its run.json is not trusted on its own. ` +
+        "Pass --output <file> to choose where the baseline is written.",
+    );
+  }
+  return path.join(input.root, BASELINE_FILE_NAME);
+}
+
+/**
+ * Write a baseline file without following a symbolic link at its path. With
+ * `expectedDir` (the audit root for the default location) the write is
+ * refused when the file's directory resolves anywhere else.
+ */
+export function writeBaselineFile(
+  target: string,
+  document: BaselineDocument,
+  expectedDir?: string,
+): string {
+  if (expectedDir === undefined) {
+    fs.mkdirSync(path.dirname(path.resolve(target)), { recursive: true });
+  }
+  return writeFileAtomicNoFollow(
+    target,
+    serializeBaseline(document),
+    expectedDir === undefined ? {} : { expectedDir },
+  );
 }

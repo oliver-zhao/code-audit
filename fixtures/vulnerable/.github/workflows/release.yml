@@ -1,0 +1,22 @@
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release
+        required: true
+  release:
+    types: [published]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+      - name: Build
+        run: |
+          echo "Releasing ${{ github.event.inputs.tag }}"
+          ./build.sh
+      - name: Announce
+        run: echo "Published ${{ github.event.release.name }}"

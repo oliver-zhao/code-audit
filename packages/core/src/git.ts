@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runTool } from "./external/run.js";
+import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
+import { LATEST_OUTPUT_FILES, RUN_OUTPUT_FILES } from "./meta.js";
 import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
 
 export class GitScopeError extends Error {
@@ -75,6 +77,51 @@ export interface ListChangedFilesOptions {
   timeoutMs?: number;
   /** Output cap for each git invocation (testing). */
   maxOutputBytes?: number;
+  /**
+   * Directory the scan writes its run directories to (`--out`, absolute).
+   * When it is inside the audit root, the files the tool itself wrote there
+   * are not counted as changed. See `isOwnOutputFile`.
+   */
+  outputDir?: string;
+}
+
+/**
+ * True for a file that code-audit itself wrote or reads as configuration, so
+ * that it must not count as a change of the audited project:
+ *
+ * - anything under `<root>/.audit/` or `<root>/.code-audit/` (never audited:
+ *   those directories are excluded from the inventory);
+ * - `<root>/.code-audit-baseline.json` and `<root>/.code-audit-ignore` (never
+ *   audited: control files);
+ * - when `--out` points inside the root: the known output files of a run
+ *   directory `<out>/<run>/` (one that holds a `run.json` or `state.json`) and
+ *   of `<out>/latest/`, and only when git reports them as UNTRACKED.
+ *
+ * The last rule is deliberately narrow. A directory named like the output
+ * directory can also hold files of the audited repository; those are tracked
+ * by git, or have other names, and stay in scope.
+ */
+export function isOwnOutputFile(
+  root: string,
+  relPath: string,
+  options: { untracked: boolean; outputDir?: string },
+): boolean {
+  const normalized = relPath.split("\\").join("/");
+  if (normalized === BASELINE_FILE_NAME || normalized === IGNORE_FILE_NAME) return true;
+  if (normalized.startsWith(".audit/") || normalized.startsWith(".code-audit/")) return true;
+  if (!options.untracked || !options.outputDir) return false;
+  const outRel = path.relative(root, options.outputDir).split(path.sep).join("/");
+  if (!outRel || outRel.startsWith("..") || path.isAbsolute(outRel)) return false;
+  if (!normalized.startsWith(`${outRel}/`)) return false;
+  const rest = normalized.slice(outRel.length + 1).split("/");
+  if (rest.length !== 2) return false;
+  const [runName, fileName] = rest as [string, string];
+  if (runName === "latest") return LATEST_OUTPUT_FILES.has(fileName);
+  if (!RUN_OUTPUT_FILES.has(fileName)) return false;
+  const runDir = path.join(options.outputDir, runName);
+  return (
+    fs.existsSync(path.join(runDir, "run.json")) || fs.existsSync(path.join(runDir, "state.json"))
+  );
 }
 
 function gitArgs(root: string, args: readonly string[]): string[] {
@@ -203,21 +250,27 @@ export async function listChangedFiles(
     );
   }
 
+  const outputDir = options.outputDir ? canonicalDir(options.outputDir) : undefined;
   const rawFiles = [
-    ...splitNul(committed.stdout),
-    ...splitNul(untracked.stdout),
-  ].map((entry) => entry.split("\\").join("/"));
+    ...splitNul(committed.stdout).map((entry) => ({ entry, untracked: false })),
+    ...splitNul(untracked.stdout).map((entry) => ({ entry, untracked: true })),
+  ].map((item) => ({ ...item, entry: item.entry.split("\\").join("/") }));
 
   // Path jail: git output is untrusted. Drop anything that escapes the root.
   const files: string[] = [];
   const warnings = new Set<string>();
-  for (const entry of rawFiles) {
+  for (const { entry, untracked: isUntracked } of rawFiles) {
+    let relative: string;
     try {
       const resolved = resolveInside(root, entry);
-      files.push(toPosixRelative(root, resolved));
+      relative = toPosixRelative(root, resolved);
     } catch {
       warnings.add("ignored path outside audit root reported by git");
+      continue;
     }
+    // The tool's own output and control files are not changes of the project.
+    if (isOwnOutputFile(root, relative, { untracked: isUntracked, outputDir })) continue;
+    files.push(relative);
   }
 
   return {
@@ -225,6 +278,15 @@ export async function listChangedFiles(
     files: [...new Set(files)].sort(),
     warnings: [...warnings],
   };
+}
+
+/** Real path of a directory, or the resolved path when it does not exist. */
+function canonicalDir(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return path.resolve(dir);
+  }
 }
 
 /**

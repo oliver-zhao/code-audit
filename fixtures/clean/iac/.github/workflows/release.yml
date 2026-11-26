@@ -1,0 +1,31 @@
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release
+        required: true
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.head_ref }}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+      - name: Build
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Releasing $TAG from $BRANCH: $TITLE"
+          echo "PR ${{ github.event.pull_request.number }} at ${{ github.event.pull_request.head.sha }}"
+      - uses: actions/github-script@v7
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          script: |
+            core.info(process.env.TITLE)

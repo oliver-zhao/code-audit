@@ -146,7 +146,7 @@ describe("review 2 / detection: the Python lexer fails open", () => {
 
     const out = path.join(temp, "lone-cr-out");
     const scan = await scanProject({ root: project, out, offline: true, engines: ["builtin"] });
-    const snippet = readSnippet(scan.runDir, "app.py");
+    const snippet = readSnippet(scan.runDir, "app.py", 1, undefined, { root: project });
     expect(snippet.totalLines).toBe(5);
     expect(snippet.lines[1]?.text).toBe("import subprocess; subprocess.run(input(), shell=True)");
     expect(snippet.lines[2]?.text).not.toContain("LEAKCRCR");
@@ -157,7 +157,7 @@ describe("review 2 / detection: the Python lexer fails open", () => {
       severity: "low",
       cwe: "CWE-1104",
       rationale: "line numbering check",
-    });
+    }, { root: project });
     expect(added.finding.evidence).toBe("Y = 2");
   });
 
@@ -275,7 +275,8 @@ describe("review 2 / detection: the Python lexer fails open", () => {
     expect(document.hotspots.find((f) => f.ruleId === "py-os-system-api")?.status).toBe("suppressed");
 
     const report = fs.readFileSync(path.join(scan.runDir, "report.md"), "utf8");
-    const section = report.slice(report.indexOf("5a. Suppressed findings"), report.indexOf("## 6."));
+    const sectionStart = report.indexOf(". Suppressed findings\n");
+    const section = report.slice(sectionStart, report.indexOf("\n## ", sectionStart));
     expect(section).not.toContain("None.");
     expect(section).toMatch(/\| py-subprocess-shell \| app\.py \| 3 \| inline comment \| trust me \|/);
     expect(section).toMatch(/\| py-os-system-api \| app\.py \| 4 \| inline comment \| no reason given \|/);
@@ -425,19 +426,19 @@ describe("review 2 / output: no secret literal reaches any output", () => {
 
     // read / search / findings through the CLI, and through the library.
     for (const file of ["app.py", "conf.json", "conf.yml", "Dockerfile", "k8s/d.yml"]) {
-      const read = cli(["read", scan.runDir, file]);
+      const read = cli(["read", scan.runDir, file, "--root", project]);
       expect(read.status, file).toBe(0);
       // (A literal that nothing marks as a secret is source text like any
       // other; it is masked once a finding says it is a credential, see 8.)
       expectNoLeak(read.stdout, ["plainArg"]);
-      expectNoLeak(JSON.stringify(readSnippet(scan.runDir, file)), ["plainArg"]);
+      expectNoLeak(JSON.stringify(readSnippet(scan.runDir, file, 1, undefined, { root: project })), ["plainArg"]);
     }
     for (const pattern of ["LEAK", "q7Xw", "password", "os.system"]) {
-      const search = cli(["search", scan.runDir, pattern]);
+      const search = cli(["search", scan.runDir, pattern, "--root", project]);
       expect(search.status, pattern).toBe(0);
       expect(search.stdout).toMatch(/match\(es\)/);
       expectNoLeak(search.stdout, ["plainArg"]);
-      expectNoLeak(JSON.stringify(searchCode(scan.runDir, { pattern })), ["plainArg"]);
+      expectNoLeak(JSON.stringify(searchCode(scan.runDir, { pattern }, { root: project })), ["plainArg"]);
     }
     for (const kind of ["finding", "hotspot", "all"]) {
       const findings = cli(["findings", scan.runDir, "--kind", kind, "--min-confidence", "low", "--json"]);
@@ -461,7 +462,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
 
     // A secret-like name on the line: masked whatever the CWE of the finding.
     const byName = cli([
-      "add-finding", scan.runDir, "--file", "app.py", "--start", "3", "--title", "Odd default",
+      "add-finding", scan.runDir, "--root", project, "--file", "app.py", "--start", "3", "--title", "Odd default",
       "--severity", "medium", "--cwe", "CWE-1188", "--rationale", `the value ${SECRETS.compound} is a default`, "--json",
     ]);
     expect(byName.status).toBe(0);
@@ -478,7 +479,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
       severity: "high",
       cwe: "CWE-798",
       rationale: "literal credential",
-    });
+    }, { root: project });
     expect(byCwe.finding.evidence).toBe('conn = connect("LE********************in")');
     // ... and so does a title that says it is about a secret.
     const second = path.join(temp, "add-finding-out2");
@@ -490,7 +491,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
       severity: "high",
       cwe: "CWE-200",
       rationale: "literal credential",
-    });
+    }, { root: project });
     expect(byTitle.finding.evidence).toBe('conn = connect("LE********************in")');
     // A multi-line value: the continuation line has no name on it.
     const continued = addFinding(scan2.runDir, {
@@ -501,7 +502,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
       severity: "low",
       cwe: "CWE-1188",
       rationale: "multi-line value",
-    });
+    }, { root: project });
     expectNoLeak(continued.finding.evidence);
 
     // The re-rendered report and every file of both runs stay clean.
@@ -570,7 +571,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
     expect(redactText(`password: |\n  ${value}\nother: 1`, { file: "c.yml" })).not.toContain(value);
   });
 
-  it("9. reports compound names and JSON keys, and none of the non-secrets", () => {
+  it("9. reports compound names and JSON keys, placeholders as low confidence, and none of the non-secrets", () => {
     const project = path.join(temp, "detector");
     writeFile(
       project,
@@ -579,9 +580,11 @@ describe("review 2 / output: no secret literal reaches any output", () => {
         'db_password = "Tr0ub4dor&3xyz"',
         'CONFIG = {"password": "Tr0ub4dor&3abc"}',
         'password = "Tr0ub4dor&3old"',
-        // Not secrets: placeholder, environment, None, template, field name,
-        // path, URL, prose, empty.
+        // A placeholder as a whole: reported, with low confidence (it used to
+        // be dropped).
         'db_password = "changeme-please"',
+        // Not secrets: environment, None, template, field name, path, URL,
+        // empty.
         'db_password = os.environ["DB_PASSWORD"]',
         'admin_password = "None"',
         'reset_token = "{uid}-{token}"',
@@ -590,6 +593,7 @@ describe("review 2 / output: no secret literal reaches any output", () => {
         'auth_token = "%(token)s"',
         'cert_password = "/run/secrets/cert_password"',
         'token_url = "https://example.invalid/oauth/token"',
+        // A prompt is a placeholder as a whole, too.
         'CONFIG = {"password": "Enter your password"}',
         'smtp_password = ""',
         "",
@@ -600,7 +604,13 @@ describe("review 2 / output: no secret literal reaches any output", () => {
       "1:medium",
       "2:medium",
       "3:high",
+      "4:low",
+      "13:low",
     ]);
+    for (const finding of found.filter((entry) => entry.confidence === "low")) {
+      expect(finding.confidenceOriginal).toBe("medium");
+      expect(finding.adjustments).toEqual(["placeholder-value"]);
+    }
     expect(JSON.stringify(found)).not.toContain("Tr0ub4dor");
   });
 

@@ -5,20 +5,21 @@ import {
   CONFIDENCES,
   SEVERITIES,
   TOOL_VERSION,
+  appendFileNoFollow,
   buildBaseline,
-  confidenceAtLeast,
+  countOptionsOf,
   defaultOpengrepRulesDir,
   defaultRulesDir,
   discoverTools,
-  isActionable,
   loadOpengrepRules,
   loadRules,
+  renderRunScopeText,
   renderStepSummaryMarkdown,
+  renderSummaryText,
   renderAnnotations,
   renderWarningAnnotations,
+  runPolicy,
   scanProject,
-  serializeBaseline,
-  severityAtLeast,
   type BaselineComparison,
   type Confidence,
   type EngineName,
@@ -28,7 +29,18 @@ import {
 import { runMcpServer } from "@code-audit/mcp";
 import fs from "node:fs";
 import path from "node:path";
-import { INSTALL_HOSTS, installAdapter, type InstallHost } from "./install.js";
+import {
+  DEFAULT_MCP_COMMAND,
+  INSTALL_HOSTS,
+  bundledMcpCommand,
+  inspectInstall,
+  installAdapter,
+  resolveCommand,
+  uninstallAdapter,
+  type InstallAction,
+  type InstallHost,
+  type ProjectInstallStatus,
+} from "./install.js";
 import { isQueryCommand, runQueryCommand } from "./query.js";
 
 class CliError extends Error {}
@@ -42,11 +54,12 @@ Usage:
                         [--fail-on low|medium|high|critical]
                         [--min-confidence low|medium|high] [--lang en|zh]
                         [--rules <dir>] [--ignore-file <path>] [--no-ignore-file]
-                        [--no-inline-ignore]
+                        [--no-inline-ignore] [--include-tests] [--include-dev]
+                        [--include-placeholders] [--untrusted]
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
   code-audit baseline <run-id|run-dir> [--output <file>]
-  code-audit status <run-id|run-dir> [--json]
+  code-audit status <run-id|run-dir> [--root <dir>] [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
                         [--severity <s>] [--status <s>] [--language <l>]
                         [--min-confidence low|medium|high] [--limit N]
@@ -65,10 +78,25 @@ Usage:
                         [--promote <hotspot-id|fingerprint>] [--json]
   code-audit report <run-id|run-dir> [--format md|json|sarif|summary]
                         [--output <file>] [--json]
+  Run commands (status ... report) also accept:
+                        [--root <dir>]   audit root; required to read project
+                                         files when the run directory is not
+                                         <root>/.audit/<run-id>
+                        [--rules <dir>]  rule set for this command (default:
+                                         the bundled rules)
   code-audit mcp
-  code-audit install --host opencode|dsh|claude-code|codex [--project <dir>] [--dry-run]
-  code-audit doctor [--json]
+  code-audit install --host opencode|dsh|claude-code|codex [--project <dir>]
+                        [--mcp-command <path> | --absolute] [--force] [--dry-run]
+  code-audit install --uninstall --host <host> [--project <dir>] [--dry-run]
+  code-audit doctor [--project <dir>] [--json]
   code-audit --help
+
+Auditing a repository you do not trust:
+  --untrusted  ignore everything the audited repository could use to lower the
+               result: implies --no-ignore-file --no-baseline --no-inline-ignore
+               --include-tests --include-dev --include-placeholders, scans
+               default-excluded directories (build, dist, vendor, ...; not .git)
+               and the tool's own adapter files and earlier reports.
 
 Exit codes:
   0  completed and no finding reached the thresholds
@@ -133,6 +161,10 @@ interface ScanArgs {
   since?: string;
   ci: boolean;
   latestLink: boolean;
+  includeTests: boolean;
+  includeDev: boolean;
+  includePlaceholders: boolean;
+  untrusted: boolean;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -155,6 +187,10 @@ function parseScanArgs(args: string[]): ScanArgs {
   let since: string | undefined;
   let ci = false;
   let latestLink = false;
+  let includeTests = false;
+  let includeDev = false;
+  let includePlaceholders = false;
+  let untrusted = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -250,6 +286,14 @@ function parseScanArgs(args: string[]): ScanArgs {
       ci = true;
     } else if (arg === "--latest-link") {
       latestLink = true;
+    } else if (arg === "--include-tests") {
+      includeTests = true;
+    } else if (arg === "--include-dev") {
+      includeDev = true;
+    } else if (arg === "--include-placeholders") {
+      includePlaceholders = true;
+    } else if (arg === "--untrusted") {
+      untrusted = true;
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -280,6 +324,10 @@ function parseScanArgs(args: string[]): ScanArgs {
     since,
     ci,
     latestLink,
+    includeTests,
+    includeDev,
+    includePlaceholders,
+    untrusted,
   };
 }
 
@@ -304,20 +352,11 @@ async function runScan(args: string[]): Promise<number> {
     failOnExisting: parsed.failOnExisting,
     since: parsed.since,
     latestLink: parsed.latestLink,
+    includeTests: parsed.includeTests,
+    includeDev: parsed.includeDev,
+    includePlaceholders: parsed.includePlaceholders,
+    untrusted: parsed.untrusted,
   });
-
-  const counts = {
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    info: 0,
-  } as Record<string, number>;
-  for (const finding of result.findings) {
-    if (isActionable(finding)) {
-      counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
-    }
-  }
 
   const run = result.run as {
     baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
@@ -326,46 +365,42 @@ async function runScan(args: string[]): Promise<number> {
   const baseline = run.baseline;
   const scope = run.scope;
 
+  // One counting model for every number printed below and for the exit
+  // code: the summary of the run, computed with the policy recorded in
+  // run.json (the same one report.md, results.sarif and findings.json use).
+  const summary = result.summary;
+  const countOptions = countOptionsOf(runPolicy(result.run));
+
   if (parsed.ci) {
     // CI mode: no colour, no progress lines, compact summary at the end.
-    const annotations = renderAnnotations(result.findings);
+    const annotations = renderAnnotations(result.findings, countOptions);
     for (const line of annotations) process.stdout.write(`${line}\n`);
     const warningAnnotations = renderWarningAnnotations(result.warnings);
     for (const line of warningAnnotations) process.stdout.write(`${line}\n`);
-    const reportPaths = [
-      path.join(result.runDir, "report.md"),
-      path.join(result.runDir, "results.sarif"),
-      path.join(result.runDir, "findings.json"),
-    ];
-    const summary = renderStepSummaryMarkdown({
-      findingCounts: counts,
-      total: result.findings.filter(isActionable).length,
-      hotspots: result.hotspots.length,
+    // Only the files this run wrote (`--format` can leave some out).
+    const reportPaths = ["report.md", "results.sarif", "findings.json"]
+      .map((name) => path.join(result.runDir, name))
+      .filter((file) => fs.existsSync(file));
+    const stepSummaryText = renderStepSummaryMarkdown({
+      summary,
       ...(baseline
         ? { baseline: { new: baseline.new, existing: baseline.existing, fixed: baseline.fixed } }
         : {}),
+      ...(scope ? { scope } : {}),
       reportPaths,
       warnings: result.warnings,
     });
-    process.stdout.write(summary);
+    process.stdout.write(stepSummaryText);
     const stepSummary = process.env.GITHUB_STEP_SUMMARY;
     if (stepSummary) {
       try {
-        fs.appendFileSync(stepSummary, summary, "utf8");
+        // Never through a symbolic link at that path.
+        appendFileNoFollow(stepSummary, stepSummaryText);
       } catch {
         // A read-only or missing step-summary path must not fail the run.
       }
     }
   } else {
-    // Suppressed candidates are not counted as findings, and are never hidden.
-    const notSuppressed = (finding: { status: string }): boolean =>
-      finding.status !== "suppressed";
-    const suppressedAll = [...result.findings, ...result.hotspots].filter(
-      (finding) => finding.status === "suppressed",
-    );
-    const suppressedInline = suppressedAll.filter(
-      (finding) => finding.suppression?.source === "inline",
-    ).length;
     process.stdout.write(
       [
         `code-audit scan completed: ${result.runId}`,
@@ -375,17 +410,10 @@ async function runScan(args: string[]): Promise<number> {
             : ""
         } / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
         `Rules: ${result.coverage.rulesCount}`,
-        ...(baseline
-          ? [`Baseline: New: ${baseline.new} · Existing: ${baseline.existing} · Fixed: ${baseline.fixed}`]
-          : []),
-        ...(scope ? [`Scope: files changed since ${scope.since} (${scope.changedFiles} files)`] : []),
-        `Findings: ${result.findings.filter(notSuppressed).length} (critical ${counts.critical}, high ${counts.high}, medium ${counts.medium}, low ${counts.low}, info ${counts.info})`,
-        `Hotspots: ${result.hotspots.filter(notSuppressed).length}`,
-        ...(suppressedAll.length > 0
-          ? [
-              `Suppressed: ${suppressedAll.length} (ignore file ${suppressedAll.length - suppressedInline}, inline comments ${suppressedInline}); listed in the report`,
-            ]
-          : []),
+        ...renderRunScopeText({ baseline, scope }),
+        // Headline, low-confidence candidates, hotspots, suppressed (never
+        // hidden) and the line that explains the exit code.
+        ...renderSummaryText(summary),
         `Duration: ${result.durationMs} ms`,
         `Report directory: ${result.runDir}`,
         "",
@@ -401,15 +429,9 @@ async function runScan(args: string[]): Promise<number> {
     }
   }
 
-  const baselineActive = Boolean(baseline) && !parsed.failOnExisting;
-  const failing = result.findings.some((finding) => {
-    if (!isActionable(finding)) return false;
-    if (!severityAtLeast(finding.severity, parsed.failOn)) return false;
-    if (!confidenceAtLeast(finding.confidence, parsed.minConfidence)) return false;
-    if (baselineActive && finding.baselineState === "existing") return false;
-    return true;
-  });
-  return failing ? 1 : 0;
+  // Active, severity >= --fail-on, confidence >= --min-confidence, and new
+  // when a baseline is active: the number every report prints.
+  return summary.exitCode.code;
 }
 
 async function runBaselineCommand(args: string[]): Promise<number> {
@@ -433,29 +455,63 @@ async function runBaselineCommand(args: string[]): Promise<number> {
   }
   if (!ref) throw new CliError("baseline requires a run id or run directory");
 
-  const { loadRun, resolveRunDir } = await import("@code-audit/core");
-  const runDir = resolveRunDir(ref);
-  const loaded = loadRun(runDir);
+  const { effectiveFindings, loadRun, resolveBaselineOutput, writeBaselineFile } =
+    await import("@code-audit/core");
+  const loaded = loadRun(ref);
+  for (const notice of loaded.notices) process.stderr.write(`warning: ${notice}\n`);
+  // Every finding of the run that is not suppressed, including those a
+  // reviewer marked false positive: verdicts stay with their run, and the
+  // baseline is what carries the decision to the next scan.
   const baseline = buildBaseline(
-    loaded.findings,
+    effectiveFindings(loaded),
     new Date().toISOString(),
     `code-audit ${TOOL_VERSION}`,
+    { includeFalsePositives: true },
   );
-  const target =
-    output ??
-    path.join(loaded.root, ".code-audit-baseline.json");
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, serializeBaseline(baseline), "utf8");
+  // The default destination is the root derived from where the run directory
+  // is (`<root>/.audit/<run-id>`), never a root named inside the run. Throws
+  // (exit 2) when there is none and no --output was given.
+  const derivedRoot = loaded.rootSource === "location" ? loaded.root : undefined;
+  const target = resolveBaselineOutput({ runDir: loaded.runDir, root: derivedRoot, output });
+  const written = writeBaselineFile(
+    target,
+    baseline,
+    output === undefined || output === "" ? derivedRoot : undefined,
+  );
+  process.stdout.write(`Run directory: ${loaded.runDir}\n`);
   process.stdout.write(
-    `baseline written to ${target} (${baseline.entries.length} entries)\n`,
+    `baseline written to ${written} (${baseline.entries.length} entries)\n`,
   );
   return 0;
 }
 
 async function runDoctor(args: string[]): Promise<number> {
-  const asJson = args.includes("--json");
-  const unknown = args.filter((arg) => arg !== "--json");
+  let asJson = false;
+  let projectArg: string | undefined;
+  const unknown: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--json") {
+      asJson = true;
+    } else if (arg === "--project") {
+      projectArg = takeValue(args, index + 1, arg);
+      index += 1;
+    } else {
+      unknown.push(arg);
+    }
+  }
   if (unknown.length > 0) throw new CliError(`doctor unknown arguments: ${unknown.join(" ")}`);
+
+  const mcpPath = resolveCommand(DEFAULT_MCP_COMMAND) ?? null;
+  const mcp = {
+    command: DEFAULT_MCP_COMMAND,
+    onPath: mcpPath !== null,
+    path: mcpPath,
+    bundled: bundledMcpCommand(),
+    bundledExists: fs.existsSync(bundledMcpCommand()),
+  };
+  const project: ProjectInstallStatus | undefined =
+    projectArg === undefined ? undefined : inspectInstall(projectArg);
 
   const major = Number(process.versions.node.split(".")[0] ?? 0);
   const nodeOk = major >= 22;
@@ -529,6 +585,8 @@ async function runDoctor(args: string[]): Promise<number> {
     },
     externalTools,
     tier,
+    mcp,
+    ...(project ? { project } : {}),
   };
 
   if (asJson) {
@@ -560,6 +618,50 @@ async function runDoctor(args: string[]): Promise<number> {
       );
     }
   }
+  process.stdout.write(
+    mcp.onPath
+      ? `MCP server: ${mcp.command} found on PATH (${mcp.path ?? ""})\n`
+      : [
+          `MCP server: ${mcp.command} NOT found on PATH`,
+          `  Host configs that use the bare command will fail to start it. Add ${path.dirname(mcp.bundled)} to PATH,`,
+          "  or re-run `code-audit install` with --absolute or --mcp-command <path>.",
+          ...(mcp.bundledExists
+            ? []
+            : [`  ${mcp.bundled} is missing; run \`pnpm build && pnpm run link:local\`.`]),
+          "",
+        ].join("\n"),
+  );
+  process.stdout.write(
+    "  (checked with this shell's PATH; a GUI-launched host may see a shorter one)\n",
+  );
+  if (project) {
+    process.stdout.write(`Project: ${project.project}\n`);
+    if (project.hosts.length === 0) {
+      process.stdout.write(
+        `  no host adapters installed${project.manifest ? "" : " (no .code-audit/installed.json)"}\n`,
+      );
+    }
+    for (const host of project.hosts) {
+      const missing = host.files.filter((file) => !file.present);
+      const command =
+        host.mcpCommand === null
+          ? `no MCP entry found in ${host.configFile ?? "the host config"}`
+          : host.mcpCommandResolved
+            ? `MCP command ${host.mcpCommand} resolves${
+                host.mcpCommandResolved === host.mcpCommand
+                  ? ""
+                  : ` (${host.mcpCommandResolved})`
+              }`
+            : `MCP command ${host.mcpCommand} does NOT resolve`;
+      process.stdout.write(
+        `  ${host.host.padEnd(12)} installed  ${command}${
+          missing.length > 0
+            ? `; missing files: ${missing.map((file) => file.path).join(", ")}`
+            : ""
+        }\n`,
+      );
+    }
+  }
   return nodeOk ? 0 : 1;
 }
 
@@ -567,12 +669,20 @@ interface InstallArgs {
   host: InstallHost;
   project: string;
   dryRun: boolean;
+  uninstall: boolean;
+  mcpCommand?: string;
+  absolute: boolean;
+  force: boolean;
 }
 
 function parseInstallArgs(args: string[]): InstallArgs {
   let host: InstallHost | undefined;
   let project = process.cwd();
   let dryRun = false;
+  let uninstall = false;
+  let absolute = false;
+  let force = false;
+  let mcpCommand: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--help" || arg === "-h") {
@@ -590,6 +700,15 @@ function parseInstallArgs(args: string[]): InstallArgs {
     } else if (arg === "--project") {
       project = takeValue(args, index + 1, arg);
       index += 1;
+    } else if (arg === "--mcp-command") {
+      mcpCommand = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--absolute") {
+      absolute = true;
+    } else if (arg === "--force") {
+      force = true;
+    } else if (arg === "--uninstall") {
+      uninstall = true;
     } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg.startsWith("-")) {
@@ -599,23 +718,112 @@ function parseInstallArgs(args: string[]): InstallArgs {
     }
   }
   if (!host) throw new CliError("install requires --host");
-  return { host, project, dryRun };
+  if (absolute && mcpCommand !== undefined) {
+    throw new CliError("--absolute and --mcp-command are mutually exclusive");
+  }
+  if (uninstall && (absolute || mcpCommand !== undefined)) {
+    throw new CliError("--uninstall does not accept --absolute or --mcp-command");
+  }
+  if (uninstall && force) {
+    throw new CliError("--uninstall does not accept --force");
+  }
+  return {
+    host,
+    project,
+    dryRun,
+    uninstall,
+    absolute,
+    force,
+    ...(mcpCommand !== undefined ? { mcpCommand } : {}),
+  };
+}
+
+const PLANNED_LABEL: Partial<Record<InstallAction["action"], string>> = {
+  created: "would create",
+  updated: "would update",
+  removed: "would remove",
+  restored: "would restore",
+};
+
+/**
+ * One line per planned file. When the plan was refused nothing was written,
+ * so the other files are shown as what the command would have done.
+ */
+function actionLines(actions: InstallAction[], notApplied = false): string[] {
+  return actions.map((action) => {
+    const label = (notApplied && PLANNED_LABEL[action.action]) || action.action;
+    return `  ${label.padEnd(9)} ${action.path}${action.note ? ` (${action.note})` : ""}${action.backup ? ` (backup: ${action.backup})` : ""}`;
+  });
+}
+
+/** Refusals go to stderr; a refused plan means nothing was written. */
+function reportRefusals(refused: InstallAction[], dryRun: boolean): number {
+  if (refused.length === 0) return 0;
+  for (const action of refused) {
+    process.stderr.write(`code-audit: ${action.note ?? action.path}\n`);
+  }
+  process.stderr.write(
+    dryRun
+      ? "code-audit: the command would stop here without changing any file.\n"
+      : "code-audit: nothing was changed.\n",
+  );
+  return 2;
 }
 
 function runInstall(args: string[]): number {
   const parsed = parseInstallArgs(args);
+  if (parsed.uninstall) {
+    const result = uninstallAdapter(parsed);
+    const blocked = result.refused.length > 0;
+    process.stdout.write(
+      [
+        `code-audit install --uninstall --host ${result.host}${result.dryRun ? " (dry run)" : ""}${blocked ? " (refused, nothing changed)" : ""}`,
+        `Project: ${result.project}`,
+        ...(result.recorded
+          ? []
+          : [
+              `  no install of ${result.host} is recorded in .code-audit/installed.json`,
+            ]),
+        ...actionLines(result.actions, blocked && !result.dryRun),
+        ...(result.actions.length === 0 ? ["  nothing to remove"] : []),
+        ...(result.backups.length > 0
+          ? [
+              "Backups of your earlier files were left in place:",
+              ...result.backups.map((backup) => `  ${backup}`),
+            ]
+          : []),
+        "",
+      ].join("\n"),
+    );
+    return reportRefusals(result.refused, result.dryRun);
+  }
   const result = installAdapter(parsed);
+  const blocked = result.refused.length > 0;
   process.stdout.write(
     [
-      `code-audit install --host ${result.host}${result.dryRun ? " (dry run)" : ""}`,
+      `code-audit install --host ${result.host}${result.dryRun ? " (dry run)" : ""}${blocked ? " (refused, nothing changed)" : ""}`,
       `Project: ${result.project}`,
-      ...result.actions.map(
-        (action) =>
-          `  ${action.action.padEnd(9)} ${action.path}${action.backup ? ` (backup: ${action.backup})` : ""}`,
+      ...actionLines(result.actions, blocked && !result.dryRun),
+      ...result.commandChanges.map(
+        (change) =>
+          `MCP command changed in ${change.file}: ${JSON.stringify(change.from)} -> ${JSON.stringify(change.to)}`,
       ),
+      `MCP command: ${result.mcpCommand}${
+        result.mcpCommandResolved &&
+        result.mcpCommandResolved !== result.mcpCommand
+          ? ` (${result.mcpCommandResolved})`
+          : ""
+      }`,
       "",
+      ...(blocked
+        ? []
+        : ["Next steps:", ...result.nextSteps.map((step) => `  ${step}`), ""]),
     ].join("\n"),
   );
+  if (blocked) return reportRefusals(result.refused, result.dryRun);
+  for (const warning of result.warnings) {
+    process.stderr.write(`warning: ${warning}\n`);
+  }
   return 0;
 }
 
