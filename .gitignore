@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.audit/
+.oc/
+*.tsbuildinfo
+.tmp-test-*/
+coverage/
+.tools/

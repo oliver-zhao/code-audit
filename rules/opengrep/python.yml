@@ -1,0 +1,21 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# These are not copied from the Semgrep registry and are not executed by the
+# test suite; they are validated as YAML only.
+rules:
+  - id: py-opengrep-eval
+    languages: [python]
+    severity: ERROR
+    message: Use of eval() executes arbitrary Python expressions and enables code injection.
+    metadata:
+      cwe: "CWE-95"
+      confidence: HIGH
+    pattern: eval($EXPR)
+
+  - id: py-opengrep-pickle-loads
+    languages: [python]
+    severity: ERROR
+    message: pickle.loads() deserializes untrusted data and can execute arbitrary code.
+    metadata:
+      cwe: "CWE-502"
+      confidence: MEDIUM
+    pattern: pickle.loads($DATA)

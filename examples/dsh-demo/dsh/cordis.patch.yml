@@ -1,0 +1,12 @@
+# code-audit overlay for the DSH `web` profile.
+# Apply with:
+#   dsh --profile web --patch examples/dsh-demo/dsh/cordis.patch.yml
+- insert:
+    - id: mcp-code-audit
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: code-audit
+        transport: stdio
+        command: code-audit-mcp
+        args: []
+        failOnStartupError: false

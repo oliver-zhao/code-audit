@@ -1,0 +1,39 @@
+version: 1
+rules:
+  - id: gha-pull-request-target
+    title: GitHub Actions uses pull_request_target with checkout
+    title_zh: GitHub Actions 使用 pull_request_target 并检出代码
+    severity: high
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - yaml
+    pattern: pull_request_target
+    pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
+    filePattern: uses:\s*actions/checkout
+    message: pull_request_target runs in the base repository context; checking out untrusted PR code can leak secrets.
+    message_zh: pull_request_target 在基仓库上下文运行，结合 checkout 不可信 PR 代码可导致密钥泄露。
+    remediation: Use pull_request instead; if pull_request_target is required, check out only the base branch and never execute PR code.
+    remediation_zh: 改用 pull_request；如必须使用 pull_request_target，只检出基分支并避免执行 PR 代码。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: gha-script-injection
+    title: GitHub Actions script injection
+    title_zh: GitHub Actions 脚本注入
+    severity: high
+    confidence: high
+    cwe: CWE-94
+    owasp: A03:2021
+    languages:
+      - yaml
+    pattern: \$\{\{\s*github\.event\.
+    pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
+    message: Event fields are interpolated directly into a run script, allowing command injection.
+    message_zh: 事件字段直接插入 run 脚本，攻击者可构造命令注入。
+    remediation: Pass event fields through env, or handle them as data inside the script with strict quoting.
+    remediation_zh: 通过 env 传递事件字段，或在脚本中按数据处理并严格引用。
+    references:
+      - CWE-94
+      - OWASP A03:2021

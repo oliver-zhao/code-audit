@@ -1,0 +1,181 @@
+version: 1
+rules:
+  - id: java-sql-injection
+    title: Java JDBC SQL built with string concatenation
+    title_zh: Java JDBC SQL 字符串拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - java
+    pattern: execute(?:Query|Update)?\s*\([^;]*\+
+    group: java-sql
+    message: User input is concatenated into a Statement SQL query.
+    message_zh: 用户输入被拼接到 Statement 执行的 SQL 中。
+    remediation: Use PreparedStatement with bound parameters; never concatenate request values into SQL.
+    remediation_zh: 使用 PreparedStatement 与 bind 参数；禁止把请求参数拼接进 SQL。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: java-command-injection
+    title: Java command execution with a dynamic command
+    title_zh: Java Runtime.exec 命令执行
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - java
+    pattern: Runtime\.getRuntime\(\)\.exec\([^;\n]*\+|new\s+ProcessBuilder\([^)]*\+
+    group: java-command
+    message: Untrusted input reaches Runtime.exec or ProcessBuilder and may execute arbitrary commands.
+    message_zh: 外部输入进入系统命令执行，可能导致任意命令执行。
+    remediation: Pass an argument array to ProcessBuilder, avoid shell wrappers, and allowlist commands.
+    remediation_zh: 使用 ProcessBuilder 参数数组，避免 shell，并对命令与参数做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: java-insecure-deserialization
+    title: Java ObjectInputStream deserialization
+    title_zh: Java ObjectInputStream 反序列化
+    severity: high
+    confidence: low
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - java
+    pattern: new\s+ObjectInputStream\s*\(
+    message: Native Java deserialization of untrusted data can lead to remote code execution.
+    message_zh: 对不可信数据使用 Java 原生反序列化可导致 RCE。
+    remediation: Use an ObjectInputFilter allowlist, or switch to JSON with schema validation.
+    remediation_zh: 使用白名单 ObjectInputFilter，或改用 JSON 等安全格式并校验类型。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: java-path-traversal
+    title: Java file path built from untrusted input
+    title_zh: Java 文件路径直接拼接
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - java
+    pattern: new\s+File\([^)]*(?:name|request|input|user|filename|args)
+    group: java-file
+    message: Untrusted input participates in a file path and may escape the intended directory.
+    message_zh: 不可信路径参与文件访问，可能穿越到允许目录之外。
+    remediation: Normalize the path and verify the realpath stays inside the target directory; reject .. and absolute paths.
+    remediation_zh: 规范化路径并校验其 realpath 位于目标目录内；拒绝 .. 与绝对路径。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: java-weak-hash
+    title: Java weak hash algorithm (MD5/SHA1)
+    title_zh: Java 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - java
+    pattern: MessageDigest\.getInstance\(\s*"(?:MD5|SHA-?1)"
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
+    message_zh: MD5/SHA1 不适合安全场景。
+    remediation: Use SHA-256/SHA-512; hash passwords with PBKDF2/bcrypt/Argon2.
+    remediation_zh: 使用 SHA-256/SHA-512；口令使用 PBKDF2/bcrypt/Argon2。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: java-weak-random
+    title: Java java.util.Random used for security-sensitive values
+    title_zh: Java 使用 java.util.Random
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages:
+      - java
+    pattern: new\s+Random\s*\(\s*\)
+    message: java.util.Random is not cryptographically secure.
+    message_zh: java.util.Random 不是密码学安全的随机源。
+    remediation: Use SecureRandom for tokens, salts, and session identifiers.
+    remediation_zh: 使用 SecureRandom 生成令牌、盐和会话标识。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: java-xxe
+    title: Java XML parser is not hardened
+    title_zh: Java XML 解析器未加固
+    severity: high
+    confidence: low
+    cwe: CWE-611
+    owasp: A05:2021
+    languages:
+      - java
+    pattern: DocumentBuilderFactory\.newInstance\(\)
+    message: A default DocumentBuilderFactory may resolve external entities and enable XXE.
+    message_zh: 默认 DocumentBuilderFactory 可能解析外部实体，导致 XXE。
+    remediation: Disable DTDs and external entities, for example with disallow-doctype-decl=true.
+    remediation_zh: 禁用 DTD 与外部实体，设置 disallow-doctype-decl 和外部实体特性为 false。
+    references:
+      - CWE-611
+      - OWASP A05:2021
+  - id: java-sql-api
+    title: Java executes a dynamic SQL statement
+    title_zh: Java 执行动态 SQL 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - java
+    pattern: \.(?:execute|executeQuery|executeUpdate|prepareStatement)\s*\(
+    group: java-sql
+    message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
+    message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
+    remediation: Use PreparedStatement with bound parameters and keep SQL text constant.
+    remediation_zh: 使用 PreparedStatement 与绑定参数，保持 SQL 文本为常量。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: java-exec-api
+    title: Java command execution from a runtime value
+    title_zh: Java 从运行时值执行命令
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - java
+    pattern: (?:Runtime\.getRuntime\(\)\.exec|new\s+ProcessBuilder)\s*\(
+    group: java-command
+    message: The command comes from a runtime value; confirm the command and arguments are trusted.
+    message_zh: 命令来自运行时值；需确认命令与参数可信。
+    remediation: Use a ProcessBuilder argument array and an allowlist.
+    remediation_zh: 使用 ProcessBuilder 参数数组并做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: java-file-api
+    title: Java File constructed from a runtime path
+    title_zh: Java 使用运行时路径构造 File
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - java
+    pattern: new\s+File\s*\(
+    group: java-file
+    message: The File path comes from a runtime value; confirm it stays inside the allowed directory after normalization.
+    message_zh: File 路径来自运行时值；需确认规范化后仍位于允许目录内。
+    remediation: Normalize the path and verify its realpath stays inside the target directory.
+    remediation_zh: 规范化并校验 realpath 位于目标目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021

@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# code-audit CLI wrapper. Resolve the repo root relative to this script so the
+# wrapper works from any directory and contains no absolute paths.
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$SCRIPT_DIR/../packages/cli/dist/index.js" "$@"

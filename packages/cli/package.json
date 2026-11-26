@@ -1,0 +1,21 @@
+{
+  "name": "@code-audit/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "code-audit command line interface",
+  "bin": {
+    "code-audit": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@code-audit/core": "workspace:*",
+    "@code-audit/mcp": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}

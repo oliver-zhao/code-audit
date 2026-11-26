@@ -1,0 +1,181 @@
+version: 1
+rules:
+  - id: cs-sql-injection
+    title: C# SQL query built with string concatenation
+    title_zh: C# SQL 查询字符串拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - csharp
+    pattern: new\s+SqlCommand\(\s*[^;]*\+
+    group: cs-sql
+    message: User input is concatenated into SQL text, letting attackers change query semantics.
+    message_zh: 用户输入被拼接到 SQL 文本中，攻击者可改变查询语义。
+    remediation: Use SqlCommand parameters (@name) or stored procedures; never concatenate untrusted input.
+    remediation_zh: 使用 SqlCommand 参数（@name）或存储过程，禁止拼接不可信输入。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: cs-command-injection
+    title: C# process start with concatenated arguments
+    title_zh: C# 进程启动参数拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - csharp
+    pattern: Process\.Start\([^)]*\+
+    group: cs-command
+    message: Untrusted input reaches Process.Start arguments and may execute arbitrary commands.
+    message_zh: 外部输入进入 Process.Start 参数，可能执行任意命令。
+    remediation: Use ProcessStartInfo.ArgumentList, avoid shell string building, and allowlist inputs.
+    remediation_zh: 改用 ProcessStartInfo.ArgumentList 传参，避免 shell 拼接，并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cs-insecure-deserialization
+    title: C# BinaryFormatter deserialization
+    title_zh: C# BinaryFormatter 反序列化
+    severity: high
+    confidence: low
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - csharp
+    pattern: new\s+BinaryFormatter\s*\(
+    message: BinaryFormatter can execute arbitrary code when it deserializes untrusted data.
+    message_zh: BinaryFormatter 反序列化不可信数据可导致远程代码执行。
+    remediation: Disable BinaryFormatter; use System.Text.Json and validate types against an allowlist.
+    remediation_zh: 禁用 BinaryFormatter，改用 System.Text.Json 等安全的序列化格式并校验类型白名单。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: cs-path-traversal
+    title: C# file path built from untrusted input
+    title_zh: C# 路径拼接可能穿越目录
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - csharp
+    pattern: Path\.Combine\([^)]*(?:name|request|input|user|filename|args)
+    group: cs-path
+    message: Untrusted input participates in a file path and can escape the intended directory.
+    message_zh: 不可信输入参与路径拼接，未校验时可读写根目录外文件。
+    remediation: Normalize with Path.GetFileName and verify the resolved realpath stays inside the allowed directory.
+    remediation_zh: 使用 Path.GetFileName 规范化，并校验最终 realpath 位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: cs-weak-hash
+    title: C# weak hash algorithm (MD5/SHA1)
+    title_zh: C# 使用弱哈希算法
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - csharp
+    pattern: (?:MD5|SHA1)\.Create\(
+    message: MD5/SHA1 are unsuitable for passwords, signatures, or integrity checks.
+    message_zh: MD5/SHA1 已不适合安全用途（口令、签名、完整性）。
+    remediation: Use SHA-256 or stronger; hash passwords with PBKDF2/bcrypt/Argon2 and a salt.
+    remediation_zh: 使用 SHA-256 及以上；口令使用 PBKDF2/bcrypt/Argon2 并加盐。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: cs-weak-random
+    title: C# System.Random used for security-sensitive values
+    title_zh: C# 使用 System.Random 生成安全敏感值
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages:
+      - csharp
+    pattern: new\s+Random\s*\(\s*\)
+    message: System.Random is predictable and not cryptographically secure.
+    message_zh: System.Random 不是密码学安全的随机源，可预测。
+    remediation: Use RandomNumberGenerator (for example RandomNumberGenerator.GetBytes) for tokens and salts.
+    remediation_zh: 使用 RandomNumberGenerator 或 RandomNumberGenerator.GetBytes 生成令牌与盐。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: cs-xxe
+    title: C# XML parser enables DTD processing
+    title_zh: C# XML 解析启用 DTD
+    severity: high
+    confidence: low
+    cwe: CWE-611
+    owasp: A05:2021
+    languages:
+      - csharp
+    pattern: DtdProcessing\s*=\s*DtdProcessing\.Parse
+    message: DTD processing can enable XML external entity (XXE) injection and file disclosure.
+    message_zh: 启用 DTD 解析可能导致 XML 外部实体（XXE）注入与文件读取。
+    remediation: Set DtdProcessing = DtdProcessing.Prohibit and disable XmlResolver.
+    remediation_zh: 设置 DtdProcessing = DtdProcessing.Prohibit，并禁用 XmlResolver。
+    references:
+      - CWE-611
+      - OWASP A05:2021
+  - id: cs-sql-api
+    title: C# SqlCommand constructed from a dynamic query
+    title_zh: C# 使用动态 SQL 文本构造 SqlCommand
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - csharp
+    pattern: new\s+SqlCommand\s*\(
+    group: cs-sql
+    message: SqlCommand is built from a query value; confirm the SQL text is not attacker-controlled.
+    message_zh: SqlCommand 的 SQL 文本来自运行时值；需确认不可被攻击者控制。
+    remediation: Use parameterized commands and keep SQL text constant.
+    remediation_zh: 使用参数化命令并保持 SQL 文本为常量。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: cs-process-api
+    title: C# Process.Start with dynamic arguments
+    title_zh: C# 使用动态参数启动进程
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - csharp
+    pattern: Process\.Start\s*\(
+    group: cs-command
+    message: A process is started from a runtime value; confirm the command and arguments are trusted.
+    message_zh: 进程由运行时值启动；需确认命令与参数可信。
+    remediation: Pass fixed executables and separate argument values through ProcessStartInfo.ArgumentList.
+    remediation_zh: 使用固定可执行文件，并通过 ProcessStartInfo.ArgumentList 传参。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cs-path-api
+    title: C# Path.Combine with a runtime path segment
+    title_zh: C# Path.Combine 使用运行时路径片段
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - csharp
+    pattern: Path\.Combine\s*\(
+    group: cs-path
+    message: A path is combined from runtime segments; confirm the segments are trusted and normalized inside the allowed directory.
+    message_zh: 路径由运行时片段拼接；需确认片段可信且规范化后仍在允许目录内。
+    remediation: Use a fixed file name or allowlist, and verify the realpath stays inside the allowed directory.
+    remediation_zh: 使用固定文件名或白名单，并校验 realpath 位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021

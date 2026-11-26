@@ -1,0 +1,227 @@
+version: 1
+rules:
+  - id: js-sql-injection
+    title: Node.js SQL query built with string concatenation
+    title_zh: Node.js SQL 查询字符串拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:query|execute)\(\s*[^;]*\+
+    group: js-sql
+    message: Request values are concatenated into SQL text and can change query semantics.
+    message_zh: 请求参数被拼接到 SQL 文本中，可能造成 SQL 注入。
+    remediation: Use parameterized queries (placeholders plus a bound array) or an ORM safe API.
+    remediation_zh: 使用参数化查询（占位符 + 绑定数组）或 ORM 的安全查询 API。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-command-injection
+    title: Node.js child_process command built with concatenation
+    title_zh: Node.js child_process 命令拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: \bexec\(\s*[^;]*\+
+    group: js-command
+    message: External input is concatenated into a shell command.
+    message_zh: 外部输入被拼接到 shell 命令中。
+    remediation: "Use execFile/spawn with an argument array, avoid shell: true, and allowlist inputs."
+    remediation_zh: "使用 execFile/spawn 参数数组，避免 shell: true，并对输入做白名单校验。"
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: js-eval
+    title: JavaScript eval of a dynamic string
+    title_zh: JavaScript eval 动态执行
+    severity: high
+    confidence: low
+    cwe: CWE-95
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?<![\w.])eval\s*\(
+    message: eval executes a string as code, so untrusted input can achieve remote code execution.
+    message_zh: eval 会把字符串当作代码执行，不可信输入可导致 RCE。
+    remediation: Remove eval; use JSON.parse, explicit branches, or a safe expression parser.
+    remediation_zh: 删除 eval；使用 JSON.parse、显式分支或安全的表达式解析器。
+    references:
+      - CWE-95
+      - OWASP A03:2021
+  - id: js-insecure-deserialization
+    title: Node.js unsafe deserialization
+    title_zh: Node.js 不安全反序列化
+    severity: high
+    confidence: low
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: \bunserialize\s*\(|node-serialize
+    message: node-serialize can execute arbitrary code when it deserializes untrusted data.
+    message_zh: node-serialize 反序列化不可信数据可执行任意代码。
+    remediation: Use JSON.parse with schema validation; never deserialize untrusted objects.
+    remediation_zh: 改用 JSON.parse 并校验 schema；不要反序列化不可信对象。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: js-path-traversal
+    title: Node.js file path built with concatenation
+    title_zh: Node.js 文件路径拼接
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:readFile|sendFile|createReadStream)\(\s*[^;]*\+
+    group: js-path
+    message: Request values participate in a file path and may read files outside the intended directory.
+    message_zh: 请求参数参与文件路径拼接，可能读取目录外文件。
+    remediation: Use path.basename or an allowlist, and verify the resolved realpath stays inside the allowed directory.
+    remediation_zh: 使用 path.basename 或白名单映射，并校验解析后的 realpath 位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: js-weak-hash
+    title: Node.js weak hash algorithm (MD5/SHA1)
+    title_zh: Node.js 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: createHash\(\s*["\x27](?:md5|sha1)["\x27]
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
+    message_zh: MD5/SHA1 不适合安全用途。
+    remediation: Use SHA-256 or stronger; hash passwords with scrypt/bcrypt/Argon2.
+    remediation_zh: 使用 sha256 及以上；口令使用 scrypt/bcrypt/Argon2。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: js-weak-random
+    title: JavaScript Math.random used for security-sensitive values
+    title_zh: JavaScript 使用 Math.random 生成安全值
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=\s*[^;]*Math\.random\(
+    message: Math.random is not a cryptographically secure random source.
+    message_zh: Math.random 不是密码学安全的随机源。
+    remediation: Use crypto.randomBytes or crypto.randomUUID for tokens.
+    remediation_zh: 使用 crypto.randomBytes 或 crypto.randomUUID 生成令牌。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: js-ssrf
+    title: Node.js server-side request to a dynamic URL
+    title_zh: Node.js 服务端请求 URL 可控
+    severity: high
+    confidence: low
+    cwe: CWE-918
+    owasp: A10:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:fetch|axios\.(?:get|post)|http\.get)\(\s*(?:req\.|url|targetUrl|name)
+    message: External input is used as an outbound request target and may reach internal services.
+    message_zh: 外部输入直接作为出站请求目标，可能访问内网服务。
+    remediation: Use a URL allowlist and protocol restrictions, block private/loopback addresses, and disable redirects to internal hosts.
+    remediation_zh: 使用 URL 白名单与协议限制，阻断私网/环回地址，并禁止跟随重定向到内网。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: js-tls-disabled
+    title: Node.js TLS certificate validation disabled
+    title_zh: Node.js 关闭 TLS 证书校验
+    severity: high
+    confidence: low
+    cwe: CWE-295
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: rejectUnauthorized\s*:\s*false
+    message: Disabling certificate validation makes TLS connections vulnerable to man-in-the-middle attacks.
+    message_zh: 关闭证书校验会使 TLS 连接可被中间人攻击。
+    remediation: "Keep rejectUnauthorized: true and configure a trusted CA instead of disabling validation."
+    remediation_zh: "保持 rejectUnauthorized: true，配置可信 CA，不要在生产环境关闭校验。"
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: js-sql-api
+    title: Node.js executes a dynamic SQL statement
+    title_zh: Node.js 执行动态 SQL 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:query|execute)\s*\(
+    group: js-sql
+    message: The SQL text comes from a runtime value; confirm it is not attacker-controlled.
+    message_zh: SQL 文本来自运行时值；需确认不可被攻击者控制。
+    remediation: Use parameterized queries and keep SQL text constant.
+    remediation_zh: 使用参数化查询，保持 SQL 文本为常量。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-exec-api
+    title: Node.js executes a subprocess from a runtime value
+    title_zh: Node.js 从运行时值执行子进程
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: \bexec(?:Sync)?\s*\(
+    group: js-command
+    message: The subprocess command comes from a runtime value; confirm the command and arguments are trusted.
+    message_zh: 子进程命令来自运行时值；需确认命令与参数可信。
+    remediation: Use execFile/spawn with an argument array and an allowlist.
+    remediation_zh: 使用 execFile/spawn 参数数组并做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: js-path-api
+    title: Node.js accesses a runtime file path
+    title_zh: Node.js 使用运行时文件路径
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: (?:readFile|sendFile|createReadStream)\s*\(
+    group: js-path
+    message: The file path comes from a runtime value; confirm it resolves inside the allowed directory.
+    message_zh: 文件路径来自运行时值；需确认解析后仍位于允许目录内。
+    remediation: Use path.basename or an allowlist, and verify the realpath.
+    remediation_zh: 使用 basename 或白名单，并校验 realpath。
+    references:
+      - CWE-22
+      - OWASP A01:2021

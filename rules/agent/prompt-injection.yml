@@ -1,0 +1,38 @@
+version: 1
+rules:
+  - id: prompt-injection-ignore
+    title: Prompt-injection instruction in repository documentation
+    title_zh: 文档中出现提示注入指令
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages:
+      - markdown
+    pattern: ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?
+    pathInclude: (?:^|/)(?:AGENTS|SKILL|CLAUDE)\.md$
+    message: Instructions in repository docs can manipulate the auditing agent and must be treated as untrusted data.
+    message_zh: 代码库文档中的指令可能操纵审计 Agent，应作为不可信数据处理。
+    remediation: Never execute instructions found in the repository; isolate untrusted content in the audit workflow and record it as suspicious text.
+    remediation_zh: 不执行仓库中的指令；在审计工作流中隔离不可信内容并记录为可疑文本。
+    references:
+      - CWE-94
+      - OWASP A03:2021
+  - id: prompt-injection-exfil
+    title: Data-exfiltration instruction in repository documentation
+    title_zh: 文档中出现数据外传指令
+    severity: high
+    confidence: medium
+    cwe: CWE-200
+    owasp: A01:2021
+    languages:
+      - markdown
+    pattern: exfiltrat|send\s+(?:the\s+)?(?:secrets?|credentials|\.env)|upload\s+[^\n]*(?:\.env|secrets?)
+    pathInclude: (?:^|/)(?:AGENTS|SKILL|CLAUDE)\.md$
+    message: Documentation asks to send secrets or credentials out, a common prompt-injection and supply-chain pattern.
+    message_zh: 文档要求外传密钥或凭据，是典型的提示注入/供应链攻击特征。
+    remediation: Do not follow the instruction; remove or quarantine the document and review its origin.
+    remediation_zh: 不要执行该指令；删除或隔离相关文档，并审查其来源。
+    references:
+      - CWE-200
+      - OWASP A01:2021

@@ -1,0 +1,181 @@
+version: 1
+rules:
+  - id: go-sql-injection
+    title: Go SQL query built with string concatenation
+    title_zh: Go SQL 查询字符串拼接
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - go
+    pattern: \.(?:Query|Exec)\(\s*[^;\n]*\+
+    group: go-sql
+    message: Request values are concatenated into SQL text.
+    message_zh: 请求参数被拼接到 SQL 文本中。
+    remediation: Use placeholders ($1 / ?) and pass values as separate arguments.
+    remediation_zh: 使用参数占位符（$1 / ?）并把值作为单独参数传入。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: go-command-injection
+    title: Go exec.Command with a concatenated command
+    title_zh: Go exec.Command 调用 shell
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - go
+    pattern: exec\.Command\([^)\n]*\+
+    group: go-command
+    message: External input is concatenated into a command passed to a shell.
+    message_zh: 通过 sh -c 执行外部输入会引入命令注入。
+    remediation: Execute the target program directly with an argument array; avoid shells and allowlist arguments.
+    remediation_zh: 直接调用目标程序并使用参数数组；避免 shell，必要时校验参数白名单。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: go-path-traversal
+    title: Go file path built from untrusted input
+    title_zh: Go 文件路径拼接
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - go
+    pattern: os\.Open\(\s*[^)\n]*(?:\+|r\.|filepath\.Join)
+    group: go-path
+    message: Untrusted input reaches a file open call and may escape the intended directory.
+    message_zh: 不可信路径进入文件打开操作，可能穿越目录。
+    remediation: Clean the path and verify it stays inside the allowed root; reject .. and absolute paths.
+    remediation_zh: 使用 filepath.Clean 后校验路径位于允许根目录内；拒绝 .. 与绝对路径。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: go-weak-hash
+    title: Go weak hash algorithm (MD5/SHA1)
+    title_zh: Go 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - go
+    pattern: (?:md5|sha1)\.New\(\)
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
+    message_zh: MD5/SHA1 不适合安全用途。
+    remediation: Use crypto/sha256 or sha512; hash passwords with bcrypt/argon2.
+    remediation_zh: 使用 crypto/sha256 或 sha512；口令使用 bcrypt/argon2。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: go-weak-random
+    title: Go math/rand used for security-sensitive values
+    title_zh: Go 使用 math/rand
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages:
+      - go
+    pattern: \brand\.(?:Intn|Int|Float|Read)\(
+    message: math/rand is predictable and not cryptographically secure.
+    message_zh: math/rand 不是密码学安全的随机源，种子可预测。
+    remediation: Use crypto/rand for tokens, keys, and salts.
+    remediation_zh: 使用 crypto/rand 生成令牌、密钥与盐。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: go-ssrf
+    title: Go server-side request to a dynamic URL
+    title_zh: Go 服务端请求 URL 可控
+    severity: high
+    confidence: low
+    cwe: CWE-918
+    owasp: A10:2021
+    languages:
+      - go
+    pattern: http\.(?:Get|Post)\(\s*(?:name|url|target|r\.)
+    message: External input is used as an HTTP request target and may reach internal networks.
+    message_zh: 外部输入直接作为 HTTP 请求目标，可能访问内网。
+    remediation: Use a URL allowlist and a custom Dialer that blocks private addresses.
+    remediation_zh: 使用 URL 白名单与自定义 Dialer 阻断私网地址。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: go-tls-disabled
+    title: Go TLS certificate validation disabled
+    title_zh: Go 关闭 TLS 证书校验
+    severity: high
+    confidence: low
+    cwe: CWE-295
+    owasp: A02:2021
+    languages:
+      - go
+    pattern: InsecureSkipVerify\s*:\s*true
+    message: InsecureSkipVerify disables certificate validation and enables man-in-the-middle attacks.
+    message_zh: InsecureSkipVerify 会关闭证书校验，易受中间人攻击。
+    remediation: Keep InsecureSkipVerify false and configure RootCAs.
+    remediation_zh: 保持 InsecureSkipVerify 为 false，并配置 RootCAs。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: go-sql-api
+    title: Go executes a dynamic SQL statement
+    title_zh: Go 执行动态 SQL 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - go
+    pattern: \.(?:Query|Exec)\s*\(
+    group: go-sql
+    message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
+    message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
+    remediation: Use placeholders and pass values as separate arguments.
+    remediation_zh: 使用占位符并把值作为单独参数传入。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: go-exec-shell
+    title: Go executes a command through a shell
+    title_zh: Go 通过 shell 执行命令
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - go
+    pattern: exec\.Command\(\s*"(?:sh|bash)"
+    group: go-command
+    message: A command runs through sh -c; confirm its arguments contain no untrusted input.
+    message_zh: 通过 sh -c 执行命令；需确认参数不含不可信输入。
+    remediation: Execute the target program directly with an argument array and avoid shells.
+    remediation_zh: 直接执行目标程序并使用参数数组，避免 shell。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: go-path-api
+    title: Go opens a runtime file path
+    title_zh: Go 使用运行时文件路径
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - go
+    pattern: os\.Open\s*\(
+    group: go-path
+    message: The file path comes from a runtime value; confirm it stays inside the allowed root after cleaning.
+    message_zh: 文件路径来自运行时值；需确认清理后仍位于允许根目录内。
+    remediation: Use filepath.Clean and verify the path stays inside the allowed root.
+    remediation_zh: 使用 filepath.Clean 并校验路径位于允许根目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021

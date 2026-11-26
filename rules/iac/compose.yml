@@ -1,0 +1,38 @@
+version: 1
+rules:
+  - id: compose-privileged
+    title: docker-compose runs a privileged container
+    title_zh: docker-compose 使用特权容器
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: privileged\s*:\s*true
+    pathInclude: (?:^|/)(?:docker-)?compose\.ya?ml$
+    message: A privileged container has almost all host capabilities, so container escape has severe impact.
+    message_zh: privileged 容器几乎拥有宿主机全部能力，容器逃逸影响极大。
+    remediation: Remove privileged and add only the minimum required capabilities.
+    remediation_zh: 移除 privileged，按需添加最小 capabilities 与安全配置。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: compose-docker-sock
+    title: docker-compose mounts the Docker socket
+    title_zh: docker-compose 挂载 docker.sock
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - yaml
+    pattern: /var/run/docker\.sock
+    pathInclude: (?:^|/)(?:docker-)?compose\.ya?ml$
+    message: Mounting docker.sock gives the container control equivalent to host root.
+    message_zh: 挂载 docker.sock 等价于把宿主机 root 控制权交给容器。
+    remediation: Do not mount docker.sock; use a restricted remote API, BuildKit, or a dedicated proxy.
+    remediation_zh: 避免挂载 docker.sock；改用受限的远程 API、BuildKit 或专用代理。
+    references:
+      - CWE-250
+      - OWASP A05:2021

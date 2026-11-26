@@ -1,0 +1,233 @@
+version: 1
+rules:
+  - id: py-sql-injection
+    title: Python SQL built with concatenation or an f-string
+    title_zh: Python SQL 字符串拼接或 f-string
+    severity: critical
+    confidence: high
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - python
+    pattern: execute\(\s*(?:f["\x27]|["\x27][^;\n]*["\x27]\s*(?:\+|%))
+    group: py-sql
+    message: Request values are concatenated into SQL text.
+    message_zh: 请求参数被直接拼接到 SQL 中。
+    remediation: Use DB-API placeholders (? / %s) with a parameter tuple; with an ORM use bound parameters.
+    remediation_zh: 使用 DB-API 参数占位符（? / %s）并传入参数元组；ORM 使用绑定参数。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: py-command-injection
+    title: Python os.system with a dynamic command
+    title_zh: Python os.system 命令执行
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - python
+    pattern: os\.system\s*\([^)\n]*(?:\+|%\s|\{[^}]*\}|f["'])
+    group: py-command
+    message: External input is concatenated into a shell command executed by os.system.
+    message_zh: os.system 经 shell 执行且常与拼接输入一起出现。
+    remediation: Use subprocess.run with an argument array and shell=False, and allowlist inputs.
+    remediation_zh: 使用 subprocess.run 参数数组并设置 shell=False；对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: py-subprocess-shell
+    title: Python subprocess invoked with shell=True
+    title_zh: Python subprocess 使用 shell=True
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - python
+    pattern: subprocess\.(?:run|call|Popen)\([^)]*shell\s*=\s*True
+    message: shell=True hands arguments to a shell and increases command injection risk.
+    message_zh: shell=True 会把参数交给 shell 解析，增加命令注入风险。
+    remediation: Use an argument list with shell=False; never build shell strings from untrusted input.
+    remediation_zh: 使用参数列表并保持 shell=False；不要用 shell 拼接不可信输入。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: py-insecure-deserialization
+    title: Python pickle deserialization
+    title_zh: Python pickle 反序列化
+    severity: high
+    confidence: low
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - python
+    pattern: \bpickle\.loads?\(
+    message: Unpickling untrusted data can execute arbitrary code.
+    message_zh: pickle 反序列化不可信数据可执行任意代码。
+    remediation: Use JSON or a restricted format; if pickle is unavoidable, verify integrity and restrict the source.
+    remediation_zh: 改用 JSON 或受限格式；如必须使用 pickle，需做完整性校验并限制来源。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: py-yaml-load
+    title: Python yaml.load without a safe loader
+    title_zh: Python yaml.load 未使用安全加载器
+    severity: high
+    confidence: low
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - python
+    pattern: \byaml\.load\(
+    notPattern: SafeLoader|safe_load
+    message: The default yaml.load loader can construct arbitrary Python objects.
+    message_zh: yaml.load 默认 Loader 可构造任意 Python 对象。
+    remediation: Use yaml.safe_load or pass yaml.SafeLoader explicitly.
+    remediation_zh: 使用 yaml.safe_load，或显式传入 yaml.SafeLoader。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: py-path-traversal
+    title: Python file path built from untrusted input
+    title_zh: Python 路径拼接可能穿越目录
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - python
+    pattern: open\(\s*os\.path\.join\([^)]*(?:request|name|user|input|filename)
+    group: py-path
+    message: Request values participate in a path join and may read files outside the intended directory.
+    message_zh: 请求参数参与路径拼接，可能读取目录外文件。
+    remediation: Use os.path.basename or an allowlist, and verify the realpath stays inside the allowed directory.
+    remediation_zh: 使用 os.path.basename 或白名单，并校验 realpath 位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: py-weak-hash
+    title: Python weak hash algorithm (MD5/SHA1)
+    title_zh: Python 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - python
+    pattern: hashlib\.(?:md5|sha1)\(
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
+    message_zh: MD5/SHA1 不适合安全用途。
+    remediation: Use hashlib.sha256 or stronger; hash passwords with bcrypt/scrypt/argon2.
+    remediation_zh: 使用 hashlib.sha256 及以上；口令使用 bcrypt/scrypt/argon2。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: py-weak-random
+    title: Python random used for security-sensitive values
+    title_zh: Python 使用 random 生成安全值
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages:
+      - python
+    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=\s*[^;\n]*random\.(?:random|randint|choice|randrange)\(
+    message: The random module is not a cryptographically secure random source.
+    message_zh: random 模块不是密码学安全的随机源。
+    remediation: Use secrets.token_urlsafe or secrets.token_hex for tokens.
+    remediation_zh: 使用 secrets.token_urlsafe / secrets.token_hex 生成令牌。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: py-ssrf
+    title: Python server-side request to a dynamic URL
+    title_zh: Python 服务端请求 URL 可控
+    severity: high
+    confidence: low
+    cwe: CWE-918
+    owasp: A10:2021
+    languages:
+      - python
+    pattern: requests\.(?:get|post|put)\(\s*(?:name|url|target|request\.)
+    message: External input is used as the target of a requests call and may reach internal networks.
+    message_zh: 外部输入直接作为 requests 的目标地址，可能访问内网。
+    remediation: Use a URL allowlist and protocol restrictions, and block private/loopback addresses.
+    remediation_zh: 使用 URL 白名单、协议限制，并阻断私网/环回地址。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: py-tls-disabled
+    title: Python requests certificate validation disabled
+    title_zh: Python requests 关闭证书校验
+    severity: high
+    confidence: low
+    cwe: CWE-295
+    owasp: A02:2021
+    languages:
+      - python
+    pattern: verify\s*=\s*False
+    message: verify=False disables TLS certificate validation and enables man-in-the-middle attacks.
+    message_zh: verify=False 会关闭 TLS 证书校验，易受中间人攻击。
+    remediation: Remove verify=False and configure a trusted CA or a custom certificate path.
+    remediation_zh: 移除 verify=False，配置可信 CA 或自定义证书路径。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: py-sql-api
+    title: Python executes a dynamic SQL statement
+    title_zh: Python 执行动态 SQL 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - python
+    pattern: \.execute\s*\(
+    group: py-sql
+    message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
+    message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
+    remediation: Use parameter placeholders and keep SQL text constant.
+    remediation_zh: 使用参数占位符并保持 SQL 文本为常量。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: py-os-system-api
+    title: Python calls os.system
+    title_zh: Python 调用 os.system
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - python
+    pattern: \bos\.system\s*\(
+    group: py-command
+    message: An os.system call is present; confirm the command is not built from untrusted input.
+    message_zh: 出现 os.system 调用；需确认命令不由不可信输入拼接。
+    remediation: Use subprocess.run with an argument array and keep shell=False.
+    remediation_zh: 改用 subprocess.run 参数数组并保持 shell=False。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: py-path-api
+    title: Python joins a runtime path with os.path.join
+    title_zh: Python 使用 os.path.join 拼接路径
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - python
+    pattern: os\.path\.join\s*\(
+    group: py-path
+    message: A path is joined from runtime segments; confirm it stays inside the allowed directory after normalization.
+    message_zh: 路径由运行时片段拼接；需确认规范化后仍位于允许目录内。
+    remediation: Use basename or an allowlist, and verify the realpath.
+    remediation_zh: 使用 basename 或白名单，并校验 realpath。
+    references:
+      - CWE-22
+      - OWASP A01:2021

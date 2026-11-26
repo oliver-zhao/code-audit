@@ -1,0 +1,26 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; validated as YAML only.
+rules:
+  - id: go-opengrep-exec-command
+    languages: [go]
+    severity: ERROR
+    message: exec.Command() runs a program whose arguments may be influenced by untrusted input.
+    metadata:
+      cwe: "CWE-78"
+      confidence: MEDIUM
+    # Taint from the HTTP request into exec.Command, so constant commands such
+    # as exec.Command("ls", "-l") are not reported.
+    mode: taint
+    pattern-sources:
+      - pattern: $R.URL.Query().Get($KEY)
+    pattern-sinks:
+      - pattern: exec.Command(...)
+
+  - id: go-opengrep-template-html
+    languages: [go]
+    severity: WARNING
+    message: template.HTML marks content as safe and bypasses HTML escaping, enabling XSS.
+    metadata:
+      cwe: "CWE-79"
+      confidence: MEDIUM
+    pattern: template.HTML($CONTENT)

@@ -1,0 +1,22 @@
+[
+ {
+  "RuleID": "private-key",
+  "Description": "Identified a Private Key, which may compromise cryptographic security and sensitive data encryption.",
+  "StartLine": 8,
+  "EndLine": 10,
+  "StartColumn": 2,
+  "EndColumn": 30,
+  "Match": "REDACTED",
+  "Secret": "REDACTED",
+  "File": "fixtures/vulnerable/secrets/secrets.txt",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 4.684092,
+  "Author": "",
+  "Email": "",
+  "Date": "",
+  "Message": "",
+  "Tags": [],
+  "Fingerprint": "fixtures/vulnerable/secrets/secrets.txt:private-key:8"
+ }
+]

@@ -1,0 +1,26 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; validated as YAML only.
+rules:
+  - id: cs-opengrep-binary-formatter
+    languages: [csharp]
+    severity: ERROR
+    message: BinaryFormatter deserializes untrusted data and can execute arbitrary code.
+    metadata:
+      cwe: "CWE-502"
+      confidence: MEDIUM
+    pattern: new BinaryFormatter()
+
+  - id: cs-opengrep-process-start
+    languages: [csharp]
+    severity: ERROR
+    message: Process.Start() launches a process with arguments that may contain untrusted input.
+    metadata:
+      cwe: "CWE-78"
+      confidence: MEDIUM
+    # Taint from the first command-line argument into Process.Start, so a call
+    # whose ProcessStartInfo has a constant FileName/Arguments is not reported.
+    mode: taint
+    pattern-sources:
+      - pattern: $ARGS[0]
+    pattern-sinks:
+      - pattern: Process.Start(...)

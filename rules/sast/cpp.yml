@@ -1,0 +1,170 @@
+version: 1
+rules:
+  - id: cpp-strcpy
+    title: C/C++ uses strcpy
+    title_zh: C/C++ 使用 strcpy
+    severity: high
+    confidence: low
+    cwe: CWE-120
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bstrcpy\s*\(
+    message: strcpy does not check the destination size and can overflow the buffer.
+    message_zh: strcpy 不检查目标缓冲区大小，可能造成栈/堆溢出。
+    remediation: Use strncpy_s, snprintf, or std::string, and validate capacity and NUL termination.
+    remediation_zh: 使用 strncpy_s、snprintf 或 std::string，并校验目标容量与 NUL 结尾。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-gets
+    title: C/C++ uses gets
+    title_zh: C/C++ 使用 gets
+    severity: critical
+    confidence: low
+    cwe: CWE-242
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bgets\s*\(
+    message: gets cannot limit input length, has been removed from the C standard, and inevitably risks overflow.
+    message_zh: gets 无法限制输入长度，已被 C 标准移除，必然存在溢出风险。
+    remediation: Use fgets(buffer, sizeof(buffer), stdin) and handle newlines and truncation.
+    remediation_zh: 使用 fgets(buffer, sizeof(buffer), stdin) 并处理换行与截断。
+    references:
+      - CWE-242
+      - OWASP A03:2021
+  - id: cpp-sprintf
+    title: C/C++ uses sprintf
+    title_zh: C/C++ 使用 sprintf
+    severity: high
+    confidence: low
+    cwe: CWE-120
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bsprintf\s*\(
+    message: sprintf does not check the output buffer size.
+    message_zh: sprintf 不检查输出缓冲区大小。
+    remediation: Use snprintf and pass the destination buffer size.
+    remediation_zh: 使用 snprintf 并传入目标缓冲区大小。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-system
+    title: C/C++ system() with a dynamic command
+    title_zh: C/C++ 使用 system
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bsystem\s*\([^)\n]*(?:argv|getenv|input|user|\+)
+    group: cpp-command
+    message: system executes through a shell, so concatenated external input enables command injection.
+    message_zh: system 经 shell 执行命令，拼接外部输入可导致命令注入。
+    remediation: Avoid system/popen; use execve with an argument array and allowlist inputs.
+    remediation_zh: 避免 system/popen；使用 execve 参数数组并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cpp-format-string
+    title: C/C++ format string controlled by external input
+    title_zh: C/C++ 格式化字符串参数可控
+    severity: high
+    confidence: medium
+    cwe: CWE-134
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bprintf\s*\(\s*(?:argv\[|user|input|buf)
+    message: External input is used as the printf format string, which can read and write memory.
+    message_zh: 外部输入被当作 printf 的格式串，可读写内存。
+    remediation: Use a fixed format string, for example printf("%s", input).
+    remediation_zh: 使用固定格式串，例如 printf("%s", input)。
+    references:
+      - CWE-134
+      - OWASP A03:2021
+  - id: cpp-path-traversal
+    title: C/C++ file path from external input
+    title_zh: C/C++ 文件路径来自外部输入
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bfopen\s*\(\s*(?:argv\[|user|input|path|filename)
+    group: cpp-file
+    message: External input is used directly as a file path and may escape the directory.
+    message_zh: 外部输入直接作为文件路径，可能穿越目录。
+    remediation: Normalize the path and verify its realpath stays inside the allowed directory; map names through an allowlist.
+    remediation_zh: 规范化路径并校验 realpath 位于允许目录内；使用白名单映射文件名。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: cpp-weak-hash
+    title: C/C++ weak hash algorithm (MD5/SHA1)
+    title_zh: C/C++ 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages:
+      - c
+      - cpp
+    pattern: \b(?:MD5|SHA1)(?:_Init)?\s*\(
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
+    message_zh: MD5/SHA1 不适合安全用途。
+    remediation: Use SHA-256/SHA-512, for example through the OpenSSL EVP API.
+    remediation_zh: 使用 SHA-256/SHA-512，例如 OpenSSL EVP 接口。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: cpp-system-api
+    title: C/C++ calls system()
+    title_zh: C/C++ 调用 system
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bsystem\s*\(
+    group: cpp-command
+    message: A system call is present; confirm the command is not built from untrusted input.
+    message_zh: 出现 system 调用；需确认命令不由不可信输入构造。
+    remediation: Use execve with an argument array and allowlist inputs.
+    remediation_zh: 改用 execve 参数数组并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cpp-fopen-api
+    title: C/C++ opens a runtime file path with fopen
+    title_zh: C/C++ 使用 fopen 打开运行时路径
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - c
+      - cpp
+    pattern: \bfopen\s*\(
+    group: cpp-file
+    message: The file path comes from a runtime value; confirm it stays inside the allowed directory after normalization.
+    message_zh: 文件路径来自运行时值；需确认规范化后仍位于允许目录内。
+    remediation: Normalize the path and verify its realpath stays inside the allowed directory.
+    remediation_zh: 规范化路径并校验 realpath 位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021

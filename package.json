@@ -1,0 +1,23 @@
+{
+  "name": "code-audit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic source code audit core and CLI",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -b && vitest run",
+    "typecheck": "tsc -b --pretty false",
+    "link:local": "node scripts/link-local.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "Apache-2.0"
+}

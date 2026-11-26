@@ -1,0 +1,8 @@
+{
+  "name": "code-audit",
+  "version": "0.1.0",
+  "description": "Deterministic source audit with agent review: scan, read evidence, record verdicts, render a report.",
+  "author": {
+    "name": "code-audit"
+  }
+}

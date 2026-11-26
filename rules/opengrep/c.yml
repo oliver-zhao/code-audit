@@ -1,0 +1,20 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; validated as YAML only.
+rules:
+  - id: c-opengrep-gets
+    languages: [c, cpp]
+    severity: ERROR
+    message: gets() reads an unbounded line and can overflow the destination buffer.
+    metadata:
+      cwe: "CWE-242"
+      confidence: HIGH
+    pattern: gets($BUFFER)
+
+  - id: c-opengrep-strcpy
+    languages: [c, cpp]
+    severity: WARNING
+    message: strcpy() copies without a size limit and can overflow the destination buffer.
+    metadata:
+      cwe: "CWE-120"
+      confidence: MEDIUM
+    pattern: strcpy($DEST, $SRC)

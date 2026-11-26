@@ -1,0 +1,7 @@
+# code-audit MCP server (project scope).
+# This file is merged by `code-audit install --host codex`.
+# Do not point this at a global config.
+
+[mcp_servers.code-audit]
+command = "code-audit-mcp"
+args = []

@@ -1,0 +1,38 @@
+version: 1
+rules:
+  - id: agent-auto-approve
+    title: Agent/MCP configuration auto-approves all permissions
+    title_zh: Agent/MCP 配置自动批准全部权限
+    severity: high
+    confidence: high
+    cwe: CWE-284
+    owasp: A01:2021
+    languages:
+      - json
+    pattern: '"(?:autoApprove|auto_approve|alwaysAllow|dangerouslySkipPermissions)"\s*:\s*(?:true|\["\*"\])|"\*"\s*:\s*"allow"'
+    pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|\.claude/settings\.json)$
+    message: Auto-approving every tool or command lets malicious prompts or supply-chain content execute directly.
+    message_zh: 自动批准所有工具/命令会让恶意提示或供应链内容直接执行。
+    remediation: Remove wildcard approvals, allowlist tools and commands, and keep human confirmation.
+    remediation_zh: 移除通配批准，改为按工具与命令白名单审批，并保持人工确认。
+    references:
+      - CWE-284
+      - OWASP A01:2021
+  - id: agent-curl-sh
+    title: Agent/MCP configuration contains curl | sh
+    title_zh: Agent/MCP 配置包含 curl | sh
+    severity: critical
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - json
+    pattern: curl[^|\n]*\|\s*(?:ba|z)?sh\b
+    pathInclude: (?:^|/)(?:\.mcp\.json|opencode\.jsonc?|\.claude/settings\.json)$
+    message: Executing a remote script from agent configuration is a severe supply-chain risk.
+    message_zh: Agent 配置中直接执行远程脚本，存在严重供应链风险。
+    remediation: Pin downloaded content and verify SHA256; never pipe remote scripts to a shell.
+    remediation_zh: 固定下载内容并校验 SHA256，避免把远程脚本直接交给 shell。
+    references:
+      - CWE-829
+      - OWASP A08:2021

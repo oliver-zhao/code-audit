@@ -1,0 +1,20 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; validated as YAML only.
+rules:
+  - id: js-opengrep-eval
+    languages: [javascript]
+    severity: ERROR
+    message: eval() executes arbitrary JavaScript and enables code injection.
+    metadata:
+      cwe: "CWE-95"
+      confidence: HIGH
+    pattern: eval($EXPR)
+
+  - id: js-opengrep-child-process-exec
+    languages: [javascript]
+    severity: ERROR
+    message: child_process.exec() runs a shell command string built from untrusted input.
+    metadata:
+      cwe: "CWE-78"
+      confidence: MEDIUM
+    pattern: child_process.exec($COMMAND)

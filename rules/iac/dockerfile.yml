@@ -1,0 +1,75 @@
+version: 1
+rules:
+  - id: dockerfile-no-user
+    title: Dockerfile does not declare a non-root user
+    title_zh: Dockerfile 未声明非 root 用户
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - dockerfile
+    pattern: ^FROM\s+
+    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
+    fileAbsentPattern: ^\s*USER\s+
+    message: The image runs as root by default, so a container breakout yields root privileges.
+    message_zh: 镜像默认以 root 运行，容器突破后可直接获得 root 权限。
+    remediation: Create a dedicated user and add a USER instruction, for example USER 10001:10001.
+    remediation_zh: 创建专用用户并添加 USER 指令，例如 USER 10001:10001。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: dockerfile-user-root
+    title: Dockerfile explicitly runs as root
+    title_zh: Dockerfile 显式以 root 用户运行
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages:
+      - dockerfile
+    pattern: ^USER\s+(?:root|0)\b
+    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
+    message: Running the container as root amplifies the impact of any vulnerability.
+    message_zh: 显式使用 root 运行容器会放大漏洞影响。
+    remediation: Run the application as an unprivileged user (USER 10001:10001).
+    remediation_zh: 使用非特权用户（USER 10001:10001）运行应用。
+    references:
+      - CWE-250
+      - OWASP A05:2021
+  - id: dockerfile-curl-sh
+    title: Dockerfile executes a remote script with curl | sh
+    title_zh: Dockerfile 中 curl | sh 执行远程脚本
+    severity: critical
+    confidence: high
+    cwe: CWE-829
+    owasp: A08:2021
+    languages:
+      - dockerfile
+    pattern: curl[^|\n]*\|\s*(?:ba|z)?sh\b
+    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
+    message: Executing a remote script hands the build to uncontrolled content and creates supply-chain risk.
+    message_zh: 直接执行远程脚本会把构建过程交给不受控内容，存在供应链风险。
+    remediation: Pin versions and verify SHA256, or vendor installation archives in a controlled repository.
+    remediation_zh: 固定版本与 SHA256 校验，或把安装包纳入受控仓库。
+    references:
+      - CWE-829
+      - OWASP A08:2021
+  - id: dockerfile-latest-tag
+    title: Dockerfile uses the :latest base image tag
+    title_zh: Dockerfile 使用 :latest 基础镜像
+    severity: medium
+    confidence: high
+    cwe: CWE-1104
+    owasp: A06:2021
+    languages:
+      - dockerfile
+    pattern: ^FROM\s+\S+:latest\b
+    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
+    message: The latest tag is not reproducible and may pull unaudited changes.
+    message_zh: latest 标签不可复现，可能引入未审计的变更。
+    remediation: Pin an explicit version or digest, for example FROM node:22.11.0-bookworm-slim.
+    remediation_zh: 固定到明确版本或 digest，例如 FROM node:22.11.0-bookworm-slim。
+    references:
+      - CWE-1104
+      - OWASP A06:2021

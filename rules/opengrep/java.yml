@@ -1,0 +1,20 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; validated as YAML only.
+rules:
+  - id: java-opengrep-runtime-exec
+    languages: [java]
+    severity: ERROR
+    message: Runtime.exec() starts a process with a command that may contain untrusted input.
+    metadata:
+      cwe: "CWE-78"
+      confidence: MEDIUM
+    pattern: Runtime.getRuntime().exec($COMMAND)
+
+  - id: java-opengrep-object-input-stream
+    languages: [java]
+    severity: ERROR
+    message: ObjectInputStream deserializes untrusted data and can execute arbitrary code.
+    metadata:
+      cwe: "CWE-502"
+      confidence: MEDIUM
+    pattern: new ObjectInputStream($INPUT)

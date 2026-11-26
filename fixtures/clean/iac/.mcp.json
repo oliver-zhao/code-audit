@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "local-helper": {
+      "command": "node",
+      "args": ["server.js"],
+      "autoApprove": false
+    }
+  }
+}
