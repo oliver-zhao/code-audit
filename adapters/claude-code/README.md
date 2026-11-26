@@ -57,7 +57,7 @@ What the installer does with a project it did not create:
 
 `.mcp.json` uses the bare command `code-audit-mcp`, which must be on the `PATH`
 of the `claude` process. If it is not, install with `--absolute` (writes the
-absolute path of this checkout's `bin/code-audit-mcp`; do not commit that
+absolute path of this installation's `code-audit-mcp`; do not commit that
 `.mcp.json`) or `--mcp-command <path>`. `code-audit doctor --project .` checks it.
 
 ## 2. Plugin (this directory)
@@ -86,11 +86,38 @@ The plugin's `.mcp.json` uses the bare command `code-audit-mcp`; it must be on
 Checked with Claude Code 2.1.183 on macOS, without model calls:
 
 - `claude plugin validate --strict adapters/claude-code` and
-  `claude plugin validate --strict .` (marketplace) pass with no warnings.
+  `claude plugin validate --strict .` (marketplace) pass.
+- The plugin's MCP server connects: `claude --plugin-dir adapters/claude-code
+  mcp list` lists `code-audit` as connected.
 - After a project install, `claude mcp list` in the project lists `code-audit`
   from `.mcp.json` (pending approval until the user approves it).
 
-Not yet verified (needs a logged-in Claude Code): approving the server and
-running `/audit` end to end, the headless command line above, skill
-auto-discovery from `.claude/skills`, loading the plugin with `--plugin-dir`,
-and installing it through the marketplace.
+**Not verified** (everything that needs a logged-in Claude Code): approving
+the project server and running `/audit` end to end, the headless command line
+above, skill discovery from `.claude/skills` or from the plugin, and
+installing the plugin through the marketplace.
+
+## Which directory is audited
+
+The MCP server audits, reads and writes only inside its **base directory**,
+which is fixed when the server starts: the directory the host starts it in.
+The entry written by `code-audit install` passes no arguments, so this works
+when the host starts project MCP servers in the project directory. The server
+prints the base to stderr at start-up
+(`[code-audit] ... base directory: /path (working directory)`); look for that
+line in the host's MCP log if `audit_start` answers `OUTSIDE_BASE` or
+`BASE_TOO_BROAD`.
+
+A model cannot change the base: a `root` outside it (also through `..` or a
+symbolic link), and credential directories such as `~/.ssh` or `~/.aws`, are
+refused. To audit a different directory, open the host in that directory, or
+set the base yourself in the server entry (or with the environment variable
+`CODE_AUDIT_MCP_BASE`):
+
+```json
+{ "mcpServers": { "code-audit": { "command": "code-audit-mcp", "args": ["--base", "/absolute/path/to/project"] } } }
+```
+
+Do not commit an entry with an absolute path. Keep the base as narrow as the
+project: every directory below it can be audited, and so read, by the model.
+See [docs/mcp.md](../../docs/mcp.md#base-directory).

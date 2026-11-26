@@ -291,7 +291,7 @@ describe("git hardening", () => {
 });
 
 describe("git failure handling", () => {
-  it("throws GitScopeError when git diff times out", async () => {
+  it("throws GitScopeError when a git listing command times out", async () => {
     const root = path.join(temp, "fake-timeout-root");
     fs.mkdirSync(root, { recursive: true });
     const dir = path.join(temp, "fake-timeout");
@@ -300,7 +300,7 @@ describe("git failure handling", () => {
       [
         "const args = process.argv.slice(2);",
         'if (args.includes("rev-parse")) process.exit(0);',
-        'if (args.includes("diff")) { setInterval(() => {}, 1000); } else { process.exit(0); }',
+        'if (args.includes("ls-tree")) { setInterval(() => {}, 1000); } else { process.exit(0); }',
       ].join("\n"),
     );
     await expect(
@@ -320,7 +320,7 @@ describe("git failure handling", () => {
       [
         "const args = process.argv.slice(2);",
         'if (args.includes("rev-parse")) process.exit(0);',
-        'if (args.includes("diff")) { process.stdout.write("a".repeat(100000)); process.exit(0); }',
+        'if (args.includes("ls-tree")) { process.stdout.write("a".repeat(100000)); process.exit(0); }',
         "process.exit(0);",
       ].join("\n"),
     );
@@ -335,13 +335,14 @@ describe("git failure handling", () => {
   it("drops changed paths that escape the audit root and warns", async () => {
     const root = path.join(temp, "fake-jail-root");
     fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "inside.txt"), "x\n", "utf8");
     const dir = path.join(temp, "fake-jail");
     fakeGit(
       dir,
       [
         "const args = process.argv.slice(2);",
         'if (args.includes("rev-parse")) process.exit(0);',
-        'if (args.includes("ls-files")) {',
+        'if (args.includes("ls-files") && args.includes("--others")) {',
         '  process.stdout.write("../outside.txt\\0/etc/passwd\\0inside.txt\\0");',
         "  process.exit(0);",
         "}",

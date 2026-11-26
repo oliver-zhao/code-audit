@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # code-audit pre-commit hook.
 #
-# This script is provided as a reference and has NOT been executed on a real
-# pre-commit framework. Install it by copying it to .git/hooks/pre-commit (or
-# wiring it into your pre-commit configuration) and making it executable:
+# This script is a reference. It was run by hand as .git/hooks/pre-commit, not
+# through the pre-commit framework. Install it by copying it to
+# .git/hooks/pre-commit (or wiring it into your pre-commit configuration) and
+# making it executable:
 #
 #   cp examples/ci/pre-commit-hook.sh .git/hooks/pre-commit
 #   chmod +x .git/hooks/pre-commit
 #
-# It runs a quick incremental scan of the changes since HEAD and blocks the
+# It runs an incremental scan of the changes since HEAD and blocks the
 # commit when new findings reach the fail-on threshold. The hook requires the
 # `code-audit` CLI to be on PATH.
 
@@ -19,9 +20,11 @@ if ! command -v code-audit >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "code-audit: scanning changes since HEAD (quick profile)..." >&2
-code-audit scan . --since HEAD --ci --profile quick
-status=$?
+echo "code-audit: scanning changes since HEAD..." >&2
+# `|| status=$?`: with `set -e` a plain failing command would end the script
+# before the status could be examined.
+status=0
+code-audit scan . --since HEAD --ci || status=$?
 
 if [ "$status" -eq 1 ]; then
   echo "code-audit: new findings detected; commit blocked." >&2

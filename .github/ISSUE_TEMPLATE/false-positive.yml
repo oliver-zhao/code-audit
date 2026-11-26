@@ -1,0 +1,54 @@
+name: False positive
+description: A finding or hotspot was reported for code that is safe.
+labels: ["false positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Findings are candidates and hotspots are a reading list, so some noise is expected.
+        A report is most useful when the safe code is common and the rule could tell it apart.
+  - type: input
+    id: rule
+    attributes:
+      label: Rule id, kind, severity and confidence
+      description: From the report or findings.json.
+      placeholder: "py-sql-injection, finding, critical, high"
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Engine
+      description: The "Engine" shown with the finding.
+      placeholder: "builtin-rules / builtin-secrets / opengrep / osv / osv-scanner / gitleaks"
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal sample
+      description: The smallest file that still triggers the rule, with its file name (the path matters). Mark the reported line. Never paste real credentials.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this code safe?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Scan command
+      description: Including flags such as --engines, --untrusted or --min-confidence.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `code-audit doctor`
+      render: text
+    validations:
+      required: true

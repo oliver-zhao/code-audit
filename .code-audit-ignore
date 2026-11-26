@@ -1,0 +1,37 @@
+# Ignore file for scanning this repository with its own tool:
+#
+#   ./bin/code-audit scan . --offline --no-external
+#
+# The repository contains deliberately vulnerable samples and fake credentials
+# (the fixtures and the inputs of the tests), which would otherwise dominate
+# the result. Every entry needs a reason. Suppressed findings stay listed in
+# the report ("Suppressed findings") and in findings.json, and the scan prints
+# a WARNING with their number; `--no-ignore-file` or `--untrusted` shows
+# everything again. See README.md, "Ignore file".
+version: 1
+ignore:
+  - paths: ["fixtures/vulnerable/**"]
+    reason: "Seeded vulnerabilities and fake credentials that the rule tests must find (fixtures/vulnerable/EXPECTED.json)."
+  - paths: ["fixtures/clean/**"]
+    reason: "Safe counterparts of the seeds; the remaining low-confidence hotspots there are intended."
+  - paths: ["packages/core/test/**", "packages/mcp/test/**"]
+    reason: "Test inputs: vulnerable snippets and fake credentials written into temporary projects by the tests."
+  - paths: ["examples/dsh-demo/src/**", "examples/opencode-demo/src/**"]
+    reason: "Deliberately vulnerable demo applications used to try the host adapters."
+  - paths: ["docs/M0_REPORT.md"]
+    reason: "Historical stage report quoting the fake fixture tokens in a grep command; kept unchanged as a development record."
+  - rule: "secret-generic-assignment"
+    paths: ["packages/core/src/placeholder.ts", "packages/core/src/external/gitleaks.ts"]
+    reason: "Comments that show what a password assignment looks like to the detector; the values are made-up examples."
+  - rule: "secret-url-credentials"
+    paths: ["packages/core/src/placeholder.ts", "packages/core/src/redact.ts"]
+    reason: "Comments documenting the scheme://user:password@host form."
+  - rule: "secret-aws-access-key"
+    paths: ["packages/core/src/placeholder.ts"]
+    reason: "AWS's published documentation key id (AKIAIOSFODNN7EXAMPLE) in the list of known example values."
+  - rule: "js-ssrf"
+    paths: ["packages/core/src/sca.ts"]
+    reason: "The HTTP client is only called with the constant OSV.dev endpoints; the advisory id in the path is URL-encoded."
+  - rule: "dep-missing-lockfile"
+    paths: ["packages/*/package.json"]
+    reason: "pnpm workspace: the lockfile is pnpm-lock.yaml in the repository root."

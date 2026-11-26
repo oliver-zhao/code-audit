@@ -1,27 +1,58 @@
 {
   "name": "@code-audit/core",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "code-audit engine: inventory, built-in rules, secret detection, dependency advisories (OSV), findings, baseline and Markdown/JSON/SARIF reports",
+  "keywords": [
+    "security",
+    "audit",
+    "sast",
+    "sca",
+    "secrets",
+    "sarif",
+    "mcp",
+    "code-review"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oliver-zhao/code-audit.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/oliver-zhao/code-audit#readme",
+  "bugs": {
+    "url": "https://github.com/oliver-zhao/code-audit/issues"
+  },
   "type": "module",
-  "description": "Deterministic audit engine: inventory, rules, secrets, SCA, findings, reports",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "assets",
+    "NOTICE",
+    "!dist/**/*.map",
+    "!dist/.tsbuildinfo"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "node ../../scripts/pack-assets.mjs",
+    "postpack": "node ../../scripts/pack-assets.mjs --clean"
   },
   "dependencies": {
     "yaml": "^2.7.0",
     "zod": "^3.24.0"
-  },
-  "license": "Apache-2.0"
+  }
 }

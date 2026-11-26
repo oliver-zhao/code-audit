@@ -528,7 +528,7 @@ describe("suppression data", () => {
     // ... and the run store, which the report commands render from. A verdict
     // changes the status, the suppression record stays.
     const target = inMemory[0] as Finding;
-    recordVerdict(result.runDir, target.fingerprint, { status: "false_positive", rationale: "checked" });
+    recordVerdict(result.runDir, target.fingerprint, { status: "false_positive", rationale: "the value is a constant and never user input; see python/app.py:12 for the assignment" });
     const loaded = loadRun(result.runDir);
     const effective = [...effectiveFindings(loaded), ...effectiveHotspots(loaded)];
     const withRecord = effective.filter((item) => item.suppression !== undefined);

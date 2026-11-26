@@ -29,7 +29,9 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: \bexec\([^;]{0,600}\+
+    # A call of exec itself or through child_process / shelljs, not a method of
+    # another object: RegExp.prototype.exec and query.exec() are not commands.
+    pattern: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27]child_process["\x27]\s*\)\.)exec\([^;]{0,600}\+'
     group: js-command
     message: External input is concatenated into a shell command.
     message_zh: 外部输入被拼接到 shell 命令中。
@@ -196,7 +198,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: \bexec(?:Sync)?\s*\(
+    # Same receivers as js-command-injection.
+    pattern: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27]child_process["\x27]\s*\)\.)exec(?:Sync)?\s*\('
     group: js-command
     message: The subprocess command comes from a runtime value; confirm the command and arguments are trusted.
     message_zh: 子进程命令来自运行时值；需确认命令与参数可信。

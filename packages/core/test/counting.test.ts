@@ -532,9 +532,10 @@ describe("report size and order", () => {
       "## 4. Low-confidence candidates",
       "## 5. Review hotspots",
       "## 6. Suppressed findings",
-      "## 7. Fixed since baseline",
-      "## 8. Coverage and Limitations",
-      "## 9. Appendix: Rules triggered in this run",
+      "## 7. Dismissed by review",
+      "## 8. Fixed since baseline",
+      "## 9. Coverage and Limitations",
+      "## 10. Appendix: Rules triggered in this run",
     ]);
     expect(md).toContain("| old-rule | old.py | high | Old |");
     expect(md).toContain("new since the baseline only");
@@ -894,10 +895,22 @@ describe("SARIF", () => {
 
   it("marks suppressed results with kind and justification, and only those", () => {
     const records = [...findings, hostileFile, ...hotspots];
-    const suppressed = results.filter((result) => result.suppressions.length > 0);
+    // A false_positive verdict is a suppression too (kind external); see
+    // dismissed.test.ts. The rest of this test is about ignore entries.
+    const dismissed = results.filter((_, index) => records[index]?.status === "false_positive");
+    expect(dismissed.length).toBeGreaterThan(0);
+    for (const result of dismissed) {
+      expect(result.suppressions).toHaveLength(1);
+      expect(result.suppressions[0]?.kind).toBe("external");
+      expect(result.suppressions[0]?.justification).toMatch(/^Marked false positive by /);
+    }
+    const suppressed = results.filter(
+      (result, index) => result.suppressions.length > 0 && records[index]?.status === "suppressed",
+    );
     expect(suppressed).toHaveLength(3);
     records.forEach((record, index) => {
       const result = results[index] as SarifResult;
+      if (record.status === "false_positive") return;
       if (record.status !== "suppressed") {
         expect(result.suppressions).toEqual([]);
         return;

@@ -986,8 +986,11 @@ describe("engine guard against expensive input", () => {
     const elapsed = performance.now() - started;
     // Unbounded, the 200 lines take well over ten seconds.
     expect(elapsed).toBeLessThan(5000);
+    // On a fast machine the budget check between matches stops the file; on a
+    // slow one a single match outlives the budget and the hard interrupt does.
+    // Either way the file is named in a warning.
     expect(result.warnings.join("\n")).toMatch(
-      /rule matching stopped at line \d+ of app\.py: time budget of 300 ms exceeded/,
+      /rule matching stopped at line \d+ of app\.py: time budget of 300 ms exceeded|rule matching of app\.py was interrupted after \d+ ms/,
     );
     // Results found before the budget ran out are kept, and other files are
     // still scanned.

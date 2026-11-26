@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export interface RunToolOptions {
   cwd?: string;
@@ -88,37 +89,44 @@ export function runTool(
       return;
     }
 
-    const append = (
-      chunk: Buffer,
-      current: string,
-      currentBytes: number,
-    ): { text: string; bytes: number; truncated: boolean } => {
-      if (currentBytes >= maxOutputBytes) {
-        return { text: current, bytes: currentBytes, truncated: true };
-      }
-      const room = maxOutputBytes - currentBytes;
-      if (chunk.length > room) {
+    // One decoder per stream: a multi-byte character split across two chunks
+    // (a non-ASCII path in `git ls-files -z` output) must not be mangled.
+    const makeAppender = (): ((chunk: Buffer, current: string, currentBytes: number) => {
+      text: string;
+      bytes: number;
+      truncated: boolean;
+    }) => {
+      const decoder = new StringDecoder("utf8");
+      return (chunk, current, currentBytes) => {
+        if (currentBytes >= maxOutputBytes) {
+          return { text: current, bytes: currentBytes, truncated: true };
+        }
+        const room = maxOutputBytes - currentBytes;
+        if (chunk.length > room) {
+          return {
+            text: current + decoder.write(chunk.subarray(0, room)),
+            bytes: maxOutputBytes,
+            truncated: true,
+          };
+        }
         return {
-          text: current + chunk.subarray(0, room).toString("utf8"),
-          bytes: maxOutputBytes,
-          truncated: true,
+          text: current + decoder.write(chunk),
+          bytes: currentBytes + chunk.length,
+          truncated: false,
         };
-      }
-      return {
-        text: current + chunk.toString("utf8"),
-        bytes: currentBytes + chunk.length,
-        truncated: false,
       };
     };
+    const appendStdout = makeAppender();
+    const appendStderr = makeAppender();
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      const result = append(chunk, stdout, stdoutBytes);
+      const result = appendStdout(chunk, stdout, stdoutBytes);
       stdout = result.text;
       stdoutBytes = result.bytes;
       truncated = truncated || result.truncated;
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      const result = append(chunk, stderr, stderrBytes);
+      const result = appendStderr(chunk, stderr, stderrBytes);
       stderr = result.text;
       stderrBytes = result.bytes;
       truncated = truncated || result.truncated;

@@ -1,0 +1,40 @@
+name: False negative
+description: Vulnerable code was not reported, or was reported only as a hotspot or with low confidence.
+labels: ["false negative"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the README section "Limits" first: data flow across statements and files,
+        authorization and business logic are outside what the engines model.
+        If the gap is a way to hide a finding from the scan on purpose, report it privately (SECURITY.md).
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal sample
+      description: The smallest file that contains the vulnerability, with its file name. Mark the vulnerable line. Never paste real credentials.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have been reported?
+      description: The weakness (CWE if you know it), and the existing rule id you expected to match, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What was reported instead?
+      description: Nothing, a hotspot, a low-confidence candidate, or a warning (for example "python lexer fallback"). Include the scan command and the summary lines.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `code-audit doctor`
+      render: text
+    validations:
+      required: true

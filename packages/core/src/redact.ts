@@ -118,7 +118,7 @@ export function isUrlPasswordReference(value: string): boolean {
  * masked, not what is reported.
  */
 const SECRET_WORD_SOURCE =
-  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp)(?![A-Za-z])|[_-]key(?![A-Za-z])";
+  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp)(?![A-Za-z])|[_-]key(?![A-Za-z])";
 const SECRET_WORD = new RegExp(SECRET_WORD_SOURCE, "gi");
 const SECRET_WORD_TEST = new RegExp(SECRET_WORD_SOURCE, "i");
 
@@ -215,17 +215,256 @@ const CONFIG_EXTENSIONS = new Set([
   "tf",
   "tfvars",
   "envrc",
+  "cnf",
+  "npmrc",
+  "pypirc",
+  "kubeconfig",
 ]);
+
+/** Configuration files that are known by their name, not by an extension. */
+const CONFIG_BASENAMES = new Set([
+  "config",
+  "credentials",
+  "kubeconfig",
+  ".npmrc",
+  ".yarnrc",
+  ".pypirc",
+  ".netrc",
+  "_netrc",
+  "netrc",
+  ".pgpass",
+  ".s3cfg",
+  ".boto",
+  ".dockercfg",
+  ".htpasswd",
+  "htpasswd",
+  ".my.cnf",
+  ".curlrc",
+  ".wgetrc",
+]);
+
+function baseNameOf(file: string | undefined): string {
+  return file ? (file.split(/[\\/]/).pop() ?? "").toLowerCase() : "";
+}
 
 /** Files in which `name: value` / `NAME=value` without quotes is the norm. */
 export function isConfigLikeFile(file: string | undefined): boolean {
   if (!file) return false;
-  const base = (file.split(/[\\/]/).pop() ?? "").toLowerCase();
+  const base = baseNameOf(file);
   if (base.startsWith(".env") || base.startsWith("dockerfile") || base.endsWith(".dockerfile")) {
     return true;
   }
+  if (CONFIG_BASENAMES.has(base)) return true;
   const dot = base.lastIndexOf(".");
   return dot >= 0 && CONFIG_EXTENSIONS.has(base.slice(dot + 1));
+}
+
+/**
+ * Credential files whose format has no `name = value` shape, recognised by
+ * file name: `.netrc` (`machine H login U password P`), `.pgpass`
+ * (`host:port:db:user:password`) and htpasswd (`user:hash`).
+ */
+export type CredentialFileFormat = "netrc" | "pgpass" | "htpasswd";
+
+export function credentialFileFormat(file: string | undefined): CredentialFileFormat | undefined {
+  const base = baseNameOf(file);
+  if (base === ".netrc" || base === "_netrc" || base === "netrc" || base.endsWith(".netrc")) {
+    return "netrc";
+  }
+  if (base === ".pgpass" || base === "pgpass" || base === "pgpass.conf" || base.endsWith(".pgpass")) {
+    return "pgpass";
+  }
+  if (base === ".htpasswd" || base === "htpasswd" || base.endsWith(".htpasswd")) return "htpasswd";
+  return undefined;
+}
+
+export interface CredentialField extends RedactRange {
+  /** What the field is: `password`, `account`, `hash`. */
+  field: string;
+}
+
+/** The credential fields of one line of a `.netrc`, `.pgpass` or htpasswd file. */
+export function credentialFileFields(
+  line: string,
+  format: CredentialFileFormat,
+): CredentialField[] {
+  const fields: CredentialField[] = [];
+  if (line.length > MAX_CREDENTIAL_LINE) return fields;
+  if (format === "netrc") {
+    // Whitespace-separated tokens; the token after `password` / `account`.
+    const token = /"([^"]{0,1024})"|\S+/g;
+    let previous = "";
+    let match: RegExpExecArray | null;
+    while ((match = token.exec(line)) !== null) {
+      const quoted = match[1] !== undefined;
+      const start = match.index + (quoted ? 1 : 0);
+      const end = match.index + match[0].length - (quoted ? 1 : 0);
+      if ((previous === "password" || previous === "passwd" || previous === "account") && end > start) {
+        fields.push({ start, end, field: previous === "account" ? "account" : "password" });
+        previous = "";
+      } else {
+        previous = match[0].toLowerCase();
+      }
+    }
+    return fields;
+  }
+  const trimmed = line.trimStart();
+  if (trimmed.length === 0 || trimmed.startsWith("#")) return fields;
+  if (format === "pgpass") {
+    // host:port:database:user:password, with `\:` and `\\` escapes.
+    let colons = 0;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (char === "\\") {
+        index += 1;
+      } else if (char === ":") {
+        colons += 1;
+        if (colons === 4) {
+          const end = line.trimEnd().length;
+          if (end > index + 1) fields.push({ start: index + 1, end, field: "password" });
+          break;
+        }
+      }
+    }
+    return fields;
+  }
+  // htpasswd: user:hash
+  const colon = line.indexOf(":");
+  const end = line.trimEnd().length;
+  if (colon > 0 && end > colon + 1) fields.push({ start: colon + 1, end, field: "hash" });
+  return fields;
+}
+
+/** Lines longer than this are not parsed for whitespace-separated credentials. */
+const MAX_CREDENTIAL_LINE = 20_000;
+
+/** A quoted or bare shell word. Group 1 or 2 is the content of a quoted one. */
+const SHELL_WORD = `(?:'([^']{0,1024})'|"([^"]{0,1024})"|[^\\s'"|;&]+)`;
+
+interface CommandCredential {
+  pattern: RegExp;
+  /** The value is `user:password`: only the part after the colon is masked. */
+  userPass?: boolean;
+}
+
+/**
+ * Passwords given to well-known commands as a separate word, where no
+ * secret-like name stands next to the value. Every gap is bounded, so the
+ * patterns stay linear on hostile input.
+ */
+const COMMAND_CREDENTIALS: CommandCredential[] = [
+  { pattern: new RegExp(`\\bsshpass\\s+-p\\s*(${SHELL_WORD})`, "g") },
+  {
+    pattern: new RegExp(
+      `\\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mariadb|mariadb-dump|mongo|mongosh|mongodump|mongorestore|mongoimport|mongoexport)\\b[^|;&\\n]{0,300}?\\s-p\\s?(${SHELL_WORD})`,
+      "g",
+    ),
+  },
+  {
+    pattern: new RegExp(
+      `\\b(?:docker|podman|nerdctl|helm\\s+registry|skopeo|buildah|oras)\\s+login\\b[^|;&\\n]{0,300}?\\s-p[\\s=]?(${SHELL_WORD})`,
+      "g",
+    ),
+  },
+  { pattern: new RegExp(`\\bredis-cli\\b[^|;&\\n]{0,300}?\\s-a\\s+(${SHELL_WORD})`, "g") },
+  {
+    pattern: new RegExp(`\\bhtpasswd\\s+-[A-Za-z]*b[A-Za-z]*\\s+\\S+\\s+\\S+\\s+(${SHELL_WORD})`, "g"),
+  },
+  {
+    pattern: new RegExp(
+      `\\b(?:curl|wget|http|https|aria2c)\\b[^|;&\\n]{0,300}?\\s(?:-u|-U|--user|--proxy-user)[\\s=]\\s*(${SHELL_WORD})`,
+      "g",
+    ),
+    userPass: true,
+  },
+  {
+    pattern: new RegExp(
+      `\\b(?:echo|printf)\\s+(?:-[A-Za-z]+\\s+)?(${SHELL_WORD})\\s*\\|[^|;&\\n]{0,300}?--password-stdin`,
+      "g",
+    ),
+  },
+];
+
+const COOKIE_HEADER = /\b(?:Set-)?Cookie2?\s*:\s*/gi;
+const COOKIE_ATTRIBUTES = /^(?:path|domain|expires|max-age|samesite|secure|httponly|priority|version)$/i;
+
+/**
+ * Column ranges of credentials that are separated from their name by
+ * whitespace, or that have no name at all:
+ *
+ * - the fields of `.netrc`, `.pgpass` and htpasswd files (by file name);
+ * - the password word of `sshpass -p`, `mysql -p...`, `docker login -p`,
+ *   `redis-cli -a`, `htpasswd -b`, `curl -u user:password`,
+ *   `echo ... | ... --password-stdin`;
+ * - the values of a `Cookie:` / `Set-Cookie:` header.
+ *
+ * (`password VALUE` after a secret-like word is handled with the other
+ * secret-like names in `secretValueRanges`.)
+ */
+function unnamedCredentialRanges(line: string, file: string | undefined): RedactRange[] {
+  const ranges: RedactRange[] = [];
+  if (line.length > MAX_CREDENTIAL_LINE) return ranges;
+  const format = credentialFileFormat(file);
+  if (format) {
+    for (const field of credentialFileFields(line, format)) {
+      ranges.push({ start: field.start, end: field.end });
+    }
+  }
+  // Cheap test first: most lines name none of these commands.
+  if (/sshpass|mysql|mariadb|mongo|login|redis-cli|htpasswd|curl|wget|http|aria2c|password-stdin/.test(line)) {
+    for (const command of COMMAND_CREDENTIALS) {
+      command.pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = command.pattern.exec(line)) !== null) {
+        const word = match[1] ?? "";
+        if (word.length === 0) {
+          command.pattern.lastIndex += 1;
+          continue;
+        }
+        const quoted = match[2] !== undefined || match[3] !== undefined;
+        let start = match.index + match[0].lastIndexOf(word) + (quoted ? 1 : 0);
+        const end = start + word.length - (quoted ? 2 : 0);
+        if (command.userPass) {
+          const colon = line.indexOf(":", start);
+          if (colon < 0 || colon >= end) continue;
+          start = colon + 1;
+        }
+        if (end <= start || isReferenceValue(line.slice(start, end))) continue;
+        ranges.push({ start, end });
+      }
+    }
+  }
+  if (/cookie/i.test(line)) {
+    COOKIE_HEADER.lastIndex = 0;
+    let header: RegExpExecArray | null;
+    while ((header = COOKIE_HEADER.exec(line)) !== null) {
+      const from = header.index + header[0].length;
+      // A bounded piece of the line and bounded names: linear on any input.
+      const piece = line.slice(from, from + 4000);
+      const pair = /([^=;\s"'`]{1,128})=([^;"'`\s]+)/g;
+      let cookie: RegExpExecArray | null;
+      while ((cookie = pair.exec(piece)) !== null) {
+        const name = cookie[1] ?? "";
+        const value = cookie[2] ?? "";
+        if (COOKIE_ATTRIBUTES.test(name) || isReferenceValue(value)) continue;
+        const start = from + cookie.index + name.length + 1;
+        ranges.push({ start, end: start + value.length });
+      }
+    }
+  }
+  return ranges;
+}
+
+/**
+ * A word after `password ` in running text that is a value, not the next word
+ * of a sentence: it mixes letters with digits, or is a long run of token
+ * characters. `the password is hunter2!` is masked; `password required` is not.
+ */
+function looksLikeTokenWord(value: string): boolean {
+  if (value.length < 6 || /[()]/.test(value)) return false;
+  if (/[0-9]/.test(value) && /[A-Za-z]/.test(value)) return true;
+  if (/[A-Za-z]/.test(value) && /[!@#$%^&*+=~]/.test(value)) return true;
+  return /^[A-Za-z0-9+/=_-]{20,}$/.test(value) && /[A-Z]/.test(value) && /[a-z]/.test(value);
 }
 
 const UNQUOTED_KEYWORDS = /^(?:none|null|nil|true|false|undefined|yes|no|on|off|self|this)$/i;
@@ -439,6 +678,10 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       const rest = line.slice(position + 1, position + 60);
       const annotation = /^[^="'`:,(){}]{0,50}=(?!=)/.exec(rest);
       if (annotation && line[position + 1] !== ":") {
+        // `client-key-data: LS0t...Qo=` is a value that ends in base64
+        // padding, not an annotation: what stands between the colon and
+        // the `=` is masked too when it looks like a token.
+        maskUnquoted(skipSpaces(line, position + 1, line.length), line.length, false);
         position += annotation[0].length;
         sep = "=";
       }
@@ -473,6 +716,36 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       const literal = literalOpeningAt(position);
       if (literal) addLiteral(literal);
       else maskUnquoted(position, line.length, true);
+    } else if (!keyLiteral && position > afterName && !/[)\]]/.test(line.slice(afterName, position))) {
+      // `password VALUE`: the value is separated from the name by blanks
+      // only (redis `requirepass`-style settings, `.netrc`, notes, comments).
+      const limit = inside ? inside.contentEnd : line.length;
+      let from = position;
+      // "the password is VALUE"
+      const filler = /^(?:is|was|are|to)\s+/i.exec(line.slice(from, from + 6));
+      if (filler) from += filler[0].length;
+      const literal = inside ? undefined : literalOpeningAt(from);
+      const atLineStart = line.slice(0, nameStart).trim().length === 0;
+      if (literal) {
+        if (atLineStart && configLike) addLiteral(literal);
+        else if (looksLikeTokenWord(line.slice(literal.contentStart, literal.contentEnd))) {
+          addLiteral(literal);
+        }
+      } else {
+        let end = from;
+        while (end < limit && !/[\s"'`,;]/.test(line[end] as string)) end += 1;
+        const value = line.slice(from, end);
+        if (
+          value.length > 0 &&
+          !isReferenceValue(value) &&
+          !UNQUOTED_KEYWORDS.test(value) &&
+          // A setting of a configuration file: whatever the value is.
+          ((atLineStart && configLike && !filler && !/^[#=:({[]/.test(value)) ||
+            looksLikeTokenWord(value))
+        ) {
+          ranges.push({ start: from, end });
+        }
+      }
     }
   }
   return ranges;
@@ -625,6 +898,9 @@ export function redactLineDetailed(
   }
 
   for (const range of secretValueRanges(line, isConfigLikeFile(options.file))) {
+    ranges.push(range);
+  }
+  for (const range of unnamedCredentialRanges(line, options.file)) {
     ranges.push(range);
   }
 

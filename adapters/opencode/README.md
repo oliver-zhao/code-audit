@@ -21,7 +21,7 @@ code-audit install --host opencode --project .
 `code-audit-mcp`, which must be on the `PATH` of the OpenCode process (from this
 repo: `pnpm run link:local`, then add `bin/` to `PATH`). If that is not possible
 (GUI or service launches often have a minimal `PATH`), install with
-`--absolute` (writes the absolute path of this checkout's `bin/code-audit-mcp`;
+`--absolute` (writes the absolute path of this installation's `code-audit-mcp`;
 do not commit the resulting config) or `--mcp-command <path>`.
 `code-audit doctor --project .` reports whether the configured command resolves.
 
@@ -65,7 +65,10 @@ Manual equivalent: copy `opencode.json` to the project root, copy
 ## Verified on a real host
 
 Verified with OpenCode **v2.4.1** on Linux using a project-local config (no
-global changes). `examples/opencode-demo/` holds the same config.
+global changes): after `code-audit install --host opencode`, the server
+connects, the skill and the `/audit` command are discovered, and a full audit
+ran through the MCP tools with this version of the code.
+`examples/opencode-demo/` holds the same config.
 
 ```text
 $ opencode mcp list --server http://127.0.0.1:4102
@@ -88,3 +91,28 @@ $ opencode api --server http://127.0.0.1:4102 command.list
 Note: a cold `opencode mcp list` right after startup can print "No MCP servers
 configured" because the background server is still loading the project config.
 Warm the server (or retry) before trusting that output.
+
+## Which directory is audited
+
+The MCP server audits, reads and writes only inside its **base directory**,
+which is fixed when the server starts: the directory the host starts it in.
+The entry written by `code-audit install` passes no arguments, so this works
+when the host starts project MCP servers in the project directory. The server
+prints the base to stderr at start-up
+(`[code-audit] ... base directory: /path (working directory)`); look for that
+line in the host's MCP log if `audit_start` answers `OUTSIDE_BASE` or
+`BASE_TOO_BROAD`.
+
+A model cannot change the base: a `root` outside it (also through `..` or a
+symbolic link), and credential directories such as `~/.ssh` or `~/.aws`, are
+refused. To audit a different directory, open the host in that directory, or
+set the base yourself in the server entry (or with the environment variable
+`CODE_AUDIT_MCP_BASE`):
+
+```json
+{ "mcp": { "servers": { "code-audit": { "type": "local", "command": ["code-audit-mcp", "--base", "/absolute/path/to/project"] } } } }
+```
+
+Do not commit an entry with an absolute path. Keep the base as narrow as the
+project: every directory below it can be audited, and so read, by the model.
+See [docs/mcp.md](../../docs/mcp.md#base-directory).

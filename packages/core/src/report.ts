@@ -16,6 +16,7 @@ import { localizeRule, type LoadedRule } from "./rules.js";
 import { compareVersions } from "./sca.js";
 import { comparePypiVersions } from "./pypi.js";
 import { countPathContexts } from "./pathContext.js";
+import { redactText } from "./redact.js";
 
 export type ReportLang = "zh" | "en";
 
@@ -104,6 +105,23 @@ const EN = {
   unreviewed: "unreviewed",
   reviewNote: "Review progress",
   falsePositiveExcluded: "false positive(s) excluded",
+  // Findings a reviewer dismissed; see `dismissedWarning`.
+  dismissedSection: "Dismissed by review",
+  dismissedNote:
+    "Every finding and hotspot that a reviewer (a host agent or a person) marked false positive in this run. They are excluded from the numbers above and from the exit code. A reviewing agent reads the audited repository and can be misled by it: check each dismissal, starting with the highest severity.",
+  dismissedNone: "No finding was marked false positive.",
+  dismissedReviewer: "Reviewer",
+  dismissedRationale: "Rationale",
+  dismissedEvidence: "evidence",
+  dismissedKind: "Kind",
+  dismissedKindFinding: "finding",
+  dismissedKindHotspot: "hotspot",
+  dismissedUnnamed: "unnamed reviewer",
+  dismissedNoVerdict: "no verdict record",
+  dismissedMore: "… and {n} more; all of them are in findings.json (status false_positive) and verdicts.json.",
+  warnDismissed:
+    "{n} finding(s) at severity ≥ {failOn} were marked false positive by {reviewers} and do not count toward the exit code; review the section \"Dismissed by review\".",
+  warnDismissedMore: "and {n} more",
   // Counting model.
   verdictFail: "{n} findings count toward the exit code",
   verdictFailOne: "1 finding counts toward the exit code",
@@ -322,6 +340,22 @@ const ZH: Labels = {
   unreviewed: "未复核",
   reviewNote: "复核进度",
   falsePositiveExcluded: "条误报已排除",
+  dismissedSection: "复核中被驳回的发现",
+  dismissedNote:
+    "本次运行中被复核者（宿主 Agent 或人工）标记为误报的全部发现与热点。它们不计入以上数字和退出码。复核 Agent 会读取被审计仓库的内容，可能被其误导：请逐条核对，从严重性最高的开始。",
+  dismissedNone: "没有发现被标记为误报。",
+  dismissedReviewer: "复核者",
+  dismissedRationale: "理由",
+  dismissedEvidence: "证据",
+  dismissedKind: "类型",
+  dismissedKindFinding: "发现",
+  dismissedKindHotspot: "热点",
+  dismissedUnnamed: "未署名的复核者",
+  dismissedNoVerdict: "无裁决记录",
+  dismissedMore: "……另有 {n} 条；全部记录在 findings.json（status 为 false_positive）和 verdicts.json 中。",
+  warnDismissed:
+    "{n} 条严重性 ≥ {failOn} 的发现被 {reviewers} 标记为误报，不计入退出码；请核对“复核中被驳回的发现”一节。",
+  warnDismissedMore: "以及另外 {n} 个",
   verdictFail: "{n} 条发现计入退出码",
   verdictFailOne: "1 条发现计入退出码",
   verdictPass: "没有发现计入退出码",
@@ -493,6 +527,8 @@ const ZH: Labels = {
 };
 
 const SECRET_MESSAGE_ZH = "检测到可能的明文凭据；所有报告中的证据均已脱敏。";
+const CREDENTIAL_FILE_REMEDIATION_ZH =
+  "轮换该凭据，把该文件从仓库及历史中删除，并在运行时由环境变量或凭据存储提供该值。";
 
 /**
  * Chinese text of the findings that built-in detectors create without a YAML
@@ -535,6 +571,39 @@ export const BUILTIN_FINDING_TEXT_ZH: Readonly<
     message: SECRET_MESSAGE_ZH,
     remediation:
       "从 URL 中移除凭据并轮换，改由环境变量、keyring 或包管理器的凭据存储提供（pip：用密钥注入 PIP_INDEX_URL，或使用 netrc 文件）。",
+  },
+  "secret-netrc-password": {
+    title: ".netrc 文件中的密码",
+    message: SECRET_MESSAGE_ZH,
+    remediation: CREDENTIAL_FILE_REMEDIATION_ZH,
+  },
+  "secret-pgpass-password": {
+    title: "PostgreSQL .pgpass 文件中的密码",
+    message: SECRET_MESSAGE_ZH,
+    remediation: CREDENTIAL_FILE_REMEDIATION_ZH,
+  },
+  "secret-npmrc-auth": {
+    title: ".npmrc 中的仓库凭据",
+    message: SECRET_MESSAGE_ZH,
+    remediation:
+      "吊销该令牌，把它从仓库及历史中删除，并写成 `_authToken=${NPM_TOKEN}`，让值来自环境变量。",
+  },
+  "secret-pypirc-password": {
+    title: ".pypirc 或 pip.conf 中的包索引密码",
+    message: SECRET_MESSAGE_ZH,
+    remediation: CREDENTIAL_FILE_REMEDIATION_ZH,
+  },
+  "secret-docker-auth": {
+    title: "Docker 配置文件中的镜像仓库凭据",
+    message: SECRET_MESSAGE_ZH,
+    remediation:
+      "退出该镜像仓库的登录并吊销凭据，把该文件从仓库及历史中删除，改用凭据助手（credsStore）而不是内联的 auths。",
+  },
+  "secret-kubeconfig-credential": {
+    title: "kubeconfig 文件中的集群凭据",
+    message: SECRET_MESSAGE_ZH,
+    remediation:
+      "在集群中吊销该令牌或客户端证书，把该文件从仓库及历史中删除，改用 exec 凭据插件或短期令牌。",
   },
   "dep-missing-lockfile": {
     title: "清单文件旁没有锁文件",
@@ -987,11 +1056,63 @@ export interface FindingSummary {
     baseline: { fromRepository: boolean; existing: number; atFailOn: number };
     ignoreFile: { fromRepository: boolean; suppressed: number; atFailOn: number };
     inline: { suppressed: number; atFailOn: number };
+    /**
+     * Findings a reviewer marked false positive in this run. Not something
+     * the repository controls directly, but a reviewing agent reads the
+     * repository and can be talked into dismissing findings, so the
+     * dismissals at severity >= failOn are a cover WARNING too.
+     */
+    dismissed: {
+      /** Findings (not hotspots) with a false_positive verdict. */
+      total: number;
+      atFailOn: number;
+      /** Reviewer labels of the dismissals at severity >= failOn, sanitised. */
+      reviewers: string[];
+      /** Dismissals at severity >= failOn without a reviewer label. */
+      unnamed: number;
+    };
     toolOutputFiles: number;
     excludedSourceFiles: { total: number; truncated: boolean; byDirectory: Record<string, number> };
     untrusted: boolean;
   };
   exitCode: { counting: number; code: 0 | 1 };
+}
+
+/** A reviewer label as shown in a warning: one line, plain characters, short. */
+export function reviewerLabel(value: string): string {
+  return value
+    .replace(/[^A-Za-z0-9._@:/ +()-]/g, "?")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 48);
+}
+
+/** Who dismissed a finding, from its current verdict; undefined when unnamed. */
+export function dismissedBy(finding: Finding): string | undefined {
+  const review = finding.review;
+  const label = reviewerLabel(review?.reviewer || review?.actor || "");
+  return label === "" ? undefined : label;
+}
+
+function dismissedSummary(
+  all: readonly Finding[],
+  atFailOn: (finding: Finding) => boolean,
+): FindingSummary["reductions"]["dismissed"] {
+  const dismissed = all.filter((finding) => finding.status === "false_positive");
+  const serious = dismissed.filter(atFailOn);
+  const reviewers = new Set<string>();
+  let unnamed = 0;
+  for (const finding of serious) {
+    const label = dismissedBy(finding);
+    if (label) reviewers.add(label);
+    else unnamed += 1;
+  }
+  return {
+    total: dismissed.length,
+    atFailOn: serious.length,
+    reviewers: [...reviewers].sort(),
+    unnamed,
+  };
 }
 
 /** The exit-code rule: active, severity >= failOn, confidence >= minConfidence, new when a baseline is active. */
@@ -1200,6 +1321,7 @@ export function summarizeFindings(
         atFailOn: byIgnoreFile.filter(atFailOn).length,
       },
       inline: { suppressed: byInline.length, atFailOn: byInline.filter(atFailOn).length },
+      dismissed: dismissedSummary(all, atFailOn),
       toolOutputFiles: controls.toolOutputFiles ?? 0,
       excludedSourceFiles: controls.excludedSourceFiles ?? {
         total: 0,
@@ -1637,6 +1759,29 @@ export function groupVulnerablePackages(
  * terminal; the labels use backticks for flags, which Markdown renders as
  * code.
  */
+/**
+ * The warning for findings at severity >= `--fail-on` that a reviewer marked
+ * false positive; undefined when there is none. Shown on the report cover and
+ * in the terminal, `--ci`, step and MCP summaries, so a review that dismissed
+ * serious findings never yields a clean-looking result without saying so.
+ */
+export function dismissedWarning(summary: FindingSummary, lang: ReportLang = "en"): string | undefined {
+  const dismissed = summary.reductions.dismissed;
+  if (dismissed.atFailOn === 0) return undefined;
+  const l = REPORT_LABELS[lang];
+  const shown = dismissed.reviewers.slice(0, 5);
+  const names = [...shown];
+  if (dismissed.reviewers.length > shown.length) {
+    names.push(fmt(l.warnDismissedMore, { n: dismissed.reviewers.length - shown.length }));
+  }
+  if (dismissed.unnamed > 0 || names.length === 0) names.push(l.dismissedUnnamed);
+  return fmt(l.warnDismissed, {
+    n: dismissed.atFailOn,
+    failOn: summary.thresholds.failOn,
+    reviewers: names.join(", "),
+  });
+}
+
 export function reductionWarnings(summary: FindingSummary, lang: ReportLang = "en"): string[] {
   const l = REPORT_LABELS[lang];
   const { failOn, minConfidence, newOnly } = summary.thresholds;
@@ -1682,6 +1827,8 @@ export function reductionWarnings(summary: FindingSummary, lang: ReportLang = "e
   if (reductions.toolOutputFiles > 0) {
     lines.push(fmt(l.warnToolOutput, { n: reductions.toolOutputFiles }));
   }
+  const dismissed = dismissedWarning(summary, lang);
+  if (dismissed) lines.push(dismissed);
   const excluded = reductions.excludedSourceFiles;
   if (excluded.total > 0) {
     const dirs = Object.entries(excluded.byDirectory)
@@ -1908,7 +2055,9 @@ export function renderSummaryText(summary: FindingSummary): string[] {
     );
   }
   if (summary.falsePositives > 0) {
-    lines.push(`False positives excluded: ${summary.falsePositives}`);
+    lines.push(
+      `False positives excluded: ${summary.falsePositives} (each one is listed with reviewer and rationale under "Dismissed by review" in the report)`,
+    );
   }
   for (const warning of reductionWarnings(summary, "en")) {
     lines.push(`WARNING: ${warning.replace(/`/g, "")}`);
@@ -1938,6 +2087,10 @@ const ADVISORY_DETAILS_PER_PACKAGE = 10;
 const SKIPPED_EXAMPLES = 3;
 const WARNINGS_SHOWN = 40;
 const FIXED_SHOWN = 100;
+/** Rows of the "Dismissed by review" table; the rest is counted. */
+const DISMISSED_SHOWN = 500;
+/** Characters of a verdict rationale shown in that table. */
+const DISMISSED_RATIONALE_MAX = 300;
 
 /** Longest file path shown in one piece. */
 const PATH_TEXT_MAX = 300;
@@ -2617,6 +2770,69 @@ export function renderMarkdown(input: ReportContext): string {
     lines.push("");
   }
 
+  // ---- Dismissed by review ---------------------------------------------
+  // Every record with a false_positive verdict, itemised: who dismissed it
+  // and why. A reviewing agent can be prompt-injected by the repository it
+  // reads; without this list a mass dismissal would leave only a count.
+  const allDismissed = [...context.findings, ...allHotspots]
+    .filter((finding) => finding.status === "false_positive")
+    .sort(
+      (a, b) =>
+        (a.kind === "hotspot" ? 1 : 0) - (b.kind === "hotspot" ? 1 : 0) ||
+        SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] ||
+        a.file.localeCompare(b.file) ||
+        a.startLine - b.startLine,
+    );
+  if (allDismissed.length > 0 || context.agentReviewed) {
+    section(l.dismissedSection);
+    lines.push(`> ${l.dismissedNote}`, "");
+    if (allDismissed.length === 0) {
+      lines.push(l.dismissedNone, "");
+    } else {
+      lines.push(
+        tableRow([
+          "ID",
+          l.dismissedKind,
+          l.severity,
+          l.ruleId,
+          l.file,
+          l.line,
+          l.dismissedReviewer,
+          l.dismissedRationale,
+        ]),
+        tableRow(["---", "---", "---", "---", "---", "---", "---", "---"]),
+      );
+      for (const finding of allDismissed.slice(0, DISMISSED_SHOWN)) {
+        const review = finding.review;
+        const evidence = (review?.evidenceLines ?? [])
+          .map((line) => singleLineText(line, 120))
+          .filter((line) => line.length > 0)
+          .slice(0, 2);
+        const rationale = review
+          ? `${redactText(singleLineText(review.rationale, DISMISSED_RATIONALE_MAX))}${
+              evidence.length > 0 ? ` (${l.dismissedEvidence}: ${evidence.join(" / ")})` : ""
+            }`
+          : l.dismissedNoVerdict;
+        lines.push(
+          tableRow([
+            escapeMarkdown(finding.id),
+            finding.kind === "hotspot" ? l.dismissedKindHotspot : l.dismissedKindFinding,
+            finding.severity,
+            escapeMarkdown(finding.ruleId),
+            `${escapeMarkdown(finding.file, PATH_TEXT_MAX)}${contextTag(finding)}`,
+            String(finding.startLine),
+            escapeMarkdown(dismissedBy(finding) ?? l.dismissedUnnamed, 60),
+            escapeMarkdown(rationale, DISMISSED_RATIONALE_MAX + 300),
+          ]),
+        );
+      }
+      if (allDismissed.length > DISMISSED_SHOWN) {
+        lines.push("", fmt(l.dismissedMore, { n: allDismissed.length - DISMISSED_SHOWN }));
+      }
+      lines.push("");
+    }
+  }
+
   // ---- 7. Fixed since baseline ------------------------------------------
   if (context.baselineFixed && context.baselineFixed.length > 0) {
     section(l.fixedSinceBaseline);
@@ -2936,6 +3152,8 @@ export function renderSarif(input: ReportContext): string {
     },
     // SARIF 3.27.23: an empty array states "not suppressed"; a suppressed
     // result names where the suppression lives and the reason given for it.
+    // A false_positive verdict is a suppression made outside the source: by
+    // a reviewer (a host agent or a person) of this run.
     suppressions:
       finding.status === "suppressed"
         ? [
@@ -2946,7 +3164,19 @@ export function renderSarif(input: ReportContext): string {
               justification: finding.suppression?.reason || "no reason given",
             },
           ]
-        : [],
+        : finding.status === "false_positive"
+          ? [
+              {
+                kind: "external",
+                status: "accepted",
+                justification: `Marked false positive by ${dismissedBy(finding) ?? "an unnamed reviewer"}: ${
+                  finding.review
+                    ? redactText(singleLineText(finding.review.rationale, DISMISSED_RATIONALE_MAX))
+                    : "no verdict record"
+                }`,
+              },
+            ]
+          : [],
     };
   });
 

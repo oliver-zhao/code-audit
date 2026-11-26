@@ -13,6 +13,8 @@ import {
   LINE_MASK_ALL,
   LINE_MASK_STRINGS,
   URL_CREDENTIALS,
+  credentialFileFields,
+  credentialFileFormat,
   maskSecret,
   redactEvidence,
   redactLine,
@@ -90,10 +92,145 @@ const URL_CREDENTIALS_DEFINITION = {
 const GENERIC_ASSIGNMENT =
   /(?<![A-Za-z0-9])((?:[A-Za-z0-9]{1,40}[_.-]){0,6})(password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|token)(["']?)\s*[:=]\s*(["'])([^"'\r\n]{8,})\4/gi;
 
+interface CredentialFileDefinition {
+  id: string;
+  title: string;
+  severity: Severity;
+  cwe: string;
+  remediation: string;
+}
+
+const ROTATE =
+  "Rotate the credential, remove the file from the repository and its history, and supply the value from the environment or a credential store at run time.";
+
+/**
+ * Credential files with an unambiguous format. A value in one of them is a
+ * credential by position, whatever it looks like, so these detectors need no
+ * entropy or name heuristics.
+ */
+const CREDENTIAL_FILE_DEFINITIONS = {
+  netrc: {
+    id: "secret-netrc-password",
+    title: "Password in a .netrc file",
+    severity: "high",
+    cwe: "CWE-798",
+    remediation: ROTATE,
+  },
+  pgpass: {
+    id: "secret-pgpass-password",
+    title: "Password in a PostgreSQL .pgpass file",
+    severity: "high",
+    cwe: "CWE-798",
+    remediation: ROTATE,
+  },
+  npmrc: {
+    id: "secret-npmrc-auth",
+    title: "Registry credential in .npmrc",
+    severity: "high",
+    cwe: "CWE-798",
+    remediation:
+      "Revoke the token, remove it from the repository and its history, and write `_authToken=${NPM_TOKEN}` so the value comes from the environment.",
+  },
+  pypirc: {
+    id: "secret-pypirc-password",
+    title: "Package index password in .pypirc or pip.conf",
+    severity: "high",
+    cwe: "CWE-798",
+    remediation: ROTATE,
+  },
+  docker: {
+    id: "secret-docker-auth",
+    title: "Registry credential in a Docker config file",
+    severity: "high",
+    cwe: "CWE-798",
+    remediation:
+      "Log out of the registry and revoke the credential, remove the file from the repository and its history, and use a credential helper (credsStore) instead of inline auths.",
+  },
+  kubeconfig: {
+    id: "secret-kubeconfig-credential",
+    title: "Cluster credential in a kubeconfig file",
+    severity: "critical",
+    cwe: "CWE-798",
+    remediation:
+      "Revoke the token or client certificate in the cluster, remove the file from the repository and its history, and use an exec credential plugin or short-lived tokens.",
+  },
+} as const satisfies Record<string, CredentialFileDefinition>;
+
+type CredentialFileKind = keyof typeof CREDENTIAL_FILE_DEFINITIONS;
+
+/** Which credential-file format a file is, by name and (where needed) content. */
+function credentialFileKind(relPath: string, content: string): CredentialFileKind | undefined {
+  const normalized = relPath.split("\\").join("/").toLowerCase();
+  const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+  const format = credentialFileFormat(relPath);
+  if (format === "netrc" || format === "pgpass") return format;
+  if (base === ".npmrc" || base === "npmrc" || base === ".yarnrc") return "npmrc";
+  if (base === ".pypirc" || base === "pip.conf" || base === "pip.ini") return "pypirc";
+  const head = content.slice(0, 64 * 1024);
+  if (
+    base === ".dockercfg" ||
+    ((base === "config.json" || base === ".dockerconfigjson" || base.endsWith(".dockerconfigjson")) &&
+      /"auths"[ \t]{0,8}:/.test(head))
+  ) {
+    return "docker";
+  }
+  if (
+    base === "kubeconfig" ||
+    base.endsWith(".kubeconfig") ||
+    normalized.endsWith(".kube/config") ||
+    // Blanks only, never `\s`: with the `m` flag that would cross lines and
+    // make a file of empty lines quadratic.
+    (/^[ \t]*kind:[ \t]*["']?Config["']?[ \t]*\r?$/m.test(head) &&
+      /^[ \t]*(?:clusters|users|contexts):/m.test(head))
+  ) {
+    return "kubeconfig";
+  }
+  return undefined;
+}
+
+const KEY_VALUE_CREDENTIALS: Record<Exclude<CredentialFileKind, "netrc" | "pgpass">, RegExp> = {
+  // //registry/:_authToken=..., _auth=..., _password=..., npmAuthToken: ...
+  npmrc: /(?:^|[\s:/])(_authToken|_auth|_password|npmAuthToken|npmAuthIdent)\s*[=:]\s*["']?([^\s"']+)/i,
+  pypirc: /^\s*(password)\s*[=:]\s*["']?([^\s"']+)/i,
+  docker: /"(auth|identitytoken|registrytoken|password|secret)"\s*:\s*"([^"]+)"/i,
+  kubeconfig:
+    /^\s*-?\s*["']?(token|client-key-data|password|id-token|refresh-token|client-secret|access-token)["']?\s*:\s*["']?([^\s"']+)/i,
+};
+
+interface CredentialFileHit {
+  definition: CredentialFileDefinition;
+  start: number;
+  end: number;
+  value: string;
+}
+
+/** The credentials on one line of a credential file. */
+function credentialFileHits(kind: CredentialFileKind, line: string): CredentialFileHit[] {
+  const definition = CREDENTIAL_FILE_DEFINITIONS[kind];
+  if (line.length > 20_000) return [];
+  if (kind === "netrc" || kind === "pgpass") {
+    return credentialFileFields(line, kind)
+      .filter((field) => field.field === "password")
+      .map((field) => ({
+        definition,
+        start: field.start,
+        end: field.end,
+        value: line.slice(field.start, field.end),
+      }));
+  }
+  if (/^\s*[#;]/.test(line)) return [];
+  const match = KEY_VALUE_CREDENTIALS[kind].exec(line);
+  if (!match) return [];
+  const value = match[2] ?? "";
+  const start = match.index + match[0].length - value.length;
+  return [{ definition, start, end: start + value.length, value }];
+}
+
 /** Rule ids of the built-in secret detectors. */
 export const BUILTIN_SECRET_RULE_IDS: readonly string[] = [
   ...SECRET_PATTERNS.map((pattern) => pattern.id),
   URL_CREDENTIALS_DEFINITION.id,
+  ...Object.values(CREDENTIAL_FILE_DEFINITIONS).map((definition) => definition.id),
 ];
 
 const KNOWN_SECRET_PATTERNS = SECRET_PATTERNS.filter(
@@ -280,6 +417,7 @@ export function scanSecrets(
     const maskedInOutput = (value: string): boolean =>
       file.toolOutput === true && /\*{4,}/.test(value);
     const ruleRanges = options.lineRedactions?.(file.relPath);
+    const fileKind = highConfidenceOnly ? undefined : credentialFileKind(file.relPath, content);
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index] ?? "";
@@ -362,6 +500,36 @@ export function scanSecrets(
 
       if (highConfidenceOnly) continue;
       if (line.length > 20_000) continue;
+
+      // Credential files (.netrc, .pgpass, .npmrc, .pypirc, Docker config,
+      // kubeconfig): the value is a credential by its position in the file.
+      let reportedByFormat = false;
+      if (fileKind) {
+        for (const hit of credentialFileHits(fileKind, line)) {
+          // A vendor token is already reported by its own detector.
+          if (matchesKnownSecret(hit.value) || maskedInOutput(hit.value)) continue;
+          if (fileKind === "pgpass" && hit.value === "*") continue;
+          const classified = classifySecretValue(hit.value, { minLiteral: 1, credentialWords: true });
+          if (classified === "reference") continue;
+          reportedByFormat = true;
+          findings.push(
+            makeSecretFinding(
+              file,
+              index + 1,
+              hit.definition.id,
+              hit.definition.title,
+              hit.definition.severity,
+              hit.definition.cwe,
+              evidenceOf(hit.start, hit.end),
+              hit.definition.remediation,
+              "high",
+              classified === "placeholder",
+            ),
+          );
+        }
+      }
+      // The same value is not reported a second time by the generic heuristic.
+      if (reportedByFormat) continue;
 
       for (const generic of line.matchAll(GENERIC_ASSIGNMENT)) {
         const value = generic[5] ?? "";

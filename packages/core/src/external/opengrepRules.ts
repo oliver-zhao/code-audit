@@ -1,14 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { toolRootDir } from "../meta.js";
 
 /** Directory that ships the bundled Opengrep/Semgrep-syntax rules. */
 export function defaultOpengrepRulesDir(): string {
-  const override = process.env.CODE_AUDIT_OPENREP_RULES_DIR;
+  // The misspelt name is the one earlier builds read; it keeps working.
+  const override =
+    process.env.CODE_AUDIT_OPENGREP_RULES_DIR ?? process.env.CODE_AUDIT_OPENREP_RULES_DIR;
   if (override) return path.resolve(override);
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(here, "../../../..", "rules/opengrep");
+  return path.join(toolRootDir(), "rules", "opengrep");
 }
 
 export interface OpengrepRuleSummary {

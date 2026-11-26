@@ -94,15 +94,115 @@ export interface ValidatedRoot {
 }
 
 /**
- * Validate that a directory is safe to use as an audit root. Filesystem root
- * and the current user's home directory are refused.
+ * Directories that hold credentials and machine configuration, relative to
+ * the user's home directory. A directory at or below one of them is not an
+ * audit root unless the user says so (`--allow-sensitive-root`): an audit
+ * makes every text file below the root readable through `read` / `search`,
+ * and writes `.audit/` into it.
+ */
+export const SENSITIVE_HOME_DIRECTORIES = [
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".config",
+  ".kube",
+  ".docker",
+  ".azure",
+  ".oci",
+  ".password-store",
+  ".terraform.d",
+  ".local/share/keyrings",
+  ".claude",
+  ".codex",
+  "Library",
+  "AppData",
+] as const;
+
+/** The same, as absolute paths. */
+export const SENSITIVE_SYSTEM_DIRECTORIES = [
+  "/etc",
+  "/private/etc",
+  "/root",
+  "/var/root",
+  "/proc",
+  "/sys",
+  "/dev",
+  "/boot",
+  "/run/secrets",
+  "/var/run/secrets",
+] as const;
+
+function canonicalOrResolved(target: string): string {
+  try {
+    return realpathCanonical(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * The credential directory that `real` (a canonical path) is, or is inside
+ * of; undefined when there is none.
+ */
+export function sensitiveDirectoryOf(real: string): string | undefined {
+  const home = homeRealpath();
+  const candidates = [
+    ...SENSITIVE_HOME_DIRECTORIES.map((name) => path.join(home, ...name.split("/"))),
+    // A system directory that contains the home directory (HOME=/root for
+    // root) says nothing about a project below that home.
+    ...(process.platform === "win32" ? [] : SENSITIVE_SYSTEM_DIRECTORIES).filter(
+      (dir) => !isInside(canonicalOrResolved(dir), home),
+    ),
+  ];
+  for (const candidate of candidates) {
+    const canonical = canonicalOrResolved(candidate);
+    if (isInside(canonical, real) || sameFile(canonical, real)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Sensitive roots a human allowed in this process (`--allow-sensitive-root`),
+ * as canonical paths. Only these exact directories are exempt.
+ */
+const allowedSensitiveRoots = new Set<string>();
+
+/**
+ * Record that the user explicitly allowed `root` although it is, or is inside,
+ * a credential directory. For the command line only: the MCP server never
+ * calls this, because its arguments are chosen by a model.
+ */
+export function allowSensitiveRoot(root: string): void {
+  allowedSensitiveRoots.add(canonicalOrResolved(path.resolve(root)));
+}
+
+/** Forget every exemption (tests). */
+export function resetAllowedSensitiveRoots(): void {
+  allowedSensitiveRoots.clear();
+}
+
+export interface ValidateRootOptions {
+  /**
+   * Accept a root at or below a credential directory without it having been
+   * allowed with `allowSensitiveRoot`. For code that does not read the tree.
+   */
+  allowSensitive?: boolean;
+}
+
+/**
+ * Validate that a directory is safe to use as an audit root. Refused: the
+ * filesystem root, the current user's home directory and every directory
+ * that contains it, and - unless allowed - well-known credential and
+ * configuration directories (`~/.ssh`, `~/.aws`, `~/.config`, `/etc`, ...;
+ * see `SENSITIVE_HOME_DIRECTORIES`) and everything below them.
  *
  * The root is chosen by the user and may be a symbolic link or live below one
  * (macOS: `/tmp` -> `/private/tmp`, `/var` -> `/private/var`). It is followed
- * and the returned `root` is always the canonical real path; every later
- * comparison must be made against that value, never against `input`.
+ * and the returned `root` is always the canonical real path; every check here
+ * and every later comparison is made against that value, never against
+ * `input`.
  */
-export function validateAuditRoot(root: string): ValidatedRoot {
+export function validateAuditRoot(root: string, options: ValidateRootOptions = {}): ValidatedRoot {
   const input = path.resolve(root);
   let stat: fs.Stats;
   try {
@@ -131,7 +231,55 @@ export function validateAuditRoot(root: string): ValidatedRoot {
   if (real === home || sameFile(real, home)) {
     throw new PathJailError("refusing the user home directory as the audit root", "ROOT_FORBIDDEN");
   }
+  if (isInside(real, home)) {
+    throw new PathJailError(
+      `refusing a directory that contains the user home directory as the audit root: ${real}`,
+      "ROOT_FORBIDDEN",
+    );
+  }
+  if (!options.allowSensitive && !allowedSensitiveRoots.has(real)) {
+    const sensitive = sensitiveDirectoryOf(real);
+    if (sensitive !== undefined) {
+      throw new PathJailError(
+        `refusing ${real} as the audit root: it is ${
+          canonicalOrResolved(sensitive) === real ? "" : "inside "
+        }${sensitive}, a directory that usually holds credentials or machine configuration. ` +
+          "On the command line, pass --allow-sensitive-root to audit it anyway; the MCP server never does",
+        "ROOT_SENSITIVE",
+      );
+    }
+  }
   return { root: real, input };
+}
+
+/**
+ * Canonical path of `target` (resolved against `base` when relative; the
+ * leaf may not exist yet), verified to be `base` itself or inside it with
+ * every symbolic link followed. `base` must be a canonical path. Used by the
+ * MCP server to contain every path argument in its base directory.
+ */
+export function resolveWithinBase(base: string, target: string, what = "path"): string {
+  const candidate = path.isAbsolute(target) ? path.resolve(target) : path.resolve(base, target);
+  const resolved = realpathLoose(candidate);
+  if (!isInside(base, resolved)) {
+    throw new PathJailError(
+      `${what} is outside the base directory of this server: ${target}${
+        resolved === target ? "" : ` (-> ${resolved})`
+      } is not inside ${base}`,
+      "OUTSIDE_BASE",
+    );
+  }
+  return resolved;
+}
+
+/** True when `target` is `base` or below it (both canonical paths). */
+export function isInsideCanonical(base: string, target: string): boolean {
+  return isInside(base, target);
+}
+
+/** Canonical real path of the current user's home directory. */
+export function homeDirectoryCanonical(): string {
+  return homeRealpath();
 }
 
 /**
@@ -139,7 +287,9 @@ export function validateAuditRoot(root: string): ValidatedRoot {
  * Absolute paths, `../` traversal, and symlinks pointing outside are rejected.
  */
 export function resolveInside(root: string, p: string): string {
-  const validated = validateAuditRoot(root);
+  // The jail of a root that an entry point has already accepted: whether a
+  // credential directory may be a root is decided there, not per path.
+  const validated = validateAuditRoot(root, { allowSensitive: true });
   const rootReal = validated.root;
 
   const candidate = path.isAbsolute(p)

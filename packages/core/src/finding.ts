@@ -145,6 +145,22 @@ export const FindingSchema = z
      * in report.ts).
      */
     confidenceBeforeVerdict: ConfidenceSchema.optional(),
+    /**
+     * The current review verdict of the run, present only on records read
+     * through the run store (never trusted from findings.json: it is
+     * recomputed from verdicts.json every time). Reports list who dismissed
+     * a finding and why from it.
+     */
+    review: z
+      .object({
+        status: z.string(),
+        rationale: z.string(),
+        reviewer: z.string().optional(),
+        actor: z.string().optional(),
+        at: z.string().optional(),
+        evidenceLines: z.array(z.string()).optional(),
+      })
+      .optional(),
   })
   .passthrough();
 

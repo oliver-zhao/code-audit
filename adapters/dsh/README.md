@@ -62,10 +62,12 @@ dsh --profile web --patch dsh/cordis.patch.yml --dump-config | grep -A8 mcp-code
 The patch only adds a project-local MCP server and never edits the global
 profile under `$DSH_HOME`.
 
-## Verified on a real host
+## Verification level
 
-Verified with DSH **0.2.2-rc.5** on Linux, without changing the global profile,
-using `examples/dsh-demo/`:
+Checked with DSH **0.2.2-rc.5** on Linux, without changing the global profile,
+using `examples/dsh-demo/`: the patch composes and the MCP server starts
+under real DSH. **A full agent run (a model calling the tools) was not
+possible**: the test host had no model credential.
 
 ```text
 $ dsh --profile web --patch examples/dsh-demo/dsh/cordis.patch.yml --dump-config
@@ -96,4 +98,33 @@ $ node examples/dsh-demo/probe.mjs
 }
 ```
 
-DSH exposes these as `mcp__code-audit__audit_*` in the model's tool list.
+The `version` in this recorded output is that of the development build the
+probe was first recorded with; the server reports the version of the
+installed tool. DSH exposes the tools as `mcp__code-audit__audit_*` in the
+model's tool list.
+
+## Which directory is audited
+
+The MCP server audits, reads and writes only inside its **base directory**,
+which is fixed when the server starts: the directory the host starts it in.
+The entry written by `code-audit install` passes no arguments, so this works
+when the host starts project MCP servers in the project directory. The server
+prints the base to stderr at start-up
+(`[code-audit] ... base directory: /path (working directory)`); look for that
+line in the host's MCP log if `audit_start` answers `OUTSIDE_BASE` or
+`BASE_TOO_BROAD`.
+
+A model cannot change the base: a `root` outside it (also through `..` or a
+symbolic link), and credential directories such as `~/.ssh` or `~/.aws`, are
+refused. To audit a different directory, open the host in that directory, or
+set the base yourself in the server entry (or with the environment variable
+`CODE_AUDIT_MCP_BASE`):
+
+```yaml
+    command: code-audit-mcp
+    args: ['--base', '/absolute/path/to/project']
+```
+
+Do not commit an entry with an absolute path. Keep the base as narrow as the
+project: every directory below it can be audited, and so read, by the model.
+See [docs/mcp.md](../../docs/mcp.md#base-directory).

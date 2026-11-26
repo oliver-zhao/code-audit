@@ -4,7 +4,8 @@
     "name": "code-audit"
   },
   "metadata": {
-    "description": "Deterministic source audit with agent review for Claude Code."
+    "description": "Deterministic source audit with agent review for Claude Code.",
+    "version": "0.2.0"
   },
   "plugins": [
     {

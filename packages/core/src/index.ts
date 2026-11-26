@@ -2,6 +2,7 @@ export * from "./pathJail.js";
 export * from "./meta.js";
 export * from "./language.js";
 export * from "./glob.js";
+export * from "./interrupt.js";
 export * from "./inventory.js";
 export * from "./finding.js";
 export * from "./pathContext.js";

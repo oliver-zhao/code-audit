@@ -59,14 +59,14 @@ trusted**. Until then the `code-audit` tools are missing. Pick one:
 2. **Register the server once for your user:**
 
    ```sh
-   codex mcp add code-audit -- /absolute/path/to/code-audit/bin/code-audit-mcp
+   codex mcp add code-audit -- /absolute/path/to/code-audit-mcp
    ```
 
 3. **One-off or CI run** with command-line overrides:
 
    ```sh
    codex exec \
-     -c 'mcp_servers.code-audit.command="/absolute/path/to/code-audit/bin/code-audit-mcp"' \
+     -c 'mcp_servers.code-audit.command="/absolute/path/to/code-audit-mcp"' \
      -c 'mcp_servers.code-audit.args=[]' \
      -c 'mcp_servers.code-audit.default_tools_approval_mode="approve"' \
      "Run a security audit of this project with the code-audit skill."
@@ -98,3 +98,30 @@ tools (`audit_start`, `audit_status`, `audit_findings`, `audit_read`,
 `audit_verdict`, `audit_report`). Without the approval override the same run
 has every MCP call rejected. Options 1 and 2 and interactive approval were not
 exercised because they change the user's `~/.codex/config.toml`.
+
+## Which directory is audited
+
+The MCP server audits, reads and writes only inside its **base directory**,
+which is fixed when the server starts: the directory the host starts it in.
+The entry written by `code-audit install` passes no arguments, so this works
+when the host starts project MCP servers in the project directory. The server
+prints the base to stderr at start-up
+(`[code-audit] ... base directory: /path (working directory)`); look for that
+line in the host's MCP log if `audit_start` answers `OUTSIDE_BASE` or
+`BASE_TOO_BROAD`.
+
+A model cannot change the base: a `root` outside it (also through `..` or a
+symbolic link), and credential directories such as `~/.ssh` or `~/.aws`, are
+refused. To audit a different directory, open the host in that directory, or
+set the base yourself in the server entry (or with the environment variable
+`CODE_AUDIT_MCP_BASE`):
+
+```toml
+[mcp_servers.code-audit]
+command = "code-audit-mcp"
+args = ["--base", "/absolute/path/to/project"]
+```
+
+Do not commit an entry with an absolute path. Keep the base as narrow as the
+project: every directory below it can be audited, and so read, by the model.
+See [docs/mcp.md](../../docs/mcp.md#base-directory).

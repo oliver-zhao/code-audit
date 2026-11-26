@@ -258,7 +258,7 @@ describe("D9: baseline is written to the location-derived root only", () => {
     const first = await scan(root, { formats: ["json"] });
     const target = first.findings[0];
     expect(target).toBeDefined();
-    recordVerdict(first.runId, target?.id ?? "", { status: "false_positive", rationale: "checked" }, { cwd: root });
+    recordVerdict(first.runId, target?.id ?? "", { status: "false_positive", rationale: "the value is a constant and never user input; see python/app.py:12 for the assignment" }, { cwd: root });
     expect(cli(["baseline", first.runId], root).status).toBe(0);
     const baseline = readJson<{ entries: Array<{ fingerprint: string }> }>(path.join(root, ".code-audit-baseline.json"));
     expect(baseline.entries.map((entry) => entry.fingerprint)).toContain(target?.fingerprint);

@@ -5,12 +5,14 @@ import {
   CONFIDENCES,
   SEVERITIES,
   TOOL_VERSION,
+  allowSensitiveRoot,
   appendFileNoFollow,
   buildBaseline,
   countOptionsOf,
   defaultOpengrepRulesDir,
   defaultRulesDir,
   discoverTools,
+  monorepoRootDir,
   loadOpengrepRules,
   loadRules,
   renderRunScopeText,
@@ -51,13 +53,14 @@ Usage:
   code-audit scan <path> [--profile quick|standard] [--format md,json,sarif]
                         [--out <dir>] [--offline] [--no-external]
                         [--engines builtin,opengrep,semgrep,osv-scanner,gitleaks]
-                        [--fail-on low|medium|high|critical]
+                        [--fail-on info|low|medium|high|critical]
                         [--min-confidence low|medium|high] [--lang en|zh]
                         [--rules <dir>] [--ignore-file <path>] [--no-ignore-file]
                         [--no-inline-ignore] [--include-tests] [--include-dev]
                         [--include-placeholders] [--untrusted]
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
+                        [--allow-sensitive-root]
   code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--root <dir>] [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
@@ -66,7 +69,7 @@ Usage:
                         [--cursor <c>] [--json]
   code-audit read <run-id|run-dir> <file> [--start N] [--end N] [--json]
   code-audit search <run-id|run-dir> <pattern> [--glob <g>] [--regex]
-                        [--max-results N] [--json]
+                        [--max-results N] [--timeout-ms N] [--json]
   code-audit verdict <run-id|run-dir> <finding-id|fingerprint>
                         --status confirmed|likely|needs_review|false_positive
                         --rationale <text> [--evidence-line <text>]
@@ -84,12 +87,50 @@ Usage:
                                          <root>/.audit/<run-id>
                         [--rules <dir>]  rule set for this command (default:
                                          the bundled rules)
-  code-audit mcp
+                        [--allow-sensitive-root]  read project files of a run
+                                         whose root is a credential directory
+  search: a --regex search is interrupted after --timeout-ms (default 2000,
+          at most 60000) and fails with SEARCH_TIMEOUT; without --regex the
+          pattern is literal text.
+  code-audit mcp [--base <dir>]         stdio MCP server (same as code-audit-mcp);
+                                        audits only inside <dir> (default: the
+                                        working directory, or CODE_AUDIT_MCP_BASE)
   code-audit install --host opencode|dsh|claude-code|codex [--project <dir>]
                         [--mcp-command <path> | --absolute] [--force] [--dry-run]
   code-audit install --uninstall --host <host> [--project <dir>] [--dry-run]
   code-audit doctor [--project <dir>] [--json]
-  code-audit --help
+  code-audit --help | -h                (also after any command)
+  code-audit --version | -V
+
+Scan options:
+  --out <dir>            write the run to <dir>/<run-id> (default <path>/.audit)
+  --format <list>        report files to write: md,json,sarif (default: all)
+  --offline              no OSV.dev queries; dependencies are listed, not checked
+  --no-external          built-in engines only (same as --engines builtin)
+  --engines <list>       engines to run; default: builtin plus every installed
+                         external scanner (opengrep is preferred over semgrep)
+  --fail-on <severity>   lowest severity that makes the exit code 1 (default high)
+  --min-confidence <c>   lowest confidence counted in the headline and the exit
+                         code (default medium)
+  --lang en|zh           report language (default en)
+  --rules <dir>          load rules from <dir> instead of the bundled rule set
+  --ignore-file <path>   ignore file to use (default <path>/.code-audit-ignore)
+  --no-ignore-file       do not apply an ignore file
+  --no-inline-ignore     do not honour code-audit:ignore comments
+  --include-tests        do not lower confidence in test/docs/example/vendored paths
+  --include-dev          count dev and optional dependency advisories at full weight
+  --include-placeholders report placeholder-looking secrets at normal confidence
+  --baseline <file>      baseline to compare with (default
+                         <path>/.code-audit-baseline.json when present)
+  --no-baseline          do not use a baseline
+  --fail-on-existing     findings already in the baseline count toward the exit code
+  --since <git-ref>      report only findings in files changed since the ref
+  --ci                   CI output: annotations (GitHub Actions) and a Markdown summary
+  --latest-link          also copy the reports to <out>/latest/
+  --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
+                         ~/.aws, ~/.config, /etc, ...) or one below it; refused
+                         without this flag
+  --profile <name>       recorded in the run; quick and standard run the same engines
 
 Auditing a repository you do not trust:
   --untrusted  ignore everything the audited repository could use to lower the
@@ -165,6 +206,7 @@ interface ScanArgs {
   includeDev: boolean;
   includePlaceholders: boolean;
   untrusted: boolean;
+  allowSensitiveRoot: boolean;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -191,6 +233,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let includeDev = false;
   let includePlaceholders = false;
   let untrusted = false;
+  let allowSensitive = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -294,6 +337,8 @@ function parseScanArgs(args: string[]): ScanArgs {
       includePlaceholders = true;
     } else if (arg === "--untrusted") {
       untrusted = true;
+    } else if (arg === "--allow-sensitive-root") {
+      allowSensitive = true;
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -328,11 +373,14 @@ function parseScanArgs(args: string[]): ScanArgs {
     includeDev,
     includePlaceholders,
     untrusted,
+    allowSensitiveRoot: allowSensitive,
   };
 }
 
 async function runScan(args: string[]): Promise<number> {
   const parsed = parseScanArgs(args);
+  // A human at a shell may audit a credential directory on purpose.
+  if (parsed.allowSensitiveRoot) allowSensitiveRoot(parsed.root);
   const result = await scanProject({
     root: parsed.root,
     profile: parsed.profile,
@@ -517,11 +565,13 @@ async function runDoctor(args: string[]): Promise<number> {
   const nodeOk = major >= 22;
 
   let rulesCount = 0;
+  let hotspotRules = 0;
   let rulesDir = defaultRulesDir();
   let rulesError: string | undefined;
   try {
     const ruleSet = loadRules(rulesDir);
     rulesCount = ruleSet.rules.length;
+    hotspotRules = ruleSet.rules.filter((rule) => rule.kind === "hotspot").length;
     rulesDir = ruleSet.rulesDir;
   } catch (error) {
     rulesError = error instanceof Error ? error.message : String(error);
@@ -578,6 +628,8 @@ async function runDoctor(args: string[]): Promise<number> {
     rules: {
       dir: rulesDir,
       count: rulesCount,
+      findingRules: rulesCount - hotspotRules,
+      hotspotRules,
       opengrepDir: opengrepRulesDir,
       opengrepCount,
       error: rulesError ?? null,
@@ -599,7 +651,7 @@ async function runDoctor(args: string[]): Promise<number> {
     `Node.js: ${process.versions.node} ${nodeOk ? "OK" : "requires >=22"}\n`,
   );
   process.stdout.write(
-    `Rules: ${rulesCount} built-in (${rulesDir})${rulesError ? ` error: ${rulesError}` : ""}\n`,
+    `Rules: ${rulesCount} built-in: ${rulesCount - hotspotRules} finding, ${hotspotRules} hotspot (${rulesDir})${rulesError ? ` error: ${rulesError}` : ""}\n`,
   );
   process.stdout.write(
     `Opengrep rules: ${opengrepCount} (${opengrepRulesDir})${opengrepError ? ` error: ${opengrepError}` : ""}\n`,
@@ -625,7 +677,7 @@ async function runDoctor(args: string[]): Promise<number> {
           `MCP server: ${mcp.command} NOT found on PATH`,
           `  Host configs that use the bare command will fail to start it. Add ${path.dirname(mcp.bundled)} to PATH,`,
           "  or re-run `code-audit install` with --absolute or --mcp-command <path>.",
-          ...(mcp.bundledExists
+          ...(mcp.bundledExists || monorepoRootDir() === undefined
             ? []
             : [`  ${mcp.bundled} is missing; run \`pnpm build && pnpm run link:local\`.`]),
           "",
@@ -827,11 +879,27 @@ function runInstall(args: string[]): number {
   return 0;
 }
 
-async function main(): Promise<void> {  const argv = process.argv.slice(2);
+async function main(): Promise<void> {
+  // `code-audit ... | head`: the reader closed the pipe. End quietly instead
+  // of crashing with a stack trace; a command that had not decided its exit
+  // code yet ends like a process killed by SIGPIPE (non-zero), so a pipeline
+  // can never turn an unfinished scan into a success.
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") process.exit(process.exitCode ?? 141);
+    throw error;
+  });
+  const argv = process.argv.slice(2);
   const command = argv[0];
   try {
-    if (!command || command === "--help" || command === "-h") {
+    // `--help` after a command prints the same text. No flag takes a value
+    // that starts with a dash, so this cannot swallow an argument.
+    if (!command || argv.includes("--help") || argv.includes("-h")) {
       process.stdout.write(USAGE);
+      process.exitCode = 0;
+      return;
+    }
+    if (command === "--version" || command === "-V") {
+      process.stdout.write(`${TOOL_VERSION}\n`);
       process.exitCode = 0;
       return;
     }
@@ -856,10 +924,8 @@ async function main(): Promise<void> {  const argv = process.argv.slice(2);
       return;
     }
     if (command === "mcp") {
-      if (argv.length > 1) {
-        throw new CliError(`mcp does not accept arguments: ${argv.slice(1).join(" ")}`);
-      }
-      await runMcpServer();
+      // Only `--base <dir>`; the server parses and rejects anything else.
+      await runMcpServer(argv.slice(1));
       return;
     }
     throw new CliError(`unknown command: ${command}`);

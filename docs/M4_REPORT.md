@@ -38,3 +38,26 @@ The audit root of a run is derived from where the run directory is, never from `
 - `shell:` keys and YAML merge keys are not interpreted by the workflow rules; composite actions are not covered.
 - A parent directory swapped for a symbolic link between validation and rename can still redirect a write; Node offers no directory-descriptor traversal to close this fully.
 - Baselines written by earlier versions do not match SCA findings (advisory ids are now GHSA-first) or findings whose evidence contains a masked secret.
+
+## Addendum for release 0.2.0
+
+Later changes that affect statements above; the numbers above were not re-measured and are left as recorded.
+
+- The OpenCode adapter was re-verified after this stage: a full audit through the MCP tools with OpenCode 2.4.1 on Linux. DSH 0.2.2-rc.5: the patch composes and the MCP server starts, but a full agent run was not possible (no model credential on the test host). Claude Code 2.1.183: the plugin's MCP server connects (`claude --plugin-dir ... mcp list`); nothing that needs a logged-in CLI was run.
+- `js-command-injection` and `js-exec-api` no longer match method calls on other objects (`RegExp.prototype.exec`, `query.exec()`). The per-repository counts above include such matches where the repository contains JavaScript: for example the one critical `js-command-injection` reported in Vulnerable-Flask-App was `c.exec(b)` on a regular expression in a minified third-party script, and is no longer reported. NodeGoat was not re-measured.
+- Offline scans with the built-in engines only (macOS, release 0.2.0, no OSV.dev queries, no external scanners), findings at confidence ≥ medium: flask 0, httpie 7, requests 6, DSVW 7, Vulnerable-Flask-App 7, pygoat 91. These are not comparable with the all-engines numbers above, which include dependency advisories and the Opengrep, OSV-Scanner and Gitleaks results.
+
+
+## Final pre-release review (0.2.0)
+
+A last independent review of the whole repository confirmed four defects and one design gap; all were fixed and the reviewer's inputs replayed by the project lead:
+
+- **MCP root not contained.** A prompt-injected agent could call `audit_start` with any directory and read it back. The MCP server now fixes a base directory at start-up (`--base`, `CODE_AUDIT_MCP_BASE`, default: its working directory) and refuses every path outside it; credential directories are refused as audit roots unless `--allow-sensitive-root` is given on the CLI.
+- **Regular-expression search could hang the server** (`(a|aa)+$`). Searches and rule matching now run under an interruptible time limit; globs use a non-backtracking matcher.
+- **`--since` could execute a git filter** configured in a hostile `.git/config`. The tool no longer asks git to read the working tree: it lists the tree of the reference and hashes working files itself.
+- **Whitespace-separated credentials** (`.netrc` and similar) were not masked by `read` / `search`; masking and detectors for `.netrc`, `.pgpass`, `.npmrc`, `.pypirc`, Docker and kubeconfig credentials were added.
+- **Dismissals were invisible.** Findings marked false positive are now listed in a "Dismissed by review" section with reviewer and rationale, raise a cover warning at severity ≥ `--fail-on`, appear as SARIF suppressions, and need evidence for high and critical findings.
+
+Final verification: macOS 644 tests passed (6 real-tool tests skipped); Linux with the three real scanners 647 passed. Package tarballs install and run (`pnpm run pack:verify`). End-to-end audits through MCP tools were re-run on this build with the real Codex CLI (macOS) and OpenCode (Linux). Findings that count toward the exit code with all engines: flask 6, httpie 6, pygoat 379.
+
+Known consequences of the last fixes: with a user-level `safe.directory` no longer read, `--since` fails with a clear error in a repository owned by another user; a host that starts the MCP server outside the project directory must configure the base directory; on checkouts with line-ending conversion or LFS most files count as changed for `--since`.

@@ -239,7 +239,7 @@ describe("run store", () => {
     ).toThrow(RunStoreError);
   });
 
-  it("excludes false positives from Markdown but keeps them in JSON", async () => {
+  it("moves false positives out of the report body into 'Dismissed by review' and keeps them in JSON", async () => {
     const { run, ref } = await prepare();
     const finding = run.findings[0];
     expect(finding).toBeDefined();
@@ -249,13 +249,17 @@ describe("run store", () => {
       finding.fingerprint,
       {
         status: "false_positive",
-        rationale: "constant value, not user input",
+        rationale: "constant value, not user input; checked the assignment at python/app.py:12",
       },
       { cwd: project },
     );
 
     const markdown = renderRunReport(ref, "md", { cwd: project });
-    expect(markdown.text).not.toContain(finding.id);
+    // Not in the body any more, but itemised for the human reader.
+    const dismissedAt = markdown.text.indexOf("Dismissed by review\n");
+    expect(dismissedAt).toBeGreaterThan(0);
+    expect(markdown.text.slice(0, dismissedAt)).not.toContain(finding.id);
+    expect(markdown.text.slice(dismissedAt)).toContain(`| ${finding.id} |`);
     expect(markdown.text).toContain("Review progress");
     expect(markdown.text).not.toContain("Candidate results, not reviewed");
 

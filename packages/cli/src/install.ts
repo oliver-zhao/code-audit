@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseTomlSubset, validateAuditRoot } from "@code-audit/core";
+import {
+  monorepoRootDir,
+  parseTomlSubset,
+  toolRootDir,
+  validateAuditRoot,
+} from "@code-audit/core";
 
 /**
  * `code-audit install`: write a host adapter into a project.
@@ -270,19 +275,51 @@ function readCodexCommand(block: string): string | undefined {
 /* Locating this installation                                          */
 /* ------------------------------------------------------------------ */
 
-function repoRoot(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(here, "../../..");
-}
-
-/** Absolute path of the `code-audit-mcp` wrapper shipped with this checkout. */
+/**
+ * Absolute path of the `code-audit-mcp` executable that belongs to this
+ * installation: `bin/code-audit-mcp` of a repository checkout, or for an
+ * installed package the launcher its package manager created, falling back
+ * to the script inside this package.
+ */
 export function bundledMcpCommand(): string {
-  return path.join(repoRoot(), "bin", "code-audit-mcp");
+  const checkout = monorepoRootDir();
+  if (checkout !== undefined) return path.join(checkout, "bin", "code-audit-mcp");
+  // <prefix>/node_modules/@code-audit/cli/dist/install.js
+  const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const modulesDir = path.resolve(packageDir, "../..");
+  const name = process.platform === "win32" ? "code-audit-mcp.cmd" : "code-audit-mcp";
+  const candidates = [
+    // Local install: node_modules/.bin
+    path.join(modulesDir, ".bin", name),
+    // Global install on POSIX: <prefix>/lib/node_modules -> <prefix>/bin
+    path.resolve(modulesDir, "../../bin", name),
+    // Global install on Windows: <prefix>/node_modules -> <prefix>
+    path.resolve(modulesDir, "..", name),
+  ];
+  for (const candidate of candidates) {
+    if (isExecutableFile(candidate) && isOwnLauncher(candidate)) return candidate;
+  }
+  return path.join(packageDir, "dist", "mcp.js");
 }
 
+/**
+ * A launcher counts only when it leads into a `@code-audit` package: on POSIX
+ * package managers create it as a symbolic link to the package's script, so
+ * an unrelated file that happens to have the same name is not taken.
+ */
+function isOwnLauncher(file: string): boolean {
+  if (process.platform === "win32") return true;
+  try {
+    return fs.realpathSync(file).split(path.sep).includes("@code-audit");
+  } catch {
+    return false;
+  }
+}
+
+/** A file the tool ships (skill, command templates); see `toolRootDir`. */
 function repoFile(relative: string): string {
   try {
-    return fs.readFileSync(path.join(repoRoot(), relative), "utf8");
+    return fs.readFileSync(path.join(toolRootDir(), relative), "utf8");
   } catch {
     throw new InstallError(`cannot locate ${relative} next to the installed CLI`);
   }
@@ -1819,7 +1856,7 @@ function chooseCommand(options: InstallOptions): string {
     const bundled = bundledMcpCommand();
     if (!isExecutableFile(bundled)) {
       throw new InstallError(
-        `--absolute: ${bundled} is missing or not executable; run \`pnpm build && pnpm run link:local\` in the code-audit checkout first`,
+        `--absolute: ${bundled} is missing or not executable; in a checkout run \`pnpm build && pnpm run link:local\` first, otherwise pass --mcp-command <path>`,
       );
     }
     assertSafeCommand(bundled, "--absolute: the path of this installation");
@@ -1954,7 +1991,7 @@ function refusedOf(actions: InstallAction[]): InstallAction[] {
 
 export function installAdapter(options: InstallOptions): InstallResult {
   assertHost(options.host);
-  const project = validateAuditRoot(options.project).root;
+  const project = validateAuditRoot(options.project, { allowSensitive: true }).root;
   const command = chooseCommand(options);
   const force = options.force === true;
   const specs = specsForHost(options.host, project);
@@ -2106,7 +2143,7 @@ export function installAdapter(options: InstallOptions): InstallResult {
  */
 export function uninstallAdapter(options: UninstallOptions): UninstallResult {
   assertHost(options.host);
-  const project = validateAuditRoot(options.project).root;
+  const project = validateAuditRoot(options.project, { allowSensitive: true }).root;
   const known = knownSpecs(options.host, project);
   const planned: Planned = { actions: [], ops: [] };
 
@@ -2248,7 +2285,7 @@ export function inspectInstall(
   projectInput: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ProjectInstallStatus {
-  const project = validateAuditRoot(projectInput).root;
+  const project = validateAuditRoot(projectInput, { allowSensitive: true }).root;
   const read = (relative: string): string | undefined => {
     try {
       return readRegular(checkTarget(project, relative), relative);

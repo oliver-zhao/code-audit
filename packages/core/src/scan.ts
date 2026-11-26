@@ -913,8 +913,23 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       sinceRef = scope.ref;
       for (const warning of scope.warnings) warnings.push(warning);
       changedFiles = new Set(scope.files);
-      const inScope = (file: string): boolean =>
-        changedFiles?.has(file) ?? true;
+      // Paths from git and paths from the directory walk can spell one file
+      // differently: Unicode normalisation (macOS), and letter case on a
+      // case-insensitive file system. Compared in one canonical form, so
+      // that a spelling difference never takes a changed file out of scope.
+      const caseInsensitive = process.platform === "darwin" || process.platform === "win32";
+      const canonical = (file: string): string => {
+        const normalized = file.normalize("NFC");
+        return caseInsensitive ? normalized.toLowerCase() : normalized;
+      };
+      const changedCanonical = new Set(scope.files.map(canonical));
+      // Submodules and nested repositories are not compared file by file:
+      // everything below them is in scope.
+      const scopeDirectories = scope.directories.map((dir) => `${canonical(dir)}/`);
+      const inScope = (file: string): boolean => {
+        const name = canonical(file);
+        return changedCanonical.has(name) || scopeDirectories.some((dir) => name.startsWith(dir));
+      };
       const beforeFindings = findings.length;
       const beforeHotspots = hotspots.length;
       findings = findings.filter((finding) => inScope(finding.file));

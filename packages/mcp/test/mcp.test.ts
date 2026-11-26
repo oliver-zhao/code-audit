@@ -381,7 +381,7 @@ describe("MCP server", () => {
       run_id: runId,
       finding: target,
       status: "false_positive",
-      rationale: "constant input in a fixture",
+      rationale: "constant input in a fixture, never user input; see python/app.py:12",
     });
     const after = (await call("audit_status", { run_id: runId })) as unknown as Shape;
     expect(after.findings).toBe(status.findings - 1);
@@ -451,7 +451,9 @@ describe("MCP server", () => {
  *   base/alias -> base/real    symlinked parent used to address the root
  */
 describe("MCP server with a root below a symlinked directory", () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-mcp-"));
+  // Inside the base directory of the test server (its working directory):
+  // a root anywhere else is refused, see base.test.ts.
+  const base = fs.mkdtempSync(path.join(temp, "symlinked-"));
   const realProject = path.join(base, "real", "project");
   const aliasProject = path.join(base, "alias", "project");
   let linkedRunId: string;
@@ -723,7 +725,7 @@ describe("MCP trust boundary", () => {
       run_id: run.id,
       finding: page.items[0]?.id,
       status: "false_positive",
-      rationale: "checked",
+      rationale: "checked: the value is a constant, never user input; see app.py:1",
     })) as { refreshed: string[] };
     expect(verdict.refreshed.length).toBeGreaterThanOrEqual(7);
     const afterVerdict = await check("after the verdict");

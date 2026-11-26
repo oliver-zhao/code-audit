@@ -7,6 +7,7 @@ import {
   computeFingerprint,
   createFinding,
   dedupeFindings,
+  severityAtLeast,
   sortFindings,
   type Confidence,
   type Finding,
@@ -20,11 +21,17 @@ import {
 } from "./inventory.js";
 import { defaultRulesDir, LATEST_OUTPUT_FILES, TOOL_VERSION } from "./meta.js";
 import { countPathContexts } from "./pathContext.js";
-import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
+import {
+  allowSensitiveRoot,
+  resolveInside,
+  toPosixRelative,
+  validateAuditRoot,
+} from "./pathJail.js";
 import {
   applyVerdictConfidence,
   buildReportContext,
   countAdjustments,
+  dismissedWarning,
   findingsJsonRun,
   renderFindingsJson,
   renderMarkdown,
@@ -36,7 +43,16 @@ import {
   type ReportContext,
   type RunPolicy,
 } from "./report.js";
-import { loadRules, redactionsForFile, type LoadedRule, type RuleSet } from "./rules.js";
+import {
+  loadRules,
+  MAX_LONG_LINE_MATCHED,
+  MAX_PATTERN_LINE_LENGTH,
+  redactionsForFile,
+  type LoadedRule,
+  type RuleSet,
+} from "./rules.js";
+import { compileGlob } from "./glob.js";
+import { InterruptedError, runInterruptible } from "./interrupt.js";
 import {
   LINE_MASK_ALL,
   LINE_MASK_STRINGS,
@@ -533,6 +549,11 @@ export interface ResolveRunOptions {
   rulesDir?: string;
   /** Accept run ids only, never a path (the MCP tools). */
   idsOnly?: boolean;
+  /**
+   * `--allow-sensitive-root` of this command line: the audit root of the run
+   * may be a credential directory. Never set by the MCP server.
+   */
+  allowSensitiveRoot?: boolean;
 }
 
 export interface ResolvedRun {
@@ -862,6 +883,10 @@ function establishRoot(
   const derived = resolved.derivedRoot;
   const shownRecorded = recordedRoot === undefined ? "none" : printable(recordedRoot);
 
+  if (options.allowSensitiveRoot) {
+    if (options.root !== undefined && options.root !== "") allowSensitiveRoot(options.root);
+    if (derived !== undefined) allowSensitiveRoot(derived);
+  }
   if (options.root !== undefined && options.root !== "") {
     const named = validateAuditRoot(options.root).root;
     if (named === derived) return { root: named, rootSource: "location", recordedRoot };
@@ -974,7 +999,22 @@ export function loadRun(
  */
 function withVerdict(run: LoadedRun, finding: Finding): Finding {
   const verdict = run.verdicts[finding.fingerprint];
-  return applyVerdictConfidence(verdict ? { ...finding, status: verdict.status } : finding);
+  // `review` always comes from verdicts.json, never from what findings.json
+  // says about itself.
+  const { review: _stale, ...stored } = finding;
+  if (!verdict) return applyVerdictConfidence(stored);
+  return applyVerdictConfidence({
+    ...stored,
+    status: verdict.status,
+    review: {
+      status: verdict.status,
+      rationale: verdict.rationale,
+      ...(verdict.reviewer ? { reviewer: verdict.reviewer } : {}),
+      ...(verdict.actor ? { actor: verdict.actor } : {}),
+      at: verdict.at,
+      ...(verdict.evidenceLines ? { evidenceLines: verdict.evidenceLines } : {}),
+    },
+  });
 }
 
 export function effectiveFindings(run: LoadedRun): Finding[] {
@@ -1000,6 +1040,48 @@ function findTarget(run: LoadedRun, target: string): Finding {
   );
 }
 
+/** Severity from which a `false_positive` verdict needs evidence. */
+export const DISMISSAL_EVIDENCE_SEVERITY: Severity = "high";
+/** Shortest rationale accepted for such a verdict. */
+export const DISMISSAL_MIN_RATIONALE = 40;
+
+/** `path/to/file.ext:123` or `line 123` in a rationale. */
+const LOCATION_REFERENCE = /(?:[\w@~+-]+[\\/])*[\w@~+-]+\.[A-Za-z0-9_]{1,12}:\d+|\blines?\s+\d+/i;
+
+/**
+ * Dismissing a finding at severity >= high takes more than a word. A
+ * reviewing agent that was talked into "mark everything false positive" by
+ * text in the repository produces short, generic rationales; a real review
+ * can say what it looked at. Required: a rationale of at least
+ * `DISMISSAL_MIN_RATIONALE` characters, and either `evidenceLines` (the code
+ * that shows why) or a `file:line` reference in the rationale.
+ */
+function assertDismissalJustified(
+  finding: Finding,
+  status: VerdictStatus,
+  rationale: string,
+  evidenceLines: readonly string[] | undefined,
+): void {
+  if (status !== "false_positive" || finding.kind === "hotspot") return;
+  if (!severityAtLeast(finding.severity, DISMISSAL_EVIDENCE_SEVERITY)) return;
+  const problems: string[] = [];
+  if (rationale.replace(/\s+/g, " ").length < DISMISSAL_MIN_RATIONALE) {
+    problems.push(`a rationale of at least ${DISMISSAL_MIN_RATIONALE} characters that says why the code is safe`);
+  }
+  const hasEvidence = (evidenceLines ?? []).some((line) => line.trim().length >= 3);
+  if (!hasEvidence && !LOCATION_REFERENCE.test(rationale)) {
+    problems.push(
+      "evidence: evidenceLines (CLI: --evidence-line) quoting the code that shows it, or a file:line reference in the rationale",
+    );
+  }
+  if (problems.length === 0) return;
+  throw new RunStoreError(
+    `marking ${finding.id} (${finding.severity}) false positive requires ${problems.join(", and ")}. ` +
+      "Dismissed findings are listed for the human reader with reviewer and rationale; use needs_review when unsure",
+    "DISMISSAL_NEEDS_EVIDENCE",
+  );
+}
+
 export interface RecordVerdictInput {
   status: VerdictStatus;
   rationale: string;
@@ -1021,6 +1103,8 @@ export interface RecordVerdictResult {
   /** Derived files re-rendered with this verdict applied. */
   refreshed: string[];
   notices: string[];
+  /** See `dismissedFields`: set while serious findings are dismissed. */
+  dismissedWarning?: string;
 }
 
 export function recordVerdict(
@@ -1044,6 +1128,7 @@ export function recordVerdict(
   }
   const run = loadRun(ref, options);
   const finding = findTarget(run, target);
+  assertDismissalJustified(finding, input.status, rationale, input.evidenceLines);
   const entry: VerdictRecord = {
     fingerprint: finding.fingerprint,
     findingId: finding.id,
@@ -1085,6 +1170,7 @@ export function recordVerdict(
     total,
     refreshed,
     notices: run.notices,
+    ...dismissedFields(updated),
   };
 }
 
@@ -1254,6 +1340,12 @@ export interface SearchInput {
   glob?: string;
   regex?: boolean;
   maxResults?: number;
+  /**
+   * Wall-clock limit of the whole search in milliseconds (default
+   * `DEFAULT_SEARCH_TIMEOUT_MS`, at most `MAX_SEARCH_TIMEOUT_MS`). The CLI
+   * lets the user set it; the MCP server never passes it.
+   */
+  timeoutMs?: number;
 }
 
 export interface SearchMatch {
@@ -1277,37 +1369,18 @@ export interface SearchResult {
 const MAX_PATTERN_LENGTH = 256;
 const MAX_SEARCH_RESULTS = 200;
 const MAX_SEARCH_BYTES = 16 * 1024 * 1024;
+/** At most this many files are searched; the result is marked truncated. */
+export const MAX_SEARCH_FILES = 20_000;
+/** Wall-clock limit of one search unless the caller sets another. */
+export const DEFAULT_SEARCH_TIMEOUT_MS = 2000;
+export const MAX_SEARCH_TIMEOUT_MS = 60_000;
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function globToRegExp(glob: string): RegExp {
-  let source = "";
-  for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index] ?? "";
-    if (char === "*") {
-      if (glob[index + 1] === "*") {
-        index += 1;
-        if (glob[index + 1] === "/") {
-          index += 1;
-          source += "(?:.*/)?";
-        } else {
-          source += ".*";
-        }
-      } else {
-        source += "[^/]*";
-      }
-    } else if (char === "?") {
-      source += "[^/]";
-    } else {
-      source += escapeRegExp(char);
-    }
-  }
-  return new RegExp(`^${source}$`);
-}
-
-/** Reject patterns that are likely to backtrack catastrophically. */
+/**
+ * A structural check that rejects the most obvious catastrophic patterns
+ * early, with a helpful message. It is NOT what keeps a search from hanging -
+ * no such check can be complete (`(a|aa)+$` passes it). Every regex search
+ * runs under a wall-clock limit that interrupts the match; see `searchCode`.
+ */
 export function assertSafeRegex(pattern: string): RegExp {
   if (pattern.length > MAX_PATTERN_LENGTH) {
     throw new RunStoreError(
@@ -1332,21 +1405,111 @@ export function assertSafeRegex(pattern: string): RegExp {
   }
 }
 
+function searchTimeout(elapsedMs: number, limitMs: number, searchedFiles: number, at?: string): RunStoreError {
+  return new RunStoreError(
+    `search stopped: it exceeded the time limit of ${limitMs} ms (${Math.round(elapsedMs)} ms, ${searchedFiles} file(s) searched${
+      at ? `, in ${printable(at)}` : ""
+    }). Use a simpler pattern (avoid nested or overlapping repetition), a literal search, or a narrower glob`,
+    "SEARCH_TIMEOUT",
+  );
+}
+
+/**
+ * First match of `regex` in each line: `[zero-based line, column]` pairs.
+ * A line longer than `MAX_PATTERN_LINE_LENGTH` is matched in windows of that
+ * size that overlap by half, up to `MAX_LONG_LINE_MATCHED` characters, like
+ * the rule engine does; `overLong` counts such lines.
+ */
+function matchLines(
+  lines: readonly string[],
+  find: (text: string) => number,
+  limit: number,
+  stats: { overLong: number },
+): number[] {
+  const found: number[] = [];
+  const step = MAX_PATTERN_LINE_LENGTH / 2;
+  for (let index = 0; index < lines.length && found.length < limit * 2; index += 1) {
+    const line = lines[index] as string;
+    if (line.length <= MAX_PATTERN_LINE_LENGTH) {
+      const at = find(line);
+      if (at >= 0) found.push(index, at);
+      continue;
+    }
+    stats.overLong += 1;
+    const end = Math.min(line.length, MAX_LONG_LINE_MATCHED);
+    for (let offset = 0; offset < end; offset += step) {
+      const at = find(line.slice(offset, offset + MAX_PATTERN_LINE_LENGTH));
+      if (at >= 0) {
+        found.push(index, offset + at);
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Search the files of the inventory.
+ *
+ * The pattern is chosen at run time - over MCP by a model that has read the
+ * audited repository - and is matched against content the repository's author
+ * wrote, so both sides of a catastrophic match can be hostile. Limits:
+ *
+ * - a literal pattern is searched with `indexOf`, never as a regex;
+ * - a regex is matched inside `runInterruptible`, which terminates a match
+ *   that does not return; the whole search (all files) has one wall-clock
+ *   budget and fails with `SEARCH_TIMEOUT` when it is used up;
+ * - lines are matched in windows of `MAX_PATTERN_LINE_LENGTH` characters;
+ * - at most `MAX_SEARCH_FILES` files, `MAX_SEARCH_BYTES` bytes and
+ *   `MAX_SEARCH_RESULTS` matches;
+ * - the glob is matched without backtracking (`compileGlob`).
+ */
 export function searchCode(
   ref: string,
   input: SearchInput,
   options: ResolveRunOptions = {},
 ): SearchResult {
+  const started = performance.now();
+  const limitMs = Math.max(
+    1,
+    Math.min(
+      MAX_SEARCH_TIMEOUT_MS,
+      Number.isFinite(input.timeoutMs) && (input.timeoutMs as number) > 0
+        ? Math.trunc(input.timeoutMs as number)
+        : DEFAULT_SEARCH_TIMEOUT_MS,
+    ),
+  );
+  const deadline = started + limitMs;
   const run = loadRun(ref, options);
   const root = requireAuditRoot(run);
   const pattern = input.pattern;
   if (!pattern) {
     throw new RunStoreError("search pattern is required", "PATTERN_REQUIRED");
   }
-  const regex = input.regex
-    ? assertSafeRegex(pattern)
-    : assertSafeRegex(escapeRegExp(pattern));
-  const glob = input.glob ? globToRegExp(input.glob) : undefined;
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new RunStoreError(
+      `${input.regex ? "regex" : "pattern"} is too long (${pattern.length} > ${MAX_PATTERN_LENGTH})`,
+      input.regex ? "UNSAFE_REGEX" : "PATTERN_TOO_LONG",
+    );
+  }
+  let find: (text: string) => number;
+  if (input.regex) {
+    const regex = assertSafeRegex(pattern);
+    find = (text) => {
+      const match = regex.exec(text);
+      return match ? match.index : -1;
+    };
+  } else {
+    find = (text) => text.indexOf(pattern);
+  }
+  let glob: ((relativePath: string) => boolean) | undefined;
+  if (input.glob) {
+    try {
+      glob = compileGlob(input.glob);
+    } catch (error) {
+      throw new RunStoreError(error instanceof Error ? error.message : String(error), "INVALID_GLOB");
+    }
+  }
   const maxResults = Math.max(
     1,
     Math.min(MAX_SEARCH_RESULTS, input.maxResults ?? 50),
@@ -1354,15 +1517,19 @@ export function searchCode(
   const inv = loadInventoryForRun(root);
   const matches: SearchMatch[] = [];
   const redactor = sourceRedactor(run);
+  const stats = { overLong: 0 };
   let truncated = false;
   let searchedFiles = 0;
   let consumed = 0;
 
   for (const entry of inv.files) {
     if (!entry.scannable) continue;
-    if (glob && !glob.test(entry.relPath)) continue;
+    if (performance.now() > deadline) {
+      throw searchTimeout(performance.now() - started, limitMs, searchedFiles);
+    }
+    if (glob && !glob(entry.relPath)) continue;
     if (entry.size > MAX_TEXT_FILE_BYTES) continue;
-    if (consumed + entry.size > MAX_SEARCH_BYTES) {
+    if (consumed + entry.size > MAX_SEARCH_BYTES || searchedFiles >= MAX_SEARCH_FILES) {
       truncated = true;
       break;
     }
@@ -1371,24 +1538,46 @@ export function searchCode(
     consumed += Buffer.byteLength(text, "utf8");
     searchedFiles += 1;
     const lines = splitLines(text);
+    const remaining = maxResults - matches.length;
+    let found: number[];
+    if (input.regex) {
+      // Only the matching runs under the interrupting limit: it is pure
+      // computation over strings that are already in memory.
+      try {
+        found = runInterruptible(
+          () => matchLines(lines, find, remaining, stats),
+          Math.max(1, deadline - performance.now()),
+        );
+      } catch (error) {
+        if (!(error instanceof InterruptedError)) throw error;
+        throw searchTimeout(performance.now() - started, limitMs, searchedFiles, entry.relPath);
+      }
+    } else {
+      found = matchLines(lines, find, remaining, stats);
+    }
+    if (found.length === 0) continue;
     const redact = redactor.forFile(entry, lines);
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index] ?? "";
-      const match = regex.exec(line);
-      if (match) {
-        matches.push({
-          file: entry.relPath,
-          line: index + 1,
-          column: (match.index ?? 0) + 1,
-          text: redact(index, { evidence: true, column: match.index ?? 0 }),
-        });
-        if (matches.length >= maxResults) {
-          truncated = true;
-          break;
-        }
+    for (let item = 0; item < found.length; item += 2) {
+      const index = found[item] as number;
+      const column = found[item + 1] as number;
+      matches.push({
+        file: entry.relPath,
+        line: index + 1,
+        column: column + 1,
+        text: redact(index, { evidence: true, column }),
+      });
+      if (matches.length >= maxResults) {
+        truncated = true;
+        break;
       }
     }
     if (truncated) break;
+  }
+  const notices = [...run.notices];
+  if (stats.overLong > 0) {
+    notices.push(
+      `${stats.overLong} line(s) longer than ${MAX_PATTERN_LINE_LENGTH} characters were searched in overlapping windows of that size, up to ${MAX_LONG_LINE_MATCHED} characters per line`,
+    );
   }
   return {
     matches,
@@ -1397,7 +1586,7 @@ export function searchCode(
     searchedFiles,
     pattern,
     root,
-    notices: run.notices,
+    notices,
   };
 }
 
@@ -1592,8 +1781,8 @@ export function addFinding(
     if (duplicate) {
       const hint =
         duplicate.kind === "hotspot"
-          ? `it is a hotspot; promote it with audit_add_finding (hotspot_id=${duplicate.id})`
-          : `record a verdict with audit_verdict on ${duplicate.id}`;
+          ? `it is a hotspot; promote it with audit_add_finding (hotspot_id=${duplicate.id}) or \`code-audit add-finding --promote ${duplicate.id}\``
+          : `record a verdict on ${duplicate.id} (audit_verdict, or \`code-audit verdict\`)`;
       throw new RunStoreError(
         `a ${duplicate.kind} already covers ${entry.relPath}:${duplicate.startLine} ` +
           `(${duplicate.id}, ${duplicate.cwe}); ${hint}`,
@@ -1763,6 +1952,8 @@ export interface RunReportResult {
   /** Every file this call wrote (the requested one and the refreshed ones). */
   refreshed: string[];
   notices: string[];
+  /** See `dismissedFields`. */
+  dismissedWarning?: string;
 }
 
 const REPORT_FILE: Record<Exclude<ReportOutputFormat, "summary">, string> = {
@@ -1914,6 +2105,7 @@ export function renderRunReport(
         reviewed: stats.reviewed,
         unreviewed: stats.unreviewed,
         falsePositive: stats.falsePositive,
+        ...dismissedFields(run),
         ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
         ...(runRecord.scope ? { scope: runRecord.scope } : {}),
         warnings,
@@ -1943,7 +2135,18 @@ export function renderRunReport(
     ...(outputPath ? { path: outputPath } : {}),
     refreshed,
     notices: run.notices,
+    ...dismissedFields(run),
   };
+}
+
+/**
+ * `dismissedWarning`: the cover warning about findings at severity >=
+ * `--fail-on` that were marked false positive, when there are any. The same
+ * sentence as on the report cover.
+ */
+function dismissedFields(run: LoadedRun): { dismissedWarning?: string } {
+  const warning = dismissedWarning(runSummary(run), "en");
+  return warning ? { dismissedWarning: `WARNING: ${warning}` } : {};
 }
 
 export function runStatus(ref: string, options: ResolveRunOptions = {}) {
@@ -1971,6 +2174,7 @@ export function runStatus(ref: string, options: ResolveRunOptions = {}) {
     reviewed: stats.reviewed,
     unreviewed: stats.unreviewed,
     falsePositive: stats.falsePositive,
+    ...dismissedFields(run),
     ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
     ...(runRecord.scope ? { scope: runRecord.scope } : {}),
     warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],

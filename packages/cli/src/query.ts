@@ -82,7 +82,7 @@ function parseRunCommand(
       if (!allowedFlags.includes(name) && !COMMON_FLAGS.includes(name)) {
         throw new QueryError(`${command} unknown flag: --${name}`);
       }
-      if (booleanFlags.includes(name)) {
+      if (booleanFlags.includes(name) || COMMON_BOOLEAN_FLAGS.includes(name)) {
         flags.set(name, ["true"]);
         continue;
       }
@@ -119,7 +119,8 @@ function single(
  * `--rules <dir>` chooses the rule set for this command; without it the
  * bundled rules are used, never a directory named inside the run.
  */
-const COMMON_FLAGS = ["root", "rules"];
+const COMMON_FLAGS = ["root", "rules", "allow-sensitive-root"];
+const COMMON_BOOLEAN_FLAGS = ["allow-sensitive-root"];
 
 function runOptions(parsed: ParsedRunCommand): ResolveRunOptions {
   const root = single(parsed.flags, "root");
@@ -127,6 +128,7 @@ function runOptions(parsed: ParsedRunCommand): ResolveRunOptions {
   return {
     ...(root !== undefined ? { root } : {}),
     ...(rulesDir !== undefined ? { rulesDir } : {}),
+    ...(parsed.flags.has("allow-sensitive-root") ? { allowSensitiveRoot: true } : {}),
   };
 }
 
@@ -290,12 +292,13 @@ function runReadCommand(args: string[]): number {
 function runSearchCommand(args: string[]): number {
   const parsed = parseRunCommand(
     args,
-    ["glob", "max-results", "regex"],
+    ["glob", "max-results", "regex", "timeout-ms"],
     2,
     "search",
     ["regex"],
   );
   const maxValue = single(parsed.flags, "max-results");
+  const timeoutValue = single(parsed.flags, "timeout-ms");
   const result = searchCode(
     parsed.ref,
     {
@@ -303,6 +306,7 @@ function runSearchCommand(args: string[]): number {
       glob: single(parsed.flags, "glob"),
       regex: parsed.flags.has("regex"),
       maxResults: maxValue ? parseInteger(maxValue, "--max-results") || 1 : 50,
+      ...(timeoutValue ? { timeoutMs: parseInteger(timeoutValue, "--timeout-ms") || 1 } : {}),
     },
     runOptions(parsed),
   );
@@ -359,6 +363,7 @@ function runVerdictCommand(args: string[]): number {
   process.stdout.write(
     `Verdict recorded for ${result.findingId} (${result.status}); reviewed ${result.reviewed}/${result.total}\n`,
   );
+  if (result.dismissedWarning) process.stderr.write(`${result.dismissedWarning}\n`);
   return 0;
 }
 
@@ -429,6 +434,7 @@ function runReportCommand(args: string[]): number {
   printNotices(report.notices);
   // The report itself goes to stdout or a file; what was read goes to stderr.
   for (const line of locationLines(report)) process.stderr.write(`${line}\n`);
+  if (report.dismissedWarning) process.stderr.write(`${report.dismissedWarning}\n`);
   const output = single(parsed.flags, "output");
   if (output) {
     // A path the user named: its directory is followed, a symbolic link at

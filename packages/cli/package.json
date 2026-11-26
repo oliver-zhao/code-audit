@@ -1,21 +1,54 @@
 {
   "name": "@code-audit/cli",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "code-audit command line: scan, review, report, baseline, host adapter install, and the code-audit-mcp server",
+  "keywords": [
+    "security",
+    "audit",
+    "sast",
+    "sca",
+    "secrets",
+    "sarif",
+    "mcp",
+    "code-review"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oliver-zhao/code-audit.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/oliver-zhao/code-audit#readme",
+  "bugs": {
+    "url": "https://github.com/oliver-zhao/code-audit/issues"
+  },
   "type": "module",
-  "description": "code-audit command line interface",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "code-audit": "dist/index.js"
+    "code-audit": "dist/index.js",
+    "code-audit-mcp": "dist/mcp.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE",
+    "!dist/**/*.map",
+    "!dist/.tsbuildinfo"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepack": "node ../../scripts/pack-assets.mjs",
+    "postpack": "node ../../scripts/pack-assets.mjs --clean"
   },
   "dependencies": {
     "@code-audit/core": "workspace:*",
     "@code-audit/mcp": "workspace:*"
-  },
-  "license": "Apache-2.0"
+  }
 }

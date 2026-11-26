@@ -6,3 +6,8 @@ dist/
 .tmp-test-*/
 coverage/
 .tools/
+# Copies made for packing (scripts/pack-assets.mjs) and the tarballs
+packages/*/assets/
+packages/*/LICENSE
+packages/*/NOTICE
+*.tgz

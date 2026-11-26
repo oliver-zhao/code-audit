@@ -17,20 +17,16 @@ code-audit:
     # Fail only on new findings relative to the committed baseline.
     CODE_AUDIT_ARGS: "--ci --format sarif,md --out audit-out --latest-link"
   before_script:
-    # There is no published @code-audit/cli npm package yet. This is a
-    # placeholder that installs from a pinned git checkout of this repository.
-    - git clone https://github.com/<org>/code-audit.git /tmp/code-audit
-    - cd /tmp/code-audit
-    - git checkout <pin-to-commit-sha>
-    - corepack enable
-    - pnpm install --frozen-lockfile
-    - pnpm build
-    - pnpm run link:local
+    # code-audit is not published to npm yet: build it from a pinned checkout.
+    # Replace <pin-to-commit-sha> with the commit of the release you want.
+    - apk add --no-cache git
+    - git clone https://github.com/oliver-zhao/code-audit.git /tmp/code-audit
+    - (cd /tmp/code-audit && git checkout <pin-to-commit-sha> && corepack enable && pnpm install --frozen-lockfile && pnpm build)
     - export PATH="/tmp/code-audit/bin:$PATH"
   script:
     - code-audit scan . $CODE_AUDIT_ARGS
   artifacts:
-    when: always()
+    when: always
     paths:
       - audit-out/latest/
     expire_in: 1 week

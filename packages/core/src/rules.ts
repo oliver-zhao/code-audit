@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { InventoryFile } from "./inventory.js";
 import type { Confidence, Severity } from "./finding.js";
 import { CONFIDENCE_ORDER } from "./finding.js";
+import { InterruptedError, runInterruptible } from "./interrupt.js";
 import {
   LINE_MASK_ALL,
   LINE_MASK_STRINGS,
@@ -34,7 +35,7 @@ export const RULE_LANGUAGES = [
 
 const RuleLanguageSchema = z.enum(RULE_LANGUAGES);
 
-const RuleSchema = z
+const RuleObjectSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "rule id must be lowercase letters, digits, or dashes"),
     title: z.string().min(1),
@@ -82,8 +83,12 @@ const RuleSchema = z
     remediation: z.string().min(1),
     remediation_zh: z.string().min(1).optional(),
     references: z.array(z.string()).optional(),
-  })
-  .superRefine((rule, ctx) => {
+  });
+
+/** Every field a rule may have, in schema order (documented in docs/rules.md). */
+export const RULE_FIELDS: readonly string[] = Object.keys(RuleObjectSchema.shape);
+
+const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
     if (!rule.pattern && !rule.patterns) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -539,6 +544,12 @@ const TRIPLE_FALLBACK_MIN_CODE_LINES = 20;
 
 /** Wall-clock budget for matching all rules against one file. */
 export const FILE_MATCH_BUDGET_MS = 5000;
+
+/**
+ * How long after the budget a match that has not returned is interrupted (see
+ * `interrupt.ts`). The budget itself is checked between matches.
+ */
+export const HARD_INTERRUPT_GRACE_MS = 1000;
 
 /** Budget per file once several files have already exhausted the full budget. */
 const REDUCED_FILE_MATCH_BUDGET_MS = 500;
@@ -1525,8 +1536,24 @@ export function scanRules(
         ? Math.min(fullBudget, REDUCED_FILE_MATCH_BUDGET_MS)
         : fullBudget;
     const deadline = performance.now() + budget;
-    let outOfTime = false;
+    let outOfTime = false as boolean;
     let stoppedAt = 0;
+    // The deadline above is checked between matches. A single match that does
+    // not return (a custom rule with an exponential pattern) never reaches the
+    // check, so the matching loops also run under a limit that interrupts
+    // them. What was found before the interruption is kept.
+    const hardDeadline = deadline + HARD_INTERRUPT_GRACE_MS;
+    let interrupted = false as boolean;
+    const guarded = <T>(work: () => T, whenInterrupted: T): T => {
+      if (interrupted) return whenInterrupted;
+      try {
+        return runInterruptible(work, Math.max(1, hardDeadline - performance.now()));
+      } catch (error) {
+        if (!(error instanceof InterruptedError)) throw error;
+        interrupted = true;
+        return whenInterrupted;
+      }
+    };
 
     // File-level conditions are tested line by line on at most the first
     // MAX_PATTERN_LINE_LENGTH characters of each line, so they cannot scan the
@@ -1541,17 +1568,22 @@ export function scanRules(
       }
       return false;
     };
-    const fileRules = applicable.filter((rule) => {
-      if (rule.compiled.filePattern && !anyLine(rule.compiled.filePattern)) {
-        // Fail open: the part of an over-long line that was not tested may
-        // hold what the rule requires.
-        if (!hasLongLine) return false;
-      }
-      if (rule.compiled.fileAbsentPattern && anyLine(rule.compiled.fileAbsentPattern)) {
-        return false;
-      }
-      return true;
-    });
+    // Interrupted: fail open, every applicable rule stays.
+    const fileRules = guarded(
+      () =>
+        applicable.filter((rule) => {
+          if (rule.compiled.filePattern && !anyLine(rule.compiled.filePattern)) {
+            // Fail open: the part of an over-long line that was not tested may
+            // hold what the rule requires.
+            if (!hasLongLine) return false;
+          }
+          if (rule.compiled.fileAbsentPattern && anyLine(rule.compiled.fileAbsentPattern)) {
+            return false;
+          }
+          return true;
+        }),
+      applicable,
+    );
 
     // Python is matched on logical lines with comments and docstrings removed
     // (see pythonLogicalLines). Inline suppression still uses the original
@@ -1628,6 +1660,7 @@ export function scanRules(
 
     // One hit per rule and physical line.
     const reported = new Set<string>();
+    guarded(() => {
     for (const unit of units) {
       if (unit.text.trim().length === 0) continue;
       if (outOfTime || performance.now() > deadline) {
@@ -1840,6 +1873,14 @@ export function scanRules(
           pending.push(hit);
         }
       }
+    }
+    }, undefined);
+    if (interrupted) {
+      slowFiles += 1;
+      warnings.push(
+        `rule matching of ${file.relPath} was interrupted after ${Math.round(budget + HARD_INTERRUPT_GRACE_MS)} ms: a pattern did not return (catastrophic backtracking); findings in the rest of the file are missing`,
+      );
+      outOfTime = false;
     }
     if (cappedRules.size > 0) {
       warnings.push(

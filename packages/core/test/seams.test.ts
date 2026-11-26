@@ -335,7 +335,7 @@ describe("2. stored runs are counted with the shared model", () => {
     const target = result.findings.find(
       (finding) => finding.severity === "critical" && finding.confidence === "high",
     ) as Finding;
-    const verdict = recordVerdict(result.runDir, target.id, { status: "false_positive", rationale: "fixture" });
+    const verdict = recordVerdict(result.runDir, target.id, { status: "false_positive", rationale: "the value is a constant and never user input; see python/app.py:12 for the assignment" });
     expect(verdict.refreshed.map((file) => path.relative(path.dirname(result.runDir), file)).sort()).toEqual(
       [
         ...["findings.json", "report.md", "results.sarif", "run.json"].map((name) => path.join(result.runId, name)),
