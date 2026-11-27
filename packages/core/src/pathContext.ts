@@ -54,8 +54,7 @@ const TEST_DIR_PREFIX = /^test-[\w-]+$/;
 const GENERATED_DIRS = new Set(["dist", "build"]);
 
 const TEST_FILE =
-  /^(?:test_.*\.py|.*_test\.(?:go|py|rs)|tests\.rs|conftest\.py|.*\.(?:test|spec)\.(?:[cm]?[jt]sx?))$/;
-  /^(?:test_.*\.py|.*_test\.(?:go|py)|conftest\.py|.*\.(?:test|spec)\.(?:[cm]?[jt]sx?)|.*_test\.[\w.]*[jt]sx?)$/;
+  /^(?:test_.*\.py|.*_test\.(?:go|py|rs)|tests\.rs|conftest\.py|.*\.(?:test|spec)\.(?:[cm]?[jt]sx?)|.*_test\.[\w.]*[jt]sx?)$/;
 const DOCS_FILE = /\.(?:md|rst|adoc)$/;
 const GENERATED_FILE = /(?:\.min\.(?:js|css)|_pb2(?:_grpc)?\.pyi?|\.pb\.go)$/;
 
