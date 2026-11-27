@@ -194,7 +194,7 @@ describe("literal prefilter", () => {
     return [...lines, ...variants];
   }
 
-  it("never rules out a line the rule's patterns match (every built-in rule, fixtures and adversarial variants)", () => {
+  it("never rules out a line the rule's patterns match (every built-in rule, fixtures and adversarial variants)", async () => {
     const all = corpus();
     expect(all.length).toBeGreaterThan(10_000);
     // Every rule against every line and variant takes minutes on a slow CI
@@ -208,6 +208,7 @@ describe("literal prefilter", () => {
       const prefilter = rule.compiled.prefilter;
       if (!prefilter) continue;
       filtered += 1;
+      await new Promise((resolve) => setImmediate(resolve));
       const patterns = [rule.compiled.pattern, ...(rule.compiled.patterns ?? [])].filter(
         (pattern): pattern is RegExp => pattern !== undefined,
       );

@@ -1473,10 +1473,10 @@ function pathologicalInputs(prefix: string, size: number): string[] {
  * Sizes grow in stages so a cubic or exponential pattern is caught on a small
  * input instead of hanging the test.
  */
-function worstRegexCost(
+async function worstRegexCost(
   regex: RegExp,
   prefixCap = 14,
-): { ms: number; size: number; input: string } | undefined {
+): Promise<{ ms: number; size: number; input: string } | undefined> {
   const stages: Array<{ size: number; budget: number }> = [
     { size: 300, budget: 40 },
     { size: 1000, budget: 50 },
@@ -1487,6 +1487,8 @@ function worstRegexCost(
   const prefixes = samplePrefixes(regex.source, regex.flags, prefixCap);
   for (const stage of stages) {
     for (const prefix of prefixes) {
+      // Yield to the test worker so its RPC with the runner does not time out.
+      await new Promise((resolve) => setImmediate(resolve));
       for (const input of pathologicalInputs(prefix, stage.size)) {
         let best = Infinity;
         // Two attempts: a slow first run can be noise, a slow second run is not.
@@ -1532,11 +1534,14 @@ describe("regular-expression cost of the built-in rules", () => {
   // against long runs of blanks, brackets, letters, quotes and "=" placed
   // after prefixes derived from the pattern itself. A pattern that needs more
   // than the budget on 30 000 characters backtracks quadratically or worse.
-  it.each(sourceFiles)("runs every pattern of %s in near-linear time", (sourceFile) => {
+  it.each(sourceFiles)("runs every pattern of %s in near-linear time", async (sourceFile) => {
     const slow: string[] = [];
     let checked = 0;
     for (const rule of ruleSet.rules) {
       if (rule.sourceFile !== sourceFile) continue;
+      // Let the test worker answer its runner between rules: a long
+      // synchronous loop makes vitest's RPC time out on slow CI hosts.
+      await new Promise((resolve) => setImmediate(resolve));
       const compiled = rule.compiled;
       const entries: Array<[string, RegExp | undefined]> = [
         ["pattern", compiled.pattern],
@@ -1550,7 +1555,7 @@ describe("regular-expression cost of the built-in rules", () => {
       for (const [field, regex] of entries) {
         if (!regex) continue;
         checked += 1;
-        const cost = worstRegexCost(regex);
+        const cost = await worstRegexCost(regex);
         if (cost) {
           slow.push(
             `${rule.id} ${field}: ${cost.ms} ms on ${cost.size} chars, input starts ${JSON.stringify(cost.input)}`,
@@ -1562,13 +1567,13 @@ describe("regular-expression cost of the built-in rules", () => {
     expect(slow).toEqual([]);
   }, 300_000);
 
-  it("flags the patterns the review found (the guard itself works)", () => {
+  it("flags the patterns the review found (the guard itself works)", async () => {
     // The former FIRSTREQ / DYN call site: three quantifiers compete for blanks.
     const cubic = /\bos\.system\s*\(\s*(?:\s*(?:[\w.]+\()*[^,()\n]*?\brequest\.args\b)/i;
-    expect(worstRegexCost(cubic)).toBeDefined();
+    expect(await worstRegexCost(cubic)).toBeDefined();
     // The former py-assert-auth: \s+ next to a class that matches blanks.
     const quadratic = /^\s*assert\s+[^,\n]*\bis_admin\b/i;
-    expect(worstRegexCost(quadratic)).toBeDefined();
-    expect(worstRegexCost(/\bos\.system\s*\(/i)).toBeUndefined();
+    expect(await worstRegexCost(quadratic)).toBeDefined();
+    expect(await worstRegexCost(/\bos\.system\s*\(/i)).toBeUndefined();
   }, 120_000);
 });
