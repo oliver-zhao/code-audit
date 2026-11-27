@@ -31,6 +31,14 @@ import {
   type HttpClient,
 } from "../src/sca.js";
 import { comparePypiVersions } from "../src/pypi.js";
+import {
+  evaluateNuGetProject,
+  exactNuGetVersion,
+  expandProperties,
+  parsePackagesConfig,
+} from "../src/nuget.js";
+import { XML_LIMITS, parseXml } from "../src/xmlScan.js";
+import { scanSecrets } from "../src/secrets.js";
 import { recommendUpgrade } from "../src/report.js";
 import { parseTomlSubset } from "../src/toml.js";
 import { FIXTURES, cleanup, makeTempDir, writeFile } from "./helpers.js";
@@ -2719,5 +2727,739 @@ describe("Cargo workspaces (review regressions)", () => {
     const started = Date.now();
     await runSca({ root, inventory: inventory(root), offline: true });
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .NET: NuGet project files, Central Package Management, packages.config.
+
+const csproj = (...items: string[]): string =>
+  [
+    '<Project Sdk="Microsoft.NET.Sdk">',
+    "  <ItemGroup>",
+    ...items.map((item) => `    ${item}`),
+    "  </ItemGroup>",
+    "</Project>",
+    "",
+  ].join("\n");
+
+const describePackages = (
+  packages: Array<{ file: string; line: number; name: string; version: string; direct: boolean; scope?: string }>,
+): string[] =>
+  packages
+    .map((p) => `${p.file}:${p.line} ${p.name}@${p.version} ${p.direct ? "direct" : "transitive"}:${p.scope ?? "-"}`)
+    .sort();
+
+async function nugetPackages(root: string) {
+  const result = await runSca({ root, inventory: inventory(root), offline: true });
+  return { result, packages: describePackages(result.packages) };
+}
+
+describe("NuGet versions", () => {
+  it.each([
+    ["1.2.3", "1.2.3"],
+    ["  12.0.1 ", "12.0.1"],
+    ["1.0", "1.0.0"],
+    ["4", "4.0.0"],
+    ["1.2.3.0", "1.2.3"],
+    ["1.2.3.4", "1.2.3.4"],
+    ["01.02.03", "1.2.3"],
+    ["1.0.0-beta.1", "1.0.0-beta.1"],
+    ["1.0.0+build.5", "1.0.0"],
+    ["[1.2.3]", "1.2.3"],
+    ["[1.2.3, )", "1.2.3"],
+    ["[1.2.3,)", "1.2.3"],
+  ])("queries %j as %j", (raw, expected) => {
+    expect(exactNuGetVersion(raw)).toBe(expected);
+  });
+
+  it.each(["[1.0,2.0)", "(,1.0]", "(1.0,)", "1.*", "1.2.*-*", "*", "$(Version)", "", "latest", "1.2.3.4.5", "[1.0]x"])(
+    "does not query %j",
+    (raw) => {
+      expect(exactNuGetVersion(raw)).toBeUndefined();
+    },
+  );
+});
+
+describe("NuGet project files", () => {
+  it("reads attribute, child-element, Update, Remove and VersionOverride forms", () => {
+    const content = csproj(
+      '<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />',
+      '<packagereference include="Lower.Case" VERSION="1.0.0"/>',
+      '<PackageReference Include="Child.Form">',
+      "  <Version>2.0.0</Version>",
+      "</PackageReference>",
+      "<PackageReference Include='Single.Quoted' Version='3.0.0'></PackageReference>",
+      '<PackageReference Include="First;Second" Version="4.0.0" />',
+      '<PackageReference Include="Updated" />',
+      '<PackageReference Update="Updated" Version="5.0.0" />',
+      '<PackageReference Include="Removed" Version="6.0.0" />',
+      '<PackageReference Remove="Removed" />',
+      '<PackageReference Include="Overridden" Version="7.0.0" VersionOverride="7.1.0" />',
+      '<PackageReference Include="Esc&amp;aped" Version="&#49;.0.0" />',
+    );
+    const result = parseLockfile("src/App/App.csproj", content);
+    expect(describePackages(result.packages)).toEqual(
+      [
+        "src/App/App.csproj:3 Newtonsoft.Json@12.0.1 direct:runtime",
+        "src/App/App.csproj:4 Lower.Case@1.0.0 direct:runtime",
+        "src/App/App.csproj:5 Child.Form@2.0.0 direct:runtime",
+        "src/App/App.csproj:8 Single.Quoted@3.0.0 direct:runtime",
+        "src/App/App.csproj:9 First@4.0.0 direct:runtime",
+        "src/App/App.csproj:9 Second@4.0.0 direct:runtime",
+        "src/App/App.csproj:11 Updated@5.0.0 direct:runtime",
+        "src/App/App.csproj:14 Overridden@7.1.0 direct:runtime",
+        "src/App/App.csproj:15 Esc&aped@1.0.0 direct:runtime",
+      ].sort(),
+    );
+    expect(result.packages.every((p) => p.ecosystem === "NuGet" && p.manager === "nuget")).toBe(true);
+    expect(result.warnings).toEqual([
+      "src/App/App.csproj: packages.lock.json not found; direct dependencies only (unresolved transitive dependencies)",
+    ]);
+  });
+
+  it("ignores comments, CDATA wrappers and ProjectExtensions, and treats conditions as present", () => {
+    const content = csproj(
+      '<!-- <PackageReference Include="Commented" Version="1.0.0" /> -->',
+      '<PackageReference Include="Conditional" Version="1.0.0" Condition="\'$(TargetFramework)\' == \'net48\'" />',
+      '<PackageReference Include="Cdata"><Version><![CDATA[2.0.0]]></Version></PackageReference>',
+      '<PackageReference Include="Gt" Version="3.0.0" Condition="1 &gt; 0 and \'a\' < \'b\'" />',
+    ).replace(
+      "</Project>",
+      '<ProjectExtensions><PackageReference Include="Hidden" Version="1.0.0" /></ProjectExtensions>\n</Project>',
+    );
+    const names = parseLockfile("App.csproj", content).packages.map((p) => `${p.name}@${p.version}`);
+    expect(names.sort()).toEqual(["Cdata@2.0.0", "Conditional@1.0.0", "Gt@3.0.0"]);
+  });
+
+  it("labels build-only references as dev", () => {
+    const content = csproj(
+      '<PackageReference Include="Analyzer" Version="1.0.0" PrivateAssets="All" />',
+      '<PackageReference Include="Child.Private" Version="1.0.0"><PrivateAssets>all</PrivateAssets></PackageReference>',
+      '<PackageReference Include="Generator" Version="1.0.0"><IncludeAssets>build; analyzers; buildtransitive</IncludeAssets></PackageReference>',
+      '<PackageReference Include="Excluded" Version="1.0.0" ExcludeAssets="compile;runtime" />',
+      '<PackageReference Include="Runtime.Assets" Version="1.0.0" IncludeAssets="runtime; build" />',
+      '<PackageReference Include="Contentfiles.Private" Version="1.0.0" PrivateAssets="contentfiles" />',
+    );
+    const scopes = Object.fromEntries(
+      parseLockfile("App.csproj", content).packages.map((p) => [p.name, `${p.scope}:${p.dev === true}`]),
+    );
+    expect(scopes).toEqual({
+      Analyzer: "dev:true",
+      "Child.Private": "dev:true",
+      Generator: "dev:true",
+      Excluded: "dev:true",
+      "Runtime.Assets": "runtime:false",
+      "Contentfiles.Private": "runtime:false",
+    });
+  });
+
+  it("resolves literal properties and counts what it cannot query in one warning", () => {
+    const content = [
+      "<Project>",
+      "  <PropertyGroup>",
+      "    <JsonVersion>13.0.1</JsonVersion>",
+      "    <Indirect>$(JsonVersion)</Indirect>",
+      "    <LoopA>$(LoopB)</LoopA>",
+      "    <LoopB>$(LoopA)</LoopB>",
+      "  </PropertyGroup>",
+      "  <ItemGroup>",
+      '    <PackageReference Include="A" Version="$(JsonVersion)" />',
+      '    <PackageReference Include="B" Version="$(Indirect)" />',
+      '    <PackageReference Include="C" Version="$(Undefined)" />',
+      '    <PackageReference Include="D" Version="$(LoopA)" />',
+      '    <PackageReference Include="E" Version="[1.0,2.0)" />',
+      '    <PackageReference Include="F" Version="1.*" />',
+      '    <PackageReference Include="G" />',
+      '    <PackageReference Include="H" Version="$([MSBuild]::Add(1, 2)).0.0" />',
+      "  </ItemGroup>",
+      "</Project>",
+    ].join("\n");
+    const result = parseLockfile("App.csproj", content);
+    expect(result.packages.map((p) => `${p.name}@${p.version}`)).toEqual(["A@13.0.1", "B@13.0.1"]);
+    expect(result.warnings).toContain(
+      "App.csproj: 6 NuGet package reference(s) not checked (version range, floating version, unresolved MSBuild property or no version)",
+    );
+  });
+
+  it("bounds property expansion (cycles and exponential growth)", () => {
+    const properties = new Map<string, string>();
+    for (let level = 0; level < 40; level += 1) {
+      properties.set(`p${level}`, `$(p${level + 1})$(p${level + 1})`);
+    }
+    properties.set("p40", "1");
+    const started = Date.now();
+    expect(expandProperties("$(p0)", properties)).toBeUndefined();
+    expect(expandProperties("$(a)", new Map([["a", "$(a)"]]))).toBeUndefined();
+    expect(
+      expandProperties(
+        "$(a).$(b)",
+        new Map([
+          ["a", "1"],
+          ["b", "2"],
+        ]),
+      ),
+    ).toBe("1.2");
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it("reads Directory.Build.props and Directory.Build.targets of the project", async () => {
+    const root = path.join(temp, "nuget-build-props");
+    writeFile(
+      root,
+      "Directory.Build.props",
+      [
+        "<Project>",
+        "  <PropertyGroup><SharedVersion>2.0.0</SharedVersion></PropertyGroup>",
+        "  <ItemGroup>",
+        '    <PackageReference Include="SourceLink" Version="1.1.1" PrivateAssets="All" />',
+        '    <PackageReference Include="Everywhere" Version="1.0.0" />',
+        "  </ItemGroup>",
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "Directory.Build.targets",
+      '<Project>\n  <ItemGroup>\n    <PackageReference Update="Late" Version="3.0.0" />\n  </ItemGroup>\n</Project>\n',
+    );
+    writeFile(
+      root,
+      "src/A/A.csproj",
+      csproj('<PackageReference Include="Shared" Version="$(SharedVersion)" />', '<PackageReference Include="Late" />'),
+    );
+    writeFile(root, "src/B/B.fsproj", csproj('<PackageReference Include="Shared" Version="$(SharedVersion)" />'));
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "Directory.Build.props:4 SourceLink@1.1.1 direct:dev",
+        "Directory.Build.props:5 Everywhere@1.0.0 direct:runtime",
+        "Directory.Build.targets:3 Late@3.0.0 direct:runtime",
+        "src/A/A.csproj:3 Shared@2.0.0 direct:runtime",
+        "src/B/B.fsproj:3 Shared@2.0.0 direct:runtime",
+      ].sort(),
+    );
+    // Reported once for the shared file, with the first project as context.
+    expect(result.packages.find((p) => p.name === "Everywhere")?.via).toBe("src/A/A.csproj");
+    expect(result.warnings.filter((w) => w.includes("packages.lock.json not found"))).toHaveLength(2);
+  });
+
+  it("keeps a shared reference at runtime when any project uses it at run time", async () => {
+    const root = path.join(temp, "nuget-shared-scope");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      '<Project>\n  <ItemGroup>\n    <PackageVersion Include="Shared" Version="1.0.0" />\n  </ItemGroup>\n</Project>\n',
+    );
+    writeFile(root, "a/A.csproj", csproj('<PackageReference Include="Shared" PrivateAssets="all" />'));
+    writeFile(root, "b/B.csproj", csproj('<PackageReference Include="Shared" />'));
+    const { packages } = await nugetPackages(root);
+    expect(packages).toEqual(["Directory.Packages.props:3 Shared@1.0.0 direct:runtime"]);
+  });
+});
+
+describe("NuGet Central Package Management", () => {
+  it("takes versions from the nearest Directory.Packages.props, reported where they are declared", async () => {
+    const root = path.join(temp, "nuget-cpm");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      [
+        "<Project>",
+        "  <PropertyGroup>",
+        "    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>",
+        "    <EncVersion>4.5.0</EncVersion>",
+        "  </PropertyGroup>",
+        "  <ItemGroup>",
+        '    <PackageVersion Include="System.Text.Encodings.Web" Version="$(EncVersion)" />',
+        '    <PackageVersion Include="Newtonsoft.Json" Version="12.0.1" />',
+        '    <PackageVersion Include="Never.Referenced" Version="1.0.0" />',
+        '    <PackageVersion Include="Multi" Version="1.0.0" Condition="\'$(TargetFramework)\' == \'net6.0\'" />',
+        '    <PackageVersion Include="Multi" Version="2.0.0" Condition="\'$(TargetFramework)\' == \'net8.0\'" />',
+        '    <GlobalPackageReference Include="Global.Analyzer" Version="3.0.0" />',
+        "  </ItemGroup>",
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "src/Api/Api.csproj",
+      csproj(
+        '<PackageReference Include="System.Text.Encodings.Web" />',
+        '<PackageReference Include="newtonsoft.json" VersionOverride="13.0.1" />',
+        '<PackageReference Include="Multi" />',
+        '<PackageReference Include="Not.Central" />',
+      ),
+    );
+    writeFile(root, "src/Worker/Worker.csproj", csproj('<PackageReference Include="System.Text.Encodings.Web" />'));
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "Directory.Packages.props:7 System.Text.Encodings.Web@4.5.0 direct:runtime",
+        "Directory.Packages.props:10 Multi@1.0.0 direct:runtime",
+        "Directory.Packages.props:11 Multi@2.0.0 direct:runtime",
+        "Directory.Packages.props:12 Global.Analyzer@3.0.0 direct:dev",
+        "src/Api/Api.csproj:4 newtonsoft.json@13.0.1 direct:runtime",
+      ].sort(),
+    );
+    const encodings = result.packages.filter((p) => p.name === "System.Text.Encodings.Web");
+    expect(encodings).toHaveLength(1);
+    expect(encodings[0]?.via).toBe("src/Api/Api.csproj");
+    expect(result.warnings).toContain(
+      "src/Api/Api.csproj: 1 NuGet package reference(s) not checked (version range, floating version, unresolved MSBuild property or no version)",
+    );
+  });
+
+  it("uses the nearest file, follows GetPathOfFileAbove imports and honours ManagePackageVersionsCentrally=false", async () => {
+    const root = path.join(temp, "nuget-cpm-nested");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      '<Project><ItemGroup><PackageVersion Include="Outer" Version="1.0.0" /><PackageVersion Include="Inner" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    writeFile(
+      root,
+      "nested/Directory.Packages.props",
+      [
+        "<Project>",
+        '  <Import Project="$([MSBuild]::GetPathOfFileAbove(Directory.Packages.props, $(MSBuildThisFileDirectory)..))" />',
+        '  <ItemGroup><PackageVersion Update="Inner" Version="2.0.0" /></ItemGroup>',
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "nested/app/App.csproj",
+      csproj('<PackageReference Include="Outer" />', '<PackageReference Include="Inner" />'),
+    );
+    writeFile(
+      root,
+      "off/Off.csproj",
+      '<Project><PropertyGroup><ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally></PropertyGroup><ItemGroup><PackageReference Include="Outer" /></ItemGroup></Project>',
+    );
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual([
+      "Directory.Packages.props:1 Outer@1.0.0 direct:runtime",
+      "nested/Directory.Packages.props:3 Inner@2.0.0 direct:runtime",
+    ]);
+    expect(
+      result.warnings.some((w) => w.startsWith("off/Off.csproj: 1 NuGet package reference(s) not checked")),
+    ).toBe(true);
+  });
+
+  it("does not read a Directory.Packages.props that links outside the audit root", async () => {
+    const outer = path.join(temp, "nuget-cpm-symlink");
+    const root = path.join(outer, "project");
+    writeFile(
+      outer,
+      "outside.props",
+      '<Project><ItemGroup><PackageVersion Include="Secret.Package" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    writeFile(root, "src/App.csproj", csproj('<PackageReference Include="Secret.Package" />'));
+    fs.symlinkSync(path.join(outer, "outside.props"), path.join(root, "Directory.Packages.props"));
+    const { result } = await nugetPackages(root);
+    expect(result.packages).toEqual([]);
+    expect(result.warnings).toContain(
+      "Directory.Packages.props: not read (outside the audit root); versions and properties it declares are unknown",
+    );
+    expect(
+      result.warnings.some((w) => w.startsWith("src/App.csproj: 1 NuGet package reference(s) not checked")),
+    ).toBe(true);
+  });
+
+  it("reads the Directory.* files only through the projects", async () => {
+    const root = path.join(temp, "nuget-orphan-props");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      '<Project><ItemGroup><PackageVersion Include="Orphan" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    writeFile(
+      root,
+      "Directory.Build.props",
+      '<Project><ItemGroup><PackageReference Include="NoProject" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    const { result } = await nugetPackages(root);
+    expect(result.packages).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("follows plain <Import> elements with resolvable relative paths", async () => {
+    const root = path.join(temp, "nuget-imports");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      [
+        "<Project>",
+        '  <Import Project="$(MSBuildThisFileDirectory)Directory.Packages.net8.0.props" />',
+        '  <Import Project="build\\versions.props" />',
+        '  <Import Project="$(SomethingUnknown)\\x.props" />',
+        '  <Import Project="../outside.props" />',
+        '  <Import Project="missing.props" />',
+        '  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />',
+        '  <ItemGroup><PackageVersion Include="Own" Version="1.0.0" /></ItemGroup>',
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "Directory.Packages.net8.0.props",
+      '<Project>\n  <ItemGroup>\n    <PackageVersion Include="Framework" Version="8.0.0" />\n  </ItemGroup>\n  <Import Project="Directory.Packages.props" />\n</Project>\n',
+    );
+    writeFile(root, "build/versions.props", "<Project><PropertyGroup><LibVersion>2.0.0</LibVersion></PropertyGroup></Project>\n");
+    writeFile(root, "src/common.props", '<Project><ItemGroup><PackageReference Include="FromCommon" Version="3.0.0" /></ItemGroup></Project>\n');
+    writeFile(
+      root,
+      "src/App/App.csproj",
+      [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        '  <Import Project="..\\common.props" />',
+        "  <ItemGroup>",
+        '    <PackageReference Include="Own" />',
+        '    <PackageReference Include="Framework" />',
+        '    <PackageReference Include="Lib" VersionOverride="$(LibVersion)" />',
+        "  </ItemGroup>",
+        "</Project>",
+      ].join("\n"),
+    );
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "Directory.Packages.net8.0.props:3 Framework@8.0.0 direct:runtime",
+        "Directory.Packages.props:8 Own@1.0.0 direct:runtime",
+        "src/App/App.csproj:6 Lib@2.0.0 direct:runtime",
+        "src/common.props:1 FromCommon@3.0.0 direct:runtime",
+      ].sort(),
+    );
+    expect(result.warnings.join("\n")).not.toContain("package reference(s) not checked");
+  });
+
+  it("evaluates a project without the Directory.* files when no reader is given", () => {
+    const result = evaluateNuGetProject(csproj('<PackageReference Include="A" />'), "App.csproj");
+    expect(result.packages).toEqual([]);
+    expect(result.references).toBe(1);
+  });
+});
+
+describe("packages.config", () => {
+  it("reads exact versions, development dependencies and lines", () => {
+    const content = [
+      '<?xml version="1.0" encoding="utf-8"?>',
+      "<packages>",
+      '  <package id="log4net" version="2.0.8" targetFramework="net472" />',
+      '  <package id="Analyzer" version="1.0" developmentDependency="true" />',
+      '  <!-- <package id="Commented" version="1.0.0" /> -->',
+      '  <package id="Ranged" version="[1.0,2.0)" />',
+      "</packages>",
+    ].join("\n");
+    const result = parsePackagesConfig(content, "packages.config");
+    expect(describePackages(result.packages)).toEqual([
+      "packages.config:3 log4net@2.0.8 direct:runtime",
+      "packages.config:4 Analyzer@1.0.0 direct:dev",
+    ]);
+    expect(result.warnings).toEqual(["packages.config: 1 package(s) without an exact version were not checked"]);
+    expect(parseLockfile("lib/packages.Lib.config", content).packages).toHaveLength(2);
+  });
+});
+
+describe("NuGet packages.lock.json", () => {
+  const lock = JSON.stringify(
+    {
+      version: 1,
+      dependencies: {
+        "net8.0": {
+          Analyzer: { type: "Direct", requested: "[1.0.0, )", resolved: "1.0.0" },
+          "Newtonsoft.Json": {
+            type: "Direct",
+            requested: "[12.0.1, )",
+            resolved: "12.0.1",
+            dependencies: { "System.Buffers": "4.5.0" },
+          },
+          "System.Buffers": { type: "Transitive", resolved: "4.5.0" },
+          "Central.Transitive": { type: "CentralTransitive", requested: "[2.0.0, )", resolved: "2.0.0" },
+          OtherProject: { type: "Project", dependencies: {} },
+        },
+        "net6.0": {
+          "Newtonsoft.Json": { type: "Direct", resolved: "12.0.1" },
+          "System.Buffers": { type: "Transitive", resolved: "4.5.1" },
+        },
+        "net8.0/linux-x64": {
+          "Newtonsoft.Json": { type: "Direct", resolved: "12.0.1" },
+        },
+      },
+    },
+    null,
+    2,
+  );
+
+  it("uses type for direct-ness and counts each package/version once", () => {
+    const result = parsePackagesLock(lock, "packages.lock.json");
+    expect(describePackages(result.packages)).toEqual(
+      [
+        "packages.lock.json:5 Analyzer@1.0.0 direct:-",
+        // The framework-level entry, not the nested dependency list.
+        "packages.lock.json:10 Newtonsoft.Json@12.0.1 direct:-",
+        "packages.lock.json:18 System.Buffers@4.5.0 transitive:-",
+        "packages.lock.json:18 System.Buffers@4.5.1 transitive:-",
+        "packages.lock.json:22 Central.Transitive@2.0.0 transitive:-",
+      ].sort(),
+    );
+  });
+
+  it("takes precedence over the project file and marks scopes from it", async () => {
+    const root = path.join(temp, "nuget-lock-precedence");
+    writeFile(root, "src/App/packages.lock.json", lock);
+    writeFile(
+      root,
+      "src/App/App.csproj",
+      csproj(
+        '<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />',
+        '<PackageReference Include="Analyzer" Version="1.0.0" PrivateAssets="all" />',
+      ),
+    );
+    // A second project in the same directory with its own named lockfile.
+    writeFile(root, "src/App/Tool.csproj", csproj('<PackageReference Include="Tool.Only" Version="1.0.0" />'));
+    writeFile(
+      root,
+      "src/App/packages.Tool.lock.json",
+      JSON.stringify({ version: 1, dependencies: { "net8.0": { "Tool.Only": { type: "Direct", resolved: "1.0.0" } } } }),
+    );
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "src/App/packages.lock.json:5 Analyzer@1.0.0 direct:dev",
+        "src/App/packages.lock.json:10 Newtonsoft.Json@12.0.1 direct:runtime",
+        "src/App/packages.lock.json:18 System.Buffers@4.5.0 transitive:-",
+        "src/App/packages.lock.json:18 System.Buffers@4.5.1 transitive:-",
+        "src/App/packages.lock.json:22 Central.Transitive@2.0.0 transitive:-",
+        "src/App/packages.Tool.lock.json:1 Tool.Only@1.0.0 direct:runtime",
+      ].sort(),
+    );
+    expect(result.warnings.join("\n")).not.toContain("unresolved transitive dependencies");
+    expect(manifestLockfileIssues(inventory(root))).toEqual([]);
+  });
+});
+
+describe("NuGet inventory and hygiene", () => {
+  it("classifies NuGet files as fully scanned dependency files", () => {
+    const root = path.join(temp, "nuget-inventory");
+    const token = ["ghp_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
+    const files = [
+      "A.csproj",
+      "B.fsproj",
+      "C.vbproj",
+      "packages.config",
+      "Directory.Build.props",
+      "Directory.Build.targets",
+      "Directory.Packages.props",
+    ];
+    for (const name of files) {
+      writeFile(
+        root,
+        `${name.replace(/\W/g, "_")}/${name}`,
+        `<Project><PropertyGroup><Token>${token}</Token></PropertyGroup></Project>\n`,
+      );
+    }
+    writeFile(root, "lock/packages.lock.json", "{}\n");
+    const inv = inventory(root);
+    for (const name of files) {
+      const file = inv.files.find((f) => path.posix.basename(f.relPath) === name);
+      expect(file, name).toMatchObject({ isLockfile: true, scannable: true, manifestType: "nuget" });
+    }
+    expect(inv.files.find((f) => f.relPath === "lock/packages.lock.json")).toMatchObject({
+      isLockfile: true,
+      scannable: false,
+    });
+    const found = new Set(scanSecrets(inv.files).findings.map((f) => path.posix.basename(f.file)));
+    for (const name of files) expect(found.has(name), name).toBe(true);
+  });
+
+  it("flags a project without a NuGet lockfile at its first PackageReference, unless packages.config pins it", () => {
+    const root = path.join(temp, "nuget-hygiene");
+    writeFile(root, "a/A.csproj", csproj('<PackageReference Include="X" Version="1.0.0" />'));
+    writeFile(root, "b/B.vbproj", "<Project>\n</Project>\n");
+    writeFile(root, "c/C.csproj", "<Project />\n");
+    writeFile(root, "c/packages.config", '<packages><package id="X" version="1.0.0" /></packages>\n');
+    writeFile(root, "d/D.csproj", csproj('<PackageReference Include="X" Version="1.0.0" />'));
+    writeFile(root, "d/packages.lock.json", "{}\n");
+    writeFile(root, "Directory.Packages.props", "<Project />\n");
+    expect(manifestLockfileIssues(inventory(root))).toEqual([
+      { file: "a/A.csproj", line: 3, manifest: "A.csproj" },
+      { file: "b/B.vbproj", line: 1, manifest: "B.vbproj" },
+    ]);
+  });
+
+  it("warns about missing transitive dependencies only for projects with package references", async () => {
+    const root = path.join(temp, "nuget-warnings");
+    writeFile(root, "a/A.csproj", csproj('<PackageReference Include="X" Version="1.0.0" />'));
+    writeFile(root, "b/B.csproj", "<Project />\n");
+    const { result } = await nugetPackages(root);
+    expect(result.unresolvedManifests).toEqual([
+      "a/A.csproj: packages.lock.json not found; direct dependencies only (unresolved transitive dependencies)",
+    ]);
+    expect(result.warnings.join("\n")).not.toContain("no matching lockfile found");
+  });
+});
+
+describe("XML scanner on malformed and hostile input", () => {
+  it("never throws and keeps what was read before the error", () => {
+    const inputs = [
+      "",
+      "not xml at all",
+      "<",
+      "<Project",
+      '<Project><ItemGroup><PackageReference Include="A" Version="1.0.0" /><PackageReference Include="B" Version="',
+      '<Project><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup><!-- unterminated',
+      "<Project><![CDATA[ unterminated",
+      "</Project></ItemGroup>",
+      "<a><b></a></b><c/>",
+      "<?xml version='1.0'?><!DOCTYPE x [<!ENTITY e 'x'>]><Project/>",
+      "\u0000\u0001<\u0002>",
+      "<Project><ItemGroup><PackageReference Include=A Version=1.0.0 /></ItemGroup></Project>",
+      "<Project><!DOCTYPE",
+      "<Project><?pi",
+      "<Project></",
+    ];
+    for (const input of inputs) {
+      expect(() => parseXml(input), input).not.toThrow();
+      expect(() => parseLockfile("App.csproj", input), input).not.toThrow();
+      expect(() => parseLockfile("packages.config", input), input).not.toThrow();
+    }
+    const partial = parseLockfile("App.csproj", inputs[4] as string);
+    expect(partial.packages.map((p) => p.name)).toEqual(["A"]);
+    expect(
+      partial.warnings.some((w) => w.startsWith("App.csproj: malformed XML (unterminated attribute value")),
+    ).toBe(true);
+    const unquoted = parseLockfile("App.csproj", inputs[11] as string);
+    expect(unquoted.packages.map((p) => `${p.name}@${p.version}`)).toEqual(["A@1.0.0"]);
+  });
+
+  it("does not expand entities declared in a DOCTYPE", () => {
+    const content = [
+      '<?xml version="1.0"?>',
+      "<!DOCTYPE Project [",
+      '  <!ENTITY a "1.0.0">',
+      '  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">',
+      "]>",
+      '<Project><ItemGroup><PackageReference Include="A" Version="&b;" /><PackageReference Include="B" Version="2.0.0" /></ItemGroup></Project>',
+    ].join("\n");
+    const result = parseLockfile("App.csproj", content);
+    expect(result.packages.map((p) => `${p.name}@${p.version}`)).toEqual(["B@2.0.0"]);
+  });
+
+  it("stays fast and bounded on large hostile files", () => {
+    const size = 8 * 1024 * 1024;
+    const cases: Array<[string, string]> = [
+      ["many attributes", `<Project${' a="1"'.repeat(size / 6)}>`],
+      ["deep nesting", "<a>".repeat(size / 3)],
+      ["stray end tags", `<Project><x>${"</y>".repeat(size / 4)}`],
+      ["many elements", `<Project>${"<i/>".repeat(size / 4)}</Project>`],
+      ["unterminated comment", `<Project><!--${"-".repeat(size)}`],
+      ["unterminated tag", `<Project ${"a".repeat(size)}`],
+      ["many bare brackets", `<Project>${"< ".repeat(size / 2)}`],
+      ["long text", `<Project><PropertyGroup><V>${"1".repeat(size)}</V></PropertyGroup></Project>`],
+      [
+        "many references",
+        `<Project><ItemGroup>${'<PackageReference Include="P" Version="1.0.0"/>'.repeat(size / 48)}</ItemGroup></Project>`,
+      ],
+      [
+        "many updates and removes",
+        `<Project><ItemGroup>${Array.from({ length: 3000 }, (_, i) => `<PackageReference Include="P${i % 10}" Version="1.0.0"/>`).join("")}${'<PackageReference Update="P1" Version="2.0.0"/><PackageReference Remove="P2"/>'.repeat(size / 90)}</ItemGroup></Project>`,
+      ],
+      [
+        "huge include list",
+        `<Project><ItemGroup><PackageReference Include="${Array.from({ length: size / 8 }, (_, i) => `p${i}`).join(";")}" Version="1.0.0"/></ItemGroup></Project>`,
+      ],
+    ];
+    for (const [label, content] of cases) {
+      const started = Date.now();
+      const document = parseXml(content);
+      parseLockfile("App.csproj", content);
+      parseLockfile("packages.config", content);
+      expect(Date.now() - started, label).toBeLessThan(3000);
+      let count = 0;
+      const walk = [document.root];
+      while (walk.length > 0) {
+        const element = walk.pop() as (typeof walk)[number];
+        count += 1;
+        expect(element.attrs.size, label).toBeLessThanOrEqual(XML_LIMITS.maxAttributes);
+        expect(element.text.length, label).toBeLessThanOrEqual(XML_LIMITS.maxTextPerElement);
+        for (const child of element.children) walk.push(child);
+      }
+      expect(count, label).toBeLessThanOrEqual(XML_LIMITS.maxElements + 1);
+    }
+  });
+});
+
+describe("NuGet scan", () => {
+  it("turns a vulnerable NuGet reference into a finding with a fixed version", async () => {
+    const root = path.join(temp, "nuget-scan");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      '<Project>\n  <ItemGroup>\n    <PackageVersion Include="Newtonsoft.Json" Version="12.0.1" />\n  </ItemGroup>\n</Project>\n',
+    );
+    writeFile(root, "src/App/App.csproj", csproj('<PackageReference Include="Newtonsoft.Json" />'));
+    const queries: unknown[] = [];
+    const http: HttpClient = {
+      async postJson(_url, body) {
+        const batch = (body as { queries: unknown[] }).queries;
+        queries.push(...batch);
+        return { results: batch.map(() => ({ vulns: [{ id: "GHSA-5crp-9r3c-p9vr" }] })) };
+      },
+      async getJson() {
+        return {
+          id: "GHSA-5crp-9r3c-p9vr",
+          aliases: ["CVE-2024-21907"],
+          summary: "Improper Handling of Exceptional Conditions in Newtonsoft.Json",
+          affected: [
+            {
+              package: { name: "Newtonsoft.Json", ecosystem: "NuGet" },
+              ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "13.0.1" }] }],
+            },
+          ],
+        };
+      },
+    };
+    const result = await runSca({ root, inventory: inventory(root), http, sleep: async () => {} });
+    expect(queries).toEqual([{ package: { name: "newtonsoft.json", ecosystem: "NuGet" }, version: "12.0.1" }]);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      ecosystem: "NuGet",
+      package: "Newtonsoft.Json",
+      installedVersion: "12.0.1",
+      fixedVersion: "13.0.1",
+      file: "Directory.Packages.props",
+      startLine: 3,
+      dependencyScope: "runtime",
+      dependencyPath: "nuget direct dependency (declared for src/App/App.csproj)",
+    });
+  });
+
+  it("reads the dotnet fixtures", async () => {
+    const root = path.join(FIXTURES, "vulnerable/sca/dotnet");
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "central/Directory.Packages.props:6 System.Text.Encodings.Web@4.5.0 direct:runtime",
+        "central/Directory.Packages.props:7 Microsoft.Data.SqlClient@2.1.0 direct:runtime",
+        "direct/Direct.csproj:10 Newtonsoft.Json@12.0.1 direct:runtime",
+        "direct/Direct.csproj:12 SharpZipLib@1.2.0 direct:runtime",
+        "direct/Direct.csproj:16 StyleCop.Analyzers@1.1.118 direct:dev",
+        "legacy/packages.config:3 log4net@2.0.8 direct:runtime",
+        "legacy/packages.config:4 Microsoft.CodeAnalysis.NetAnalyzers@5.0.3 direct:dev",
+        "locked/packages.lock.json:5 System.Net.Http@4.3.0 direct:runtime",
+        "locked/packages.lock.json:14 System.Text.RegularExpressions@4.3.0 transitive:-",
+      ].sort(),
+    );
+    expect([...result.unresolvedManifests].sort()).toEqual([
+      "central/src/Api/Api.csproj: packages.lock.json not found; direct dependencies only (unresolved transitive dependencies)",
+      "direct/Direct.csproj: packages.lock.json not found; direct dependencies only (unresolved transitive dependencies)",
+    ]);
+    expect(
+      manifestLockfileIssues(inventory(root))
+        .map((issue) => issue.file)
+        .sort(),
+    ).toEqual(["central/src/Api/Api.csproj", "direct/Direct.csproj"]);
   });
 });

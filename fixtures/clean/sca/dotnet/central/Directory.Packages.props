@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="System.Text.Encodings.Web" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+  </ItemGroup>
+</Project>

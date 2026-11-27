@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "System.Net.Http": {
+        "type": "Direct",
+        "requested": "[4.3.0, )",
+        "resolved": "4.3.0",
+        "contentHash": "fake-content-hash-for-fixture",
+        "dependencies": {
+          "System.Text.RegularExpressions": "4.3.0"
+        }
+      },
+      "System.Text.RegularExpressions": {
+        "type": "Transitive",
+        "resolved": "4.3.0",
+        "contentHash": "fake-content-hash-for-fixture"
+      }
+    }
+  }
+}

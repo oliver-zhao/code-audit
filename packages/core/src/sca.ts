@@ -20,6 +20,19 @@ import {
 } from "./pathJail.js";
 import { parseTomlSubset, type TomlTable, type TomlValue } from "./toml.js";
 import { compileGlob } from "./glob.js";
+import {
+  NO_NUGET_LOCKFILE_WARNING,
+  NUGET_PROJECT_FILE,
+  evaluateNuGetProject,
+  isNuGetImportedFile,
+  isNuGetLockfileName,
+  isPackagesConfigName,
+  lockfileProjects,
+  parseNuGetLock,
+  parsePackagesConfig,
+  projectLockfileNames,
+  type NuGetCache,
+} from "./nuget.js";
 
 export type OsvEcosystem = "npm" | "PyPI" | "Go" | "Maven" | "NuGet" | "crates.io";
 
@@ -42,6 +55,12 @@ export interface ScaPackage {
   scope?: DependencyScope;
   /** True for development-only dependencies (same as `scope === "dev"`). */
   dev?: boolean;
+  /**
+   * Project the dependency was declared for, when `file` is a shared file
+   * (a NuGet central version in Directory.Packages.props, a reference in
+   * Directory.Build.props): the first project that uses it.
+   */
+  via?: string;
 }
 
 export interface ParsedDependencies {
@@ -148,15 +167,38 @@ function packageKey(pkg: { name: string; version: string; ecosystem: string }): 
   return `${pkg.ecosystem}\u0000${normalizePackageName(pkg.name, pkg.ecosystem)}\u0000${pkg.version}`;
 }
 
-/** One entry per (file, ecosystem, name, version). */
+/**
+ * One entry per (file, ecosystem, name, version). When the same declaration
+ * is reached more than once (a NuGet central version used by several
+ * projects), the kept entry is direct if any occurrence is, and takes the
+ * strongest scope, so nothing used at run time is labelled dev.
+ */
 function uniqueOccurrences(packages: ScaPackage[]): ScaPackage[] {
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const result: ScaPackage[] = [];
   for (const pkg of packages) {
     const key = `${pkg.file}\u0000${packageKey(pkg)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(pkg);
+    const index = seen.get(key);
+    if (index === undefined) {
+      seen.set(key, result.length);
+      result.push(pkg);
+      continue;
+    }
+    const kept = result[index] as ScaPackage;
+    const direct = kept.direct || pkg.direct;
+    const scope =
+      kept.scope !== undefined && pkg.scope !== undefined
+        ? betterScope(kept.scope, pkg.scope)
+        : kept.scope;
+    if (direct !== kept.direct || scope !== kept.scope) {
+      const merged: ScaPackage = { ...kept, direct };
+      if (scope !== undefined) {
+        merged.scope = scope;
+        if (scope === "dev") merged.dev = true;
+        else delete merged.dev;
+      }
+      result[index] = merged;
+    }
   }
   return result;
 }
@@ -1270,53 +1312,16 @@ export function parsePomXml(content: string, file: string): ParsedDependencies {
   return { packages: pushUnique(packages), warnings };
 }
 
+/**
+ * Parse a NuGet packages.lock.json; see `parseNuGetLock`. `direct` carries the
+ * references of the project the lockfile belongs to, when it was read.
+ */
 export function parsePackagesLock(
   content: string,
   file: string,
+  direct?: DirectInfo,
 ): ParsedDependencies {
-  const warnings: string[] = [];
-  const packages: ScaPackage[] = [];
-  let document: Record<string, unknown>;
-  try {
-    document = JSON.parse(content) as Record<string, unknown>;
-  } catch (error) {
-    return {
-      packages: [],
-      warnings: [
-        `packages.lock.json parse failed (${file}): ${error instanceof Error ? error.message : String(error)}`,
-      ],
-    };
-  }
-
-  const dependencies = document.dependencies;
-  if (dependencies && typeof dependencies === "object") {
-    for (const framework of Object.values(dependencies as Record<string, unknown>)) {
-      if (!framework || typeof framework !== "object") continue;
-      for (const [name, value] of Object.entries(
-        framework as Record<string, unknown>,
-      )) {
-        if (!value || typeof value !== "object") continue;
-        const entry = value as Record<string, unknown>;
-        if (entry.type === "Project") continue;
-        const version = entry.resolved;
-        if (typeof version !== "string") continue;
-        packages.push({
-          name,
-          version,
-          ecosystem: "NuGet",
-          file,
-          line: findLine(content, `"${name}"`),
-          manager: "nuget",
-          direct: true,
-        });
-      }
-    }
-  }
-
-  if (packages.length === 0) {
-    warnings.push(`${file}: no parseable NuGet dependencies found`);
-  }
-  return { packages: pushUnique(packages), warnings };
+  return parseNuGetLock(content, file, manifestOf(direct));
 }
 
 // ---------------------------------------------------------------------------
@@ -1863,6 +1868,44 @@ export interface ParseLockfileOptions {
    * parsed (and warned about) twice.
    */
   visitedRequirements?: Set<string>;
+  /**
+   * Parsed `Directory.*` MSBuild files, shared by the NuGet projects of one
+   * scan so each is read once.
+   */
+  nugetCache?: NuGetCache;
+}
+
+/** True when `rel` is a regular file inside the root (symbolic links resolved). */
+function jailedFileExists(root: string, rel: string): boolean {
+  try {
+    const abs = resolveInside(validateAuditRoot(root).root, rel);
+    return fs.statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse a NuGet project file. A project with its own packages.lock.json is
+ * covered by that lockfile (resolved versions and transitive dependencies),
+ * so nothing is reported from the project file itself.
+ */
+function parseNuGetProjectFile(
+  relPath: string,
+  content: string,
+  options: ParseLockfileOptions,
+): ParsedDependencies {
+  const root = options.root;
+  if (root && projectLockfileNames(relPath).some((rel) => jailedFileExists(root, rel))) {
+    return { packages: [], warnings: [] };
+  }
+  const result = evaluateNuGetProject(content, relPath, {
+    read: root ? (rel) => readJailedFile(root, rel) : undefined,
+    cache: options.nugetCache,
+  });
+  const warnings = [...result.warnings];
+  if (result.references > 0) warnings.push(`${relPath}: ${NO_NUGET_LOCKFILE_WARNING}`);
+  return { packages: result.packages, warnings };
 }
 
 export function parseLockfile(
@@ -1896,13 +1939,18 @@ export function parseLockfile(
     case "pom.xml":
       return parsePomXml(content, relPath);
     case "packages.lock.json":
-      return parsePackagesLock(content, relPath);
+      return parsePackagesLock(content, relPath, options.directNames);
     case "Cargo.lock":
       return parseCargoLock(content, relPath, options.directNames);
     case "go.sum":
     case "yarn.lock":
       return { packages: [], warnings: [] };
     default:
+      if (NUGET_PROJECT_FILE.test(base)) return parseNuGetProjectFile(relPath, content, options);
+      if (isPackagesConfigName(base)) return parsePackagesConfig(content, relPath);
+      if (isNuGetLockfileName(base)) return parsePackagesLock(content, relPath, options.directNames);
+      // Read through the projects that import them.
+      if (isNuGetImportedFile(base)) return { packages: [], warnings: [] };
       if (base === "pylock.toml" || /^pylock\..+\.toml$/.test(base)) {
         return parsePylock(content, relPath, options.directNames);
       }
@@ -1983,11 +2031,6 @@ function manifestHygieneWarnings(inventory: InventoryResult): string[] {
         `${manifest.relPath}: no matching lockfile found; direct dependencies only (unresolved transitive dependencies)`,
       );
     }
-    if (base.endsWith(".csproj") && !present.has("packages.lock.json")) {
-      warnings.push(
-        `${manifest.relPath}: packages.lock.json not found (unresolved transitive dependencies)`,
-      );
-    }
   }
   return warnings;
 }
@@ -2015,7 +2058,9 @@ function dependencyDeclarationLine(absPath: string, base: string): number {
         ? [/^\s*dependencies\s*=/, /\[tool\.poetry\.dependencies\]/, /\[project\]/]
         : base === "Cargo.toml"
           ? [/^\s*\[(?:workspace\.)?dependencies\]/]
-          : [];
+          : NUGET_PROJECT_FILE.test(base)
+            ? [/<\s*PackageReference\b/i]
+            : [];
   const lines = splitLines(content);
   for (let index = 0; index < lines.length; index += 1) {
     if (patterns.some((pattern) => pattern.test(lines[index] ?? ""))) {
@@ -2044,20 +2089,31 @@ export function manifestLockfileIssues(
 
   const issues: ManifestLockfileIssue[] = [];
   for (const manifest of inventory.manifests) {
-    if (manifest.isLockfile) continue;
     const base = path.basename(manifest.relPath);
     const dir = dirOf(manifest.relPath);
     const present = byDir.get(dir) ?? new Set<string>();
-    const required = EXPECTED_LOCKFILES[base];
-    const missing = required
-      ? !hasRequiredLockfile(
-          base,
-          present,
-          byDir.get(requirementsDirOf(dir)),
-          () => isCargoWorkspaceMember(inventory.root, manifest.relPath, byDir, cargoCache),
-        )
-      : base.endsWith(".csproj") &&
-        ![...present].some((relPath) => path.posix.basename(relPath) === "packages.lock.json");
+    let missing: boolean;
+    if (NUGET_PROJECT_FILE.test(base)) {
+      // A NuGet project is read for dependencies (so the inventory lists it
+      // with the lockfiles), but its transitive dependencies float unless
+      // NuGet's lockfile is committed. A packages.config project pins every
+      // package, transitive ones included.
+      const lockNames = new Set(projectLockfileNames(manifest.relPath));
+      missing =
+        ![...present].some((rel) => lockNames.has(rel)) &&
+        ![...present].some((rel) => isPackagesConfigName(path.posix.basename(rel)));
+    } else {
+      if (manifest.isLockfile) continue;
+      const required = EXPECTED_LOCKFILES[base];
+      missing = required
+        ? !hasRequiredLockfile(
+            base,
+            present,
+            byDir.get(requirementsDirOf(dir)),
+            () => isCargoWorkspaceMember(inventory.root, manifest.relPath, byDir, cargoCache),
+          )
+        : false;
+    }
     if (!missing) continue;
     issues.push({
       file: manifest.relPath,
@@ -2390,6 +2446,34 @@ function truncate(value: string, max = 300): string {
 }
 
 /**
+ * The package references of the project(s) a NuGet lockfile belongs to,
+ * read through the path jail, or undefined when no project file is known.
+ */
+function readNuGetProjects(
+  root: string,
+  lockfileRel: string,
+  manifestPaths: readonly string[],
+): ManifestDependencies | undefined {
+  const projects = lockfileProjects(lockfileRel, manifestPaths);
+  if (projects.length === 0) return undefined;
+  const combined = emptyManifest();
+  const cache: NuGetCache = new Map();
+  for (const rel of projects) {
+    const read = readJailedFile(root, rel);
+    if ("error" in read) {
+      combined.warning ??= `${rel}: project file was not read (${read.error})`;
+      continue;
+    }
+    const result = evaluateNuGetProject(read.content, rel, {
+      read: (file) => readJailedFile(root, file),
+      cache,
+    });
+    mergeManifest(combined, result.manifest);
+  }
+  return combined;
+}
+
+/**
  * Read the manifest next to a lockfile through the path jail: pyproject.toml
  * for the Python TOML lockfiles, Pipfile for Pipfile.lock, Cargo.toml (and the
  * workspace members among `manifestPaths`) for Cargo.lock. Returns undefined
@@ -2403,6 +2487,7 @@ export function readSiblingManifest(
 ): ManifestDependencies | undefined {
   const base = path.posix.basename(lockfileRel);
   if (base === "Cargo.lock") return readCargoManifests(root, lockfileRel, manifestPaths);
+  if (isNuGetLockfileName(base)) return readNuGetProjects(root, lockfileRel, manifestPaths);
   const manifestName = base === "Pipfile.lock" ? "Pipfile" : "pyproject.toml";
   const isTomlLock =
     base === "poetry.lock" ||
@@ -2619,10 +2704,12 @@ export function describeDependencyPath(pkg: {
   direct: boolean;
   scope?: DependencyScope;
   dev?: boolean;
+  via?: string;
 }): string {
-  if (pkg.dev || pkg.scope === "dev") return `${pkg.manager} dev dependency`;
+  const via = pkg.via ? ` (declared for ${pkg.via})` : "";
+  if (pkg.dev || pkg.scope === "dev") return `${pkg.manager} dev dependency${via}`;
   return pkg.direct
-    ? `${pkg.manager} direct dependency`
+    ? `${pkg.manager} direct dependency${via}`
     : `${pkg.manager} transitive dependency (from lockfile)`;
 }
 
@@ -2688,11 +2775,14 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
   const perFileCount = new Map<string, number>();
   const overCap = new Map<string, number>();
   let scanCapExceeded = false;
+  const nugetCache: NuGetCache = new Map();
 
   for (const lockfile of options.inventory.lockfiles) {
     if (skipLockfiles.has(lockfile.relPath)) continue;
     const base = path.basename(lockfile.relPath);
     if (base === "go.sum" || base === "yarn.lock") continue;
+    // Directory.Build.props and friends are read through the projects.
+    if (isNuGetImportedFile(base)) continue;
     const abs = path.join(options.root, lockfile.relPath);
     let content: string;
     try {
@@ -2716,6 +2806,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
         root: options.root,
         directNames: manifest,
         visitedRequirements,
+        nugetCache,
       });
     } catch (error) {
       warnings.push(

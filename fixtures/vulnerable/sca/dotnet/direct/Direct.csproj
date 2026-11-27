@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ZipLibVersion>1.2.0</ZipLibVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Attribute form -->
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+    <!-- Child-element form, version from an MSBuild property -->
+    <PackageReference Include="SharpZipLib">
+      <Version>$(ZipLibVersion)</Version>
+    </PackageReference>
+    <!-- Build-only analyzer: dev scope -->
+    <PackageReference Include="StyleCop.Analyzers" Version="1.1.118" PrivateAssets="all" />
+    <!-- Floating version: not queried, counted in a warning -->
+    <PackageReference Include="Serilog" Version="2.*" />
+  </ItemGroup>
+
+</Project>

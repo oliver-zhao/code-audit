@@ -7,6 +7,12 @@ import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
 import type { PathContext } from "./finding.js";
 import { classifyFileDetailed, type PathContextSource } from "./pathContext.js";
 import { LATEST_OUTPUT_FILES, RUN_OUTPUT_FILES, TOOL_NAME, toolRootDir } from "./meta.js";
+import {
+  NUGET_PROJECT_FILE,
+  isNuGetImportedFile,
+  isNuGetLockfileName,
+  isPackagesConfigName,
+} from "./nuget.js";
 
 export const DEFAULT_EXCLUDED_DIRS = [
   "node_modules",
@@ -310,7 +316,12 @@ const LOCKFILE_MARKERS: Marker[] = [
   },
   { match: (b) => b === "go.mod", type: "go", lockfile: true },
   { match: (b) => b === "go.sum", type: "go", lockfile: true, generated: true },
-  { match: (b) => b === "packages.lock.json", type: "nuget", lockfile: true, generated: true },
+  { match: isNuGetLockfileName, type: "nuget", lockfile: true, generated: true },
+  // NuGet project files, packages.config and the Directory.* MSBuild files
+  // are written by hand: read for dependencies and fully scanned.
+  { match: (b) => NUGET_PROJECT_FILE.test(b), type: "nuget", lockfile: true },
+  { match: isPackagesConfigName, type: "nuget", lockfile: true },
+  { match: isNuGetImportedFile, type: "nuget", lockfile: true },
   { match: (b) => b === "Cargo.lock", type: "cargo", lockfile: true, generated: true },
   { match: (b) => b === "composer.lock", type: "composer", lockfile: true, generated: true },
 ];
@@ -320,7 +331,6 @@ const MANIFEST_MARKERS: Marker[] = [
   { match: (b) => b === "pyproject.toml", type: "requirements", lockfile: false },
   { match: (b) => b === "Pipfile", type: "requirements", lockfile: false },
   { match: (b) => b === "pom.xml", type: "maven", lockfile: false },
-  { match: (b) => b.endsWith(".csproj"), type: "nuget", lockfile: false },
   { match: (b) => b === "Cargo.toml", type: "cargo", lockfile: false },
   { match: (b) => b === "composer.json", type: "composer", lockfile: false },
   { match: (b) => b === "vcpkg.json", type: "unknown", lockfile: false },

@@ -516,8 +516,9 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
             evidence: `no lockfile next to ${issue.manifest}`,
             message:
               "A manifest without a lockfile resolves floating versions, so builds are not reproducible.",
-            remediation:
-              "Commit a lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock, poetry.lock or requirements.txt) and install with it.",
+            remediation: /\.(?:cs|fs|vb)proj$/i.test(issue.manifest)
+              ? "Set RestorePackagesWithLockFile to true (in the project or Directory.Build.props), commit packages.lock.json and restore with --locked-mode."
+              : "Commit a lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock, poetry.lock or requirements.txt) and install with it.",
             provenance: {
               engine: "builtin-rules",
               rule: "dep-missing-lockfile",
