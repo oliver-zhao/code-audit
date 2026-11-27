@@ -60,3 +60,10 @@ char *grow(char *buf, size_t count, size_t width, size_t len)
     (void)table;
     return buf;
 }
+
+void log_windows(const char *msg, char *out, size_t n)
+{
+    printf_s(msg);                                       /* cpp-format-string */
+    _snprintf_s(out, n, _TRUNCATE, msg);                 /* cpp-format-string */
+    fprintf(stderr, (const char *)msg + 1);              /* cpp-format-string */
+}

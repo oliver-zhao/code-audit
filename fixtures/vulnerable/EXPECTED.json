@@ -3769,14 +3769,28 @@
     },
     {
       "file": "cpp/hooks.c",
-      "line": 12,
+      "line": 15,
       "ruleId": "cpp-format-string",
       "language": "c",
       "kind": "finding"
     },
     {
       "file": "cpp/hooks.c",
-      "line": 14,
+      "line": 16,
+      "ruleId": "cpp-format-string-variable",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 19,
+      "ruleId": "cpp-exec-shell-c",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 21,
       "ruleId": "cpp-system-api",
       "language": "c",
       "kind": "hotspot"
@@ -3806,6 +3820,13 @@
       "file": "cpp/modern.cpp",
       "line": 16,
       "ruleId": "cpp-auto-ptr",
+      "language": "cpp",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 17,
+      "ruleId": "cpp-system",
       "language": "cpp",
       "kind": "finding"
     },
@@ -3854,7 +3875,7 @@
     {
       "file": "cpp/strings.c",
       "line": 29,
-      "ruleId": "cpp-scanf-unbounded-string",
+      "ruleId": "cpp-sscanf-unbounded-string",
       "language": "c",
       "kind": "finding"
     },
@@ -3957,6 +3978,27 @@
       "kind": "finding"
     },
     {
+      "file": "cpp/strings.c",
+      "line": 66,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 67,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 68,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
       "file": "cpp/system.c",
       "line": 14,
       "ruleId": "cpp-system-api",
@@ -4010,7 +4052,7 @@
       "line": 39,
       "ruleId": "cpp-umask-zero",
       "language": "c",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "cpp/system.c",
@@ -6035,13 +6077,31 @@
     },
     {
       "file": "cpp/hooks.c",
-      "line": 12,
+      "line": 15,
       "ruleId": "c-opengrep-format-string",
       "confidence": "medium"
     },
     {
       "file": "cpp/hooks.c",
-      "line": 14,
+      "line": 19,
+      "ruleId": "c-opengrep-command-from-input",
+      "confidence": "high"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 21,
+      "ruleId": "c-opengrep-command-from-input",
+      "confidence": "high"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 15,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 17,
       "ruleId": "c-opengrep-command-from-input",
       "confidence": "high"
     },
@@ -6072,6 +6132,12 @@
     {
       "file": "cpp/strings.c",
       "line": 39,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 68,
       "ruleId": "c-opengrep-format-string",
       "confidence": "medium"
     },

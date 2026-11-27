@@ -14,4 +14,5 @@ void run(const std::string &host, const std::string &message)
     std::system(("ping -c 1 " + host).c_str());          // cpp-system-concat
     std::printf(message.c_str());                        // cpp-format-string-cstr
     std::auto_ptr<Widget> widget(new Widget());          // cpp-auto-ptr
+    std::system(std::getenv("PAGER"));                   // cpp-system
 }

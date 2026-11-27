@@ -89,7 +89,11 @@ describe("C/C++ rule set", () => {
       .map((hit) => `${hit.file.relPath}:${hit.line}:${hit.rule.id}`);
     // The one known hotspot: `std::cin >> line` reads a std::string, which a
     // line-based rule cannot tell from a char array in the same file.
-    expect(hits).toEqual(["cpp/modern.cpp:16:cpp-cin-char-array"]);
+    // `system(cmd)` with a number formatted into cmd is a reading-list entry.
+    expect(hits).toEqual([
+      "cpp/hooks.c:19:cpp-system-api",
+      "cpp/modern.cpp:16:cpp-cin-char-array",
+    ]);
   });
 });
 
@@ -131,7 +135,7 @@ describe("C/C++ rules: positives and their safe variants", () => {
   it("scanf: %s and %[ without a width only", () => {
     expect(idsOf('    scanf("%s", name);')).toEqual(["cpp-scanf-unbounded-string"]);
     expect(idsOf('    fscanf(fp, "%d %[^\\n]", &n, rest);')).toEqual(["cpp-scanf-unbounded-string"]);
-    expect(idsOf('    sscanf(line, "%ls", wname);')).toEqual(["cpp-scanf-unbounded-string"]);
+    expect(idsOf('    sscanf(line, "%ls", wname);')).toEqual(["cpp-sscanf-unbounded-string"]);
     expect(idsOf('    scanf("%63s", name);')).toEqual([]);
     expect(idsOf('    scanf("%ms", &name);')).toEqual([]);
     expect(idsOf('    scanf("%*s %d", &n);')).toEqual([]);
@@ -152,7 +156,7 @@ describe("C/C++ rules: positives and their safe variants", () => {
     expect(idsOf("    fprintf(stderr, USAGE);")).toEqual([]);
     expect(idsOf('    printf(verbose ? "yes\\n" : "no\\n");')).toEqual([]);
     expect(idsOf("    vfprintf(stderr, fmt, ap);")).toEqual([]);
-    expect(idsOf("    snprintf(buf, sizeof(buf), fmt, a, b);")).toEqual([]);
+    expect(idsOf("    snprintf(buf, sizeof(buf), fmt, a, b);")).toEqual(["cpp-format-string-variable"]);
     expect(idsOf("    logger.printf(msg);", "a.cpp")).toEqual([]);
     expect(idsOf("#define DBG(m) printf(m)")).toEqual([]);
     expect(idsOf("        printf(__VA_ARGS__);   \\")).toEqual([]);
@@ -243,7 +247,6 @@ describe("C/C++ rules: positives and their safe variants", () => {
     expect(hitsOf("if (access(path, R_OK) == 0) puts(path);")).toEqual([]);
     expect(hitsOf("if (!access(path, F_OK)) {\n    fd = open(path, O_RDONLY);\n}")).toEqual([]);
     expect(idsOf("    setuid(uid);")).toEqual(["cpp-setuid-unchecked"]);
-    expect(idsOf("    (void)setgid(gid);")).toEqual(["cpp-setuid-unchecked"]);
     expect(idsOf("    if (setuid(uid) != 0) abort();")).toEqual([]);
     expect(idsOf("    rc = setresuid(uid, uid, uid);")).toEqual([]);
     expect(idsOf("int setuid(uid_t uid);")).toEqual([]);
@@ -318,6 +321,65 @@ describe("C/C++ rules: positives and their safe variants", () => {
     expect(idsOf('    FILE *f = fopen("/etc/app.conf", "r");')).toEqual([]);
   });
 
+  it("review fixes: credential #define values that are names, not secrets", () => {
+    expect(idsOf('#define ENV_PRIVATE_KEY "private_key"')).toEqual([]);
+    expect(idsOf('#define PEM_STRUCTURE_PrivateKey "PrivateKeyInfo"')).toEqual([]);
+    expect(idsOf('#define OSSL_PKEY_PARAM_PRIVATE_KEY_TYPE "type-specific"')).toEqual([]);
+    expect(idsOf('#define BUS_ERROR_BAD_PASSWORD "org.freedesktop.home1.BadPassword"')).toEqual([]);
+    expect(idsOf('#define SECRET_SCOPE "local.private"')).toEqual([]);
+    expect(idsOf('#define ADMIN_PASSWORD "Hunter2-Prod"')).toEqual(["cpp-hardcoded-credential"]);
+  });
+
+  it("review fixes: an explicit (void) cast on setuid is a deliberate discard", () => {
+    expect(idsOf("        (void) seteuid(olduid);")).toEqual([]);
+    expect(idsOf("    (void)setgid(gid);")).toEqual([]);
+    expect(idsOf("    if (x) setuid(uid);")).toEqual(["cpp-setuid-unchecked"]);
+  });
+
+  it("review fixes: comment lines and trailing // comments are not reported", () => {
+    expect(idsOf(' *     while (scanf("%s %ld %s", action, &key, value)) {')).toEqual([]);
+    expect(idsOf(" * then chroot(dir) is called before the privileges are dropped.")).toEqual([]);
+    expect(idsOf(" *  RC4(&key, len, in, out);")).toEqual([]);
+    expect(idsOf("// MD5_Init(&ctx);")).toEqual([]);
+    expect(idsOf("/* gets(buf); */")).toEqual([]);
+    expect(idsOf("    n = 1; // was: gets(buf);")).toEqual([]);
+    expect(idsOf('    printf("see http://x"); gets(buf);')).toEqual(["cpp-gets"]);
+    expect(idsOf("    *p = realloc(*p, n);")).toEqual(["cpp-realloc-self-assign"]);
+  });
+
+  it("review fixes: Microsoft _s printf family, casts and offsets as the format", () => {
+    expect(idsOf("    printf_s(msg);", "w.cpp")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    fprintf_s(stderr, msg);", "w.cpp")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    sprintf_s(buf, sizeof(buf), msg);", "w.cpp")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    _snprintf_s(buf, sizeof(buf), _TRUNCATE, msg);", "w.cpp")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    StringCbPrintfW(buf, sizeof(buf), msg);", "w.cpp")).toEqual(["cpp-format-string"]);
+    expect(idsOf('    sprintf_s(buf, sizeof(buf), "%s", msg);', "w.cpp")).toEqual([]);
+    expect(idsOf("    printf((const char *)buf);")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    printf(&buf[1]);")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    printf(buf + 1);")).toEqual(["cpp-format-string"]);
+    expect(idsOf("    syslog(LOG_ERR, fmt, user);")).toEqual(["cpp-format-string-variable"]);
+    expect(idsOf("    sprintf(out, format, a);")).toEqual(["cpp-format-string-variable"]);
+    expect(idsOf("#define LOG(fmt, ...) fprintf(stderr, fmt, __VA_ARGS__)")).toEqual([]);
+  });
+
+  it("review fixes: std::getenv and SSL_CTX_set_verify(ctx, 0, ...)", () => {
+    expect(idsOf('    std::system(std::getenv("PAGER"));', "a.cpp")).toEqual(["cpp-system"]);
+    expect(idsOf("    SSL_CTX_set_verify(ctx, 0, NULL);")).toEqual(["cpp-ssl-verify-none"]);
+  });
+
+  it("review calibration: test trees, sscanf, path traversal and umask", () => {
+    const line = "    curl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 0L);";
+    expect(idsOf(line, "tests/libtest/lib1.c")).toEqual([]);
+    expect(idsOf(line, "test/client.c")).toEqual([]);
+    expect(idsOf(line, "docs/examples/https.c")).toEqual(["cpp-curl-tls-verify-disabled"]);
+    const byId = new Map(cppRules.map((rule) => [rule.id, rule]));
+    expect(byId.get("cpp-sscanf-unbounded-string")?.confidence).toBe("low");
+    expect(byId.get("cpp-scanf-unbounded-string")?.confidence).toBe("medium");
+    expect(byId.get("cpp-path-traversal")?.severity).toBe("medium");
+    expect(byId.get("cpp-umask-zero")?.kind).toBe("hotspot");
+    expect(byId.get("cpp-umask-zero")?.confidence).toBe("low");
+  });
+
   it("keeps the credential value out of every output file", async () => {
     const root = path.join(temp, "redact");
     writeFile(root, "src/config.c", 'static const char admin_password[] = "Zq7RedactMe99";\n');
@@ -327,9 +389,10 @@ describe("C/C++ rules: positives and their safe variants", () => {
     expect(readAllOutputFiles(out)).not.toContain("Zq7RedactMe99");
   });
 
-  // The engine matches C/C++ line by line, comments included. A C-family
-  // lexer (planned) removes comments and joins calls that span lines.
-  it.todo("does not report a call inside a /* ... */ block comment line such as ` *  while (scanf(\"%s\", buf))` (needs the C lexer)");
+  // The engine matches C/C++ line by line. Until the planned C lexer exists,
+  // lines that start like a comment and calls after a // marker are skipped;
+  // the body of a block comment whose lines do not start with * is not.
+  it.todo("does not report a call on a block-comment line without a leading * (needs the C lexer)");
   it.todo("reports printf(\\n    msg); split over two lines (needs the C lexer)");
   it.todo("reports strcpy(dst,\\n    argv[1]); split over two lines (needs the C lexer)");
 });
