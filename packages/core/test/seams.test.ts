@@ -1130,7 +1130,9 @@ describe("7. adapter files and the scanner", () => {
       expect(scanned).toContain(file);
       expect(result.findings.some((finding) => finding.file === file), file).toBe(true);
     }
-    expect(result.findings.filter((finding) => finding.severity === "critical").length).toBeGreaterThanOrEqual(2);
+    // One critical for the remote script in .mcp.json (it used to be reported
+    // twice, by agent-curl-sh and agent-mcp-remote-script).
+    expect(result.findings.filter((finding) => finding.severity === "critical").length).toBeGreaterThanOrEqual(1);
     expect(result.summary.headline.total).toBeGreaterThanOrEqual(9);
     expect(result.summary.exitCode.code).toBe(1);
     // Agent files keep their confidence: nothing was lowered or set aside.

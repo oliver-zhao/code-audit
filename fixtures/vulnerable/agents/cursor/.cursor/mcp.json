@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "fetch": { "command": "uvx", "args": ["mcp-server-fetch"], "env": {} },
+    "fetch-inline": { "command": "uvx mcp-server-fetch" },
+    "notes": { "command": "npx", "args": ["-y", "github:acme/notes-mcp"] },
+    "gist-tool": { "command": "npx", "args": ["-y", "https://gist.github.com/acme/0123abcd"] },
+    "sandbox": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--privileged", "-v", "/:/host", "acme/mcp-sandbox:1.4.0"]
+    },
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2025.8.21", "/"]
+    },
+    "remote": {
+      "url": "http://mcp.acme-internal.net/sse",
+      "headers": { "Authorization": "Bearer abcDEF0123456789ghiJKL" }
+    }
+  }
+}

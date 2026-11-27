@@ -1,4 +1,19 @@
 version: 1
+# Dependency hygiene. Written for code-audit (Apache-2.0).
+#
+# Scope: Markdown, JSON (package.json) and YAML files such as .yarnrc.yml and
+# non-GitHub CI files. Dockerfiles and GitHub workflows belong to rules/iac;
+# the first three rules keep their original Dockerfile coverage.
+# Not covered: shell scripts, requirements*.txt, pip.conf, uv.toml, .npmrc and
+# TOML files have no language in the inventory and are not matched.
+definitions:
+  LOCALHOST: '(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|0\.0\.0\.0|host\.docker\.internal)(?:[:/"\x27\s]|$)'
+  # GitHub workflows/actions and Compose files are matched by rules/iac.
+  NOT_IAC: '(?:^|/)\.github/(?:workflows|actions)/|(?:^|/)action\.ya?ml$|(?:^|/)(?:docker-)?compose[\w.-]*\.ya?ml$|(?:^|/)CHANGELOG[^/]*\.md$|(?:^|/)HISTORY[^/]*\.md$'
+  README: '(?:^|/)(?:README|Readme|readme|INSTALL|Install|install|INSTALLATION|Installation|installation|SETUP|Setup|setup|GETTING[-_]STARTED|Getting[-_]Started|getting[-_]started|BUILDING|Building|building|DEVELOPMENT|Development|development|CONTRIBUTING|Contributing|contributing|HACKING)[^/]*\.mdx?$'
+  PLACEHOLDER: '(?:your|xxx|<|\.\.\.|example|placeholder|changeme|replace|dummy|redacted|insert|todo|fake|\*\*\*)'
+  # Well-known vendor installers that are documented as curl | sh.
+  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|mise\.run)'
 rules:
   - id: dep-http-install
     title: Dependency installed over plain HTTP or unpinned git URL
@@ -23,26 +38,27 @@ rules:
       - CWE-494
       - OWASP A08:2021
   - id: dep-postinstall-download
-    title: postinstall script downloads and executes code
-    title_zh: postinstall 脚本下载并执行代码
+    title: Install script downloads and executes code
+    title_zh: 安装脚本下载并执行代码
     severity: high
     confidence: high
     cwe: CWE-829
     owasp: A08:2021
     languages:
       - json
-    pattern: "['\"]?postinstall['\"]?\\s*:\\s*\"[^\"]{0,600}(?:curl|wget)[^\"]{0,600}\\|\\s*(?:ba|z)?sh"
+    pattern: "['\"]?(?:preinstall|install|postinstall)['\"]?\\s*:\\s*\"[^\"]{0,600}(?:curl|wget)[^\"]{0,600}\\|\\s*(?:sudo\\s+)?(?:ba|z)?sh"
     pathInclude: (?:^|/)package\.json$
-    message: A postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
-    message_zh: postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
-    remediation: Remove the postinstall download or vendor the binary with a pinned checksum.
-    remediation_zh: 移除 postinstall 下载，或将二进制纳入仓库并固定校验和。
+    group: dep-remote-exec
+    message: A preinstall/install/postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
+    message_zh: preinstall/install/postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
+    remediation: Remove the download from the install script or vendor the binary with a pinned checksum.
+    remediation_zh: 移除安装脚本中的下载，或将二进制纳入仓库并固定校验和。
     references:
       - CWE-829
       - OWASP A08:2021
   - id: dep-pip-trusted-host
-    title: pip install uses trusted-host or HTTP index
-    title_zh: pip install 使用 trusted-host 或 HTTP 索引
+    title: pip or uv configured with trusted-host or an insecure host
+    title_zh: pip 或 uv 配置了 trusted-host 或不安全主机
     severity: medium
     confidence: high
     cwe: CWE-494
@@ -50,13 +66,147 @@ rules:
     languages:
       - python
       - dockerfile
-    pattern: pip\s+install\s[^\n]{0,600}(?:--trusted-host|--index-url\s+http://(?:(?<secret>[^\s/@]{1,200})@)?)
+      - markdown
+      - yaml
+      - json
+    pattern: 'pip\s+install\s[^\n]{0,600}(?:--trusted-host|--index-url\s+http://(?:(?<secret>[^\s/@]{1,200})@)?)|--trusted-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bPIP_TRUSTED_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|^\s*trusted-host\s*=\s*(?!{{LOCALHOST}})[\w.-]|--allow-insecure-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bUV_INSECURE_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]'
     redactEvidence: true
-    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt))$
-    message: --trusted-host or an HTTP index disables TLS verification, allowing package substitution.
-    message_zh: --trusted-host 或 HTTP 索引会关闭 TLS 校验，允许替换软件包。
-    remediation: Use the default HTTPS index and remove --trusted-host.
-    remediation_zh: 使用默认 HTTPS 索引并移除 --trusted-host。
+    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt|ya?ml|json))$
+    pathExclude: '{{NOT_IAC}}'
+    group: dep-pip-insecure
+    message: --trusted-host (pip) or --allow-insecure-host (uv) turns off TLS verification for that host, allowing package substitution.
+    message_zh: --trusted-host（pip）或 --allow-insecure-host（uv）会关闭对该主机的 TLS 校验，允许替换软件包。
+    remediation: Use an HTTPS index with a valid certificate (add the corporate CA with --cert if needed) and remove trusted-host.
+    remediation_zh: 使用证书有效的 HTTPS 索引（必要时用 --cert 添加企业 CA），并移除 trusted-host。
     references:
       - CWE-494
       - OWASP A08:2021
+
+  - id: dep-pip-insecure-index
+    title: Python package index over plain HTTP
+    title_zh: Python 包索引使用明文 HTTP
+    severity: medium
+    confidence: high
+    cwe: CWE-319
+    owasp: A08:2021
+    languages: [markdown, yaml, json]
+    pattern: '\bpip\d?(?:\.\d+)?\s+(?:install|download)\b[^\n]{0,300}?\s(?:-i|-f|--index-url|--extra-index-url|--find-links)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\buv\s+(?:pip\s+install|add|sync|lock)\b[^\n]{0,300}?\s(?:--index-url|--extra-index-url|--default-index|--index|-i)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\b(?:PIP_(?:EXTRA_)?INDEX_URL|PIP_FIND_LINKS|UV_(?:EXTRA_)?INDEX_URL|UV_DEFAULT_INDEX|UV_INDEX)\b["\x27]?\s*[=:]\s*["\x27]?http://(?!{{LOCALHOST}})'
+    pathExclude: '{{NOT_IAC}}'
+    group: dep-pip-insecure
+    message: Packages are downloaded from an index over plain HTTP, so anyone on the network path can replace them.
+    message_zh: 软件包通过明文 HTTP 索引下载，网络路径上的任何人都可替换它们。
+    remediation: Use https:// for every package index.
+    remediation_zh: 所有包索引都使用 https://。
+  - id: dep-pip-extra-index-url
+    title: pip extra index URL (dependency confusion)
+    title_zh: pip 额外索引 URL（依赖混淆）
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-427
+    owasp: A08:2021
+    languages: [markdown, yaml, json]
+    pattern: '--extra-index-url[= ]\s*["\x27]?(?:https?://|\$)|\b(?:PIP|UV)_EXTRA_INDEX_URL["\x27]?\s*[=:]\s*["\x27]?(?:https?://|\$)|^\s*extra-index-url\s*=\s*(?:https?://|\$)'
+    pathExclude: '{{NOT_IAC}}'
+    message: pip merges --extra-index-url with PyPI and installs the highest version from either, so a public package with the name of a private one can win (dependency confusion); check which index each package must come from.
+    message_zh: pip 会合并 --extra-index-url 与 PyPI 并安装任一处的最高版本，与私有包同名的公共包可能胜出（依赖混淆）；需确认每个包应来自哪个索引。
+    remediation: Use a single index that proxies PyPI, or uv with an explicit index per package; pin with hashes (--require-hashes).
+    remediation_zh: 使用一个代理 PyPI 的单一索引，或使用 uv 为每个包指定索引；并用哈希固定（--require-hashes）。
+  - id: dep-curl-pipe-shell
+    title: Install instructions pipe a download into a shell
+    title_zh: 安装说明将下载内容直接交给 shell
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-494
+    owasp: A08:2021
+    languages: [markdown, json]
+    pattern: '\b(?:curl|wget)\b[^|\n"]{0,300}?(?:https?://|\$\{?\w)[^|\n"]{0,300}\|\s*(?:sudo\s+)?(?:-E\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n"]{0,300}\|\s*iex\b'
+    notPattern: '{{KNOWN_INSTALLER}}'
+    pathInclude: '{{README}}|(?:^|/)(?:package|composer)\.json$'
+    group: dep-remote-exec
+    message: A script is downloaded and executed without verification; check the host and whether a pinned, checksum-verified download is available.
+    message_zh: 脚本被下载后未经校验直接执行；需检查主机，并确认是否有固定版本且可校验哈希的下载方式。
+    remediation: Download to a file, verify a published checksum or signature, then run it; or use a package manager.
+    remediation_zh: 先下载到文件并校验公开的哈希或签名后再运行；或使用包管理器。
+  - id: dep-install-script-network
+    title: Install script fetches from the network
+    title_zh: 安装脚本从网络获取内容
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [json]
+    pattern: '"(?:preinstall|install|postinstall)"\s*:\s*"[^"]{0,400}(?:\b(?:curl|wget)\b|https?://)'
+    pathInclude: '(?:^|/)package\.json$'
+    group: dep-remote-exec
+    message: An npm lifecycle script that runs on every install downloads something; check what it fetches and whether it is verified.
+    message_zh: 每次安装都会运行的 npm 生命周期脚本会下载内容；需检查其获取的内容以及是否经过校验。
+    remediation: Ship the artifact in the package or verify a pinned checksum before using it.
+    remediation_zh: 将制品随包发布，或在使用前校验固定的哈希。
+  - id: dep-npm-insecure-transport
+    title: npm/yarn dependency or registry over plain HTTP or without TLS verification
+    title_zh: npm/yarn 依赖或注册表使用明文 HTTP 或关闭 TLS 校验
+    severity: medium
+    confidence: high
+    cwe: CWE-319
+    owasp: A08:2021
+    languages: [json, yaml, markdown]
+    pattern: '^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|bin|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+http://(?!{{LOCALHOST}})|http://(?!{{LOCALHOST}})[^"\s]{1,300}\.(?:tgz|tar\.gz|git)(?:#[^"]{0,100})?")|"registry"\s*:\s*"http://(?!{{LOCALHOST}})|^\s*npmRegistryServer\s*:\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*enableStrictSsl\s*:\s*false\b|"strict-ssl"\s*:\s*false|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry\s+["\x27]?http://(?!{{LOCALHOST}})|strict-ssl\s+false\b)|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\b[^\n]{0,200}?\s(?:--registry[= ]\s*)?["\x27]?http://(?!{{LOCALHOST}})'
+    pathInclude: '(?:^|/)package\.json$|(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$'
+    pathExclude: '{{NOT_IAC}}'
+    message: Packages are fetched over plain HTTP or with certificate checks off, so anyone on the network path can replace them.
+    message_zh: 软件包通过明文 HTTP 获取或关闭了证书校验，网络路径上的任何人都可替换它们。
+    remediation: Use https:// registries and dependency URLs and keep strict SSL on (configure the corporate CA instead).
+    remediation_zh: 注册表和依赖 URL 使用 https://，保持 strict SSL 开启（改为配置企业 CA）。
+  - id: dep-npm-git-source
+    title: npm dependency from a git URL or tarball without a commit pin
+    title_zh: npm 依赖来自未固定提交的 git URL 或 tarball
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-494
+    owasp: A08:2021
+    languages: [json]
+    pattern: '^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|typings|bin|name|version|registry|browser|unpkg|jsdelivr|source|style|exports|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+(?:https?|ssh)://|git://|(?:github|gitlab|bitbucket|gist):)'
+    notPattern: '#[0-9a-f]{40}"'
+    pathInclude: '(?:^|/)package\.json$'
+    message: The dependency comes from a git branch, tag or shorthand rather than the registry, so its content can change without a version bump; check that it is intended.
+    message_zh: 该依赖来自 git 分支、标签或简写而非注册表，内容可能在版本号不变的情况下改变；需确认是否有意为之。
+    remediation: Publish and depend on a released version, or pin the git URL to a full commit SHA.
+    remediation_zh: 发布并依赖已发布版本，或将 git URL 固定到完整提交 SHA。
+  - id: dep-registry-token-literal
+    title: Package registry auth token committed in clear text
+    title_zh: 包注册表认证令牌以明文提交
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [yaml, markdown]
+    pattern: '(?:^\s*npmAuth(?:Token|Ident)\s*:\s*["\x27]?|:_(?:authToken|auth|password)\s*=\s*["\x27]?)(?<secret>(?![\w-]*\$)(?=[A-Za-z_\-.=+/]{0,200}\d)[A-Za-z0-9_\-.=+/]{16,})'
+    notPattern: '{{PLACEHOLDER}}'
+    redactEvidence: true
+    pathInclude: '(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$'
+    pathExclude: '{{NOT_IAC}}'
+    message: A registry token in a committed file lets anyone who reads the repository publish or read packages as its owner.
+    message_zh: 提交文件中的注册表令牌使任何能读取仓库的人都能以其所有者身份发布或读取包。
+    remediation: Revoke the token and reference it from an environment variable (npmAuthToken "${NPM_TOKEN}").
+    remediation_zh: 吊销该令牌，并改为从环境变量引用（npmAuthToken "${NPM_TOKEN}"）。
+  - id: dep-go-checksum-off
+    title: Go module checksum verification or TLS turned off
+    title_zh: 关闭了 Go 模块校验和验证或 TLS
+    severity: medium
+    confidence: medium
+    cwe: CWE-494
+    owasp: A08:2021
+    languages: [markdown, yaml, json]
+    # The variable must start the line (a YAML/JSON key, a shell line in a
+    # code block) or follow export / set / env / go env -w, so prose and
+    # lists that name the setting as something to avoid are not matched.
+    pattern: '(?:^\s*["\x27]?|\b(?:export|set|setenv|env|go\s+env\s+-w)\s+)(?:GOSUMDB["\x27]?\s*[=:]\s*["\x27]?off\b|GOINSECURE["\x27]?\s*[=:]\s*["\x27]?[\w*.]|GONOSUMCHECK["\x27]?\s*[=:]\s*["\x27]?1\b|GONOSUMDB["\x27]?\s*[=:]\s*["\x27]?(?:\*|[^"\x27\s]{0,200}\b(?:github\.com|golang\.org|gopkg\.in|gitlab\.com)\b)|GOFLAGS["\x27]?\s*[=:]\s*["\x27]?[^"\x27\n]{0,100}-insecure\b)|\bgo\s+(?:get|install|mod\s+download)\b[^\n]{0,100}\s-insecure\b'
+    pathExclude: '{{NOT_IAC}}'
+    message: Go downloads modules without checking them against the checksum database (or over insecure transport), so a tampered public module is accepted.
+    message_zh: Go 下载模块时不对照校验和数据库检查（或使用不安全传输），被篡改的公共模块会被接受。
+    remediation: Keep GOSUMDB on; list only private module paths in GOPRIVATE/GONOSUMDB and drop GOINSECURE and -insecure.
+    remediation_zh: 保持 GOSUMDB 开启；只在 GOPRIVATE/GONOSUMDB 中列出私有模块路径，并删除 GOINSECURE 和 -insecure。

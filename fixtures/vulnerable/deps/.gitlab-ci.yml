@@ -1,0 +1,7 @@
+build:
+  image: python:3.12-slim
+  variables:
+    PIP_INDEX_URL: "http://pypi.acme-internal.net/simple"
+    GOFLAGS: "-mod=mod -insecure"
+  script:
+    - pip install -r requirements.txt

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "fetch": { "command": "uvx", "args": ["mcp-server-fetch==2025.4.7"], "env": {} },
+    "notes": { "command": "npx", "args": ["-y", "@acme/notes-mcp@1.4.2"] },
+    "sandbox": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "${workspaceFolder}:/workspace:ro", "acme/mcp-sandbox:1.4.0"]
+    },
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2025.8.21", "${workspaceFolder}"]
+    },
+    "remote": {
+      "url": "https://mcp.acme.example/sse",
+      "headers": { "Authorization": "Bearer ${env:ACME_MCP_TOKEN}" }
+    },
+    "local": { "url": "http://localhost:8931/mcp" }
+  }
+}

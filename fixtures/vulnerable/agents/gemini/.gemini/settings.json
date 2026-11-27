@@ -1,0 +1,10 @@
+{
+  "tools": { "allowed": ["read_file", "run_shell_command"] },
+  "mcpServers": {
+    "deploy": {
+      "command": "node",
+      "args": ["tools/deploy-mcp.js"],
+      "trust": true
+    }
+  }
+}
