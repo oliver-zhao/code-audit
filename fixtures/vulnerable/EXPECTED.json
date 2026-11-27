@@ -100,6 +100,706 @@
       "kind": "finding"
     },
     {
+      "file": "java/ApiSecurityConfig.java",
+      "line": 12,
+      "ruleId": "java-spring-csrf-disabled",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/ApiSecurityConfig.java",
+      "line": 16,
+      "ruleId": "java-hostname-verifier-impl",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 25,
+      "ruleId": "java-weak-cipher",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 26,
+      "ruleId": "java-cipher-ecb",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 27,
+      "ruleId": "java-cipher-ecb",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 28,
+      "ruleId": "java-rsa-no-oaep",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 29,
+      "ruleId": "java-weak-hash",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 30,
+      "ruleId": "java-static-iv",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 31,
+      "ruleId": "java-hardcoded-crypto-key",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 33,
+      "ruleId": "java-securerandom-seed",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 34,
+      "ruleId": "java-weak-random-token",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 35,
+      "ruleId": "java-pbkdf-low-iterations",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 39,
+      "ruleId": "java-weak-tls-protocol",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 40,
+      "ruleId": "java-sslcontext-generic-ssl",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 41,
+      "ruleId": "java-hostname-verifier-disabled",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 42,
+      "ruleId": "java-hostname-verifier-disabled",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 43,
+      "ruleId": "java-trust-all-strategy",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 46,
+      "ruleId": "java-trust-all-certificates",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 59,
+      "ruleId": "java-jwt-hardcoded-secret",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 59,
+      "ruleId": "java-jwt-unsigned-parse",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 60,
+      "ruleId": "java-jwt-hardcoded-secret",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 61,
+      "ruleId": "java-jwt-decode-without-verify",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 67,
+      "ruleId": "java-cookie-insecure-flag",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/CryptoUtil.java",
+      "line": 68,
+      "ruleId": "java-cookie-insecure-flag",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 31,
+      "ruleId": "java-command-injection-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 32,
+      "ruleId": "java-command-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 33,
+      "ruleId": "java-command-shell-wrapper",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 34,
+      "ruleId": "java-exec-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 36,
+      "ruleId": "java-expression-injection-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 37,
+      "ruleId": "java-expression-eval-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 39,
+      "ruleId": "java-ssrf-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 40,
+      "ruleId": "java-ssrf-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 42,
+      "ruleId": "java-path-traversal",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 43,
+      "ruleId": "java-path-traversal",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 44,
+      "ruleId": "java-file-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 46,
+      "ruleId": "java-open-redirect-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 47,
+      "ruleId": "java-redirect-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 48,
+      "ruleId": "java-xss-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 49,
+      "ruleId": "java-xss-writer-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 51,
+      "ruleId": "java-ldap-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 52,
+      "ruleId": "java-ldap-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 53,
+      "ruleId": "java-xpath-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 55,
+      "ruleId": "java-jndi-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 56,
+      "ruleId": "java-log4j-request-logging",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 57,
+      "ruleId": "java-class-forname-request",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 58,
+      "ruleId": "java-regex-from-request",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 59,
+      "ruleId": "java-forwarded-for-trusted",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 64,
+      "ruleId": "java-zip-slip",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 32,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 35,
+      "ruleId": "java-exec-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 39,
+      "ruleId": "java-redirect-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 43,
+      "ruleId": "java-sql-string-concat",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 54,
+      "ruleId": "java-sql-string-concat",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 61,
+      "ruleId": "java-expression-eval-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 66,
+      "ruleId": "java-sql-concat-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 73,
+      "ruleId": "java-file-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 19,
+      "ruleId": "java-spring-csrf-disabled-form-login",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 20,
+      "ruleId": "java-spring-permit-all",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 21,
+      "ruleId": "java-spring-frame-options-disabled",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 22,
+      "ruleId": "java-spring-headers-disabled",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 29,
+      "ruleId": "java-spring-cors-credentials",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 36,
+      "ruleId": "java-weak-password-encoder",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 41,
+      "ruleId": "java-bcrypt-low-strength",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SecurityConfig.java",
+      "line": 44,
+      "ruleId": "java-spring-cors-wildcard",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 21,
+      "ruleId": "java-sql-injection-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 26,
+      "ruleId": "java-sql-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 27,
+      "ruleId": "java-sql-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 31,
+      "ruleId": "java-sql-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 35,
+      "ruleId": "java-sql-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 39,
+      "ruleId": "java-sql-injection",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 43,
+      "ruleId": "java-sql-concat-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 47,
+      "ruleId": "java-sql-string-concat",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 52,
+      "ruleId": "java-sql-concat-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 57,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 62,
+      "ruleId": "java-mybatis-dollar-substitution",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 65,
+      "ruleId": "java-mybatis-dollar-substitution",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 18,
+      "ruleId": "java-upload-filename-path",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 19,
+      "ruleId": "java-upload-filename-path",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 25,
+      "ruleId": "java-open-redirect",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 22,
+      "ruleId": "java-deserialization-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 23,
+      "ruleId": "java-deserialization-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 24,
+      "ruleId": "java-xxe-request",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 29,
+      "ruleId": "java-xxe-sax",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 30,
+      "ruleId": "java-xxe-sax",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 31,
+      "ruleId": "java-xxe-stax",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 32,
+      "ruleId": "java-xxe-transformer",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 33,
+      "ruleId": "java-xxe-transformer",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 34,
+      "ruleId": "java-xmldecoder",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 38,
+      "ruleId": "java-xstream-fromxml",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 40,
+      "ruleId": "java-jackson-default-typing",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 41,
+      "ruleId": "java-jackson-default-typing",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 42,
+      "ruleId": "java-fastjson-autotype",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 43,
+      "ruleId": "java-snakeyaml-unsafe-load",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 47,
+      "ruleId": "java-jackson-class-type-info",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 1,
+      "ruleId": "java-spring-debug-enabled",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 4,
+      "ruleId": "java-spring-stacktrace-exposed",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 9,
+      "ruleId": "java-spring-datasource-password",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 11,
+      "ruleId": "java-spring-h2-console",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 16,
+      "ruleId": "java-spring-actuator-exposed",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "java/resources/application.yml",
+      "line": 18,
+      "ruleId": "java-spring-actuator-sensitive",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
       "file": "javascript/app.js",
       "line": 9,
       "ruleId": "js-sql-injection",
@@ -1385,6 +2085,156 @@
     {
       "file": "java/App.java",
       "line": 14,
+      "ruleId": "java-opengrep-object-input-stream",
+      "confidence": "medium"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 31,
+      "ruleId": "java-opengrep-request-command",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 31,
+      "ruleId": "java-opengrep-runtime-exec",
+      "confidence": "medium"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 32,
+      "ruleId": "java-opengrep-request-command",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 33,
+      "ruleId": "java-opengrep-request-command",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 34,
+      "ruleId": "java-opengrep-request-command",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 34,
+      "ruleId": "java-opengrep-runtime-exec",
+      "confidence": "medium"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 36,
+      "ruleId": "java-opengrep-request-spel",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 42,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 43,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 44,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 46,
+      "ruleId": "java-opengrep-request-redirect",
+      "confidence": "high"
+    },
+    {
+      "file": "java/InjectionServlet.java",
+      "line": 47,
+      "ruleId": "java-opengrep-request-redirect",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 32,
+      "ruleId": "java-opengrep-request-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 35,
+      "ruleId": "java-opengrep-request-command",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 39,
+      "ruleId": "java-opengrep-request-redirect",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 49,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 55,
+      "ruleId": "java-opengrep-request-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 61,
+      "ruleId": "java-opengrep-request-spel",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 67,
+      "ruleId": "java-opengrep-request-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 73,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 21,
+      "ruleId": "java-opengrep-request-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 18,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 19,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/UploadController.java",
+      "line": 25,
+      "ruleId": "java-opengrep-request-redirect",
+      "confidence": "high"
+    },
+    {
+      "file": "java/XmlImport.java",
+      "line": 22,
       "ruleId": "java-opengrep-object-input-stream",
       "confidence": "medium"
     },

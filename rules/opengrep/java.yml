@@ -1,5 +1,22 @@
-# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# Not copied from the Semgrep registry; validated as YAML only.
+# Opengrep/Semgrep-syntax rules for Java, written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry or any other project.
+#
+# Verified with Opengrep 1.33.1 against fixtures/vulnerable/java and
+# fixtures/clean/java (see EXPECTED.json, "opengrep").
+#
+# The java-opengrep-request-* rules are taint rules (mode: taint). Their ids
+# deliberately do not contain "taint": realtools.test.ts treats every rule id
+# containing "taint" as one of the Python taint rules.
+#
+# Sources shared by the request rules (YAML anchors):
+# - HttpServletRequest getters (parameter, header, cookie, query string,
+#   body stream / reader, path info);
+# - parameters of Spring handler methods annotated @RequestParam,
+#   @PathVariable, @RequestBody, @RequestHeader or @CookieValue.
+# Values looked up in a map (ALLOWED.get(value); not Paths.get), numbers parsed from the
+# value and FilenameUtils.getName(value) are treated as safe.
+# `taint_intrafile: true` follows values through helper methods of the same
+# file.
 rules:
   - id: java-opengrep-runtime-exec
     languages: [java]
@@ -18,3 +35,168 @@ rules:
       cwe: "CWE-502"
       confidence: MEDIUM
     pattern: new ObjectInputStream($INPUT)
+
+  - id: java-opengrep-request-sql
+    mode: taint
+    languages: [java]
+    severity: ERROR
+    message: >-
+      HTTP request data reaches the SQL text of a JDBC, JdbcTemplate or JPA
+      query (SQL injection). Keep the SQL constant and bind the value with
+      PreparedStatement placeholders, named parameters or setParameter.
+    metadata:
+      cwe: "CWE-89"
+      confidence: HIGH
+      category: security
+    options: &java-options
+      taint_intrafile: true
+      taint_assume_safe_numbers: true
+      taint_assume_safe_booleans: true
+    pattern-sources: &java-sources
+      - pattern-either:
+          - pattern: (HttpServletRequest $REQ).getParameter(...)
+          - pattern: (HttpServletRequest $REQ).getParameterValues(...)
+          - pattern: (HttpServletRequest $REQ).getParameterMap()
+          - pattern: (HttpServletRequest $REQ).getHeader(...)
+          - pattern: (HttpServletRequest $REQ).getHeaders(...)
+          - pattern: (HttpServletRequest $REQ).getCookies()
+          - pattern: (HttpServletRequest $REQ).getQueryString()
+          - pattern: (HttpServletRequest $REQ).getInputStream()
+          - pattern: (HttpServletRequest $REQ).getReader()
+          - pattern: (HttpServletRequest $REQ).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN $TYPE $PARAM, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN(...) $TYPE $PARAM, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue)$
+          - pattern: $PARAM
+    pattern-sanitizers: &java-sanitizers
+      - patterns:
+          - pattern-either:
+              - pattern: $MAP.get($KEY)
+              - pattern: $MAP.getOrDefault($KEY, $DEFAULT)
+          - pattern-not: Paths.get(...)
+          - pattern-not: java.nio.file.Paths.get(...)
+      - pattern-either:
+          - pattern: Integer.parseInt(...)
+          - pattern: Long.parseLong(...)
+          - pattern: UUID.fromString(...)
+          - pattern: FilenameUtils.getName(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $X.executeQuery($SQL, ...)
+              - pattern: $X.executeUpdate($SQL, ...)
+              - pattern: $X.executeLargeUpdate($SQL, ...)
+              - pattern: $X.addBatch($SQL)
+              - pattern: $X.prepareStatement($SQL, ...)
+              - pattern: $X.prepareCall($SQL, ...)
+              - pattern: $X.createQuery($SQL, ...)
+              - pattern: $X.createNativeQuery($SQL, ...)
+              - pattern: $X.createSQLQuery($SQL)
+              - pattern: (java.sql.Statement $X).execute($SQL, ...)
+              - pattern: (Statement $X).execute($SQL, ...)
+          - focus-metavariable: $SQL
+      - patterns:
+          - pattern: (JdbcTemplate $X).$METHOD($SQL, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(query|queryForObject|queryForList|queryForMap|queryForRowSet|queryForStream|update|batchUpdate|execute)$
+          - focus-metavariable: $SQL
+
+  - id: java-opengrep-request-command
+    mode: taint
+    languages: [java]
+    severity: ERROR
+    message: >-
+      HTTP request data reaches Runtime.exec or ProcessBuilder (OS command
+      injection). Map the input to a fixed command, pass arguments as a list
+      without a shell, and allowlist the values.
+    metadata:
+      cwe: "CWE-78"
+      confidence: HIGH
+      category: security
+    options: *java-options
+    pattern-sources: *java-sources
+    pattern-sanitizers: *java-sanitizers
+    pattern-sinks:
+      - pattern-either:
+          - pattern: Runtime.getRuntime().exec(...)
+          - pattern: (Runtime $R).exec(...)
+          - pattern: new ProcessBuilder(...)
+          - pattern: (ProcessBuilder $PB).command(...)
+
+  - id: java-opengrep-request-path
+    mode: taint
+    languages: [java]
+    severity: ERROR
+    message: >-
+      HTTP request data is used as a file system path (path traversal). Keep
+      only the file name (FilenameUtils.getName), resolve it against the base
+      directory and check that the normalized result stays inside it.
+    metadata:
+      cwe: "CWE-22"
+      confidence: HIGH
+      category: security
+    options: *java-options
+    pattern-sources: *java-sources
+    pattern-sanitizers: *java-sanitizers
+    pattern-sinks:
+      - pattern-either:
+          - pattern: new File(...)
+          - pattern: new java.io.File(...)
+          - pattern: new FileInputStream(...)
+          - pattern: new FileOutputStream(...)
+          - pattern: new FileReader(...)
+          - pattern: new FileWriter(...)
+          - pattern: new RandomAccessFile(...)
+          - pattern: Paths.get(...)
+          - pattern: Path.of(...)
+          - pattern: (Path $P).resolve(...)
+
+  - id: java-opengrep-request-redirect
+    mode: taint
+    languages: [java]
+    severity: WARNING
+    message: >-
+      HTTP request data decides the target of a redirect (open redirect).
+      Redirect only to relative paths you build yourself or to allowlisted
+      URLs.
+    metadata:
+      cwe: "CWE-601"
+      confidence: HIGH
+      category: security
+    options: *java-options
+    pattern-sources: *java-sources
+    pattern-sanitizers: *java-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletResponse $RESP).sendRedirect($URL)
+              - pattern: '"redirect:" + $URL'
+          - focus-metavariable: $URL
+
+  - id: java-opengrep-request-spel
+    mode: taint
+    languages: [java]
+    severity: ERROR
+    message: >-
+      HTTP request data is parsed as a Spring Expression Language expression
+      (expression injection, remote code execution). Evaluate only constant
+      expressions and pass user values as variables.
+    metadata:
+      cwe: "CWE-917"
+      confidence: HIGH
+      category: security
+    options: *java-options
+    pattern-sources: *java-sources
+    pattern-sanitizers: *java-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $PARSER.parseExpression($EXPR, ...)
+          - focus-metavariable: $EXPR

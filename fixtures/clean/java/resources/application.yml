@@ -1,0 +1,16 @@
+debug: false
+server:
+  error:
+    include-stacktrace: never
+spring:
+  datasource:
+    url: jdbc:postgresql://db.internal:5432/shop
+    username: shop
+    password: ${DB_PASSWORD}
+  h2:
+    console.enabled: false
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
