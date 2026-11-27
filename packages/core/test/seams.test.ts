@@ -44,6 +44,8 @@ function cli(args: string[], env: Record<string, string> = {}) {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: 60_000,
+    // Reports of the full vulnerable fixture tree exceed spawnSync's 1 MB default.
+    maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, GITHUB_ACTIONS: "", GITHUB_STEP_SUMMARY: "", ...env },
   });
 }

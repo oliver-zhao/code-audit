@@ -140,7 +140,9 @@ describe("dismissed findings stay visible", () => {
   beforeAll(async () => {
     ctx = await freshRun("visible");
     // A prompt-injected agent dismisses every critical and high finding.
-    dismissed = [...ctx.pick("critical"), ...ctx.pick("high")];
+    // Capped: each verdict re-renders every report file, and the fixture
+    // tree has hundreds of critical/high findings.
+    dismissed = [...ctx.pick("critical"), ...ctx.pick("high")].slice(0, 40);
     expect(dismissed.length).toBeGreaterThan(20);
     dismissed.forEach((finding, index) => {
       recordVerdict(
