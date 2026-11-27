@@ -55,3 +55,21 @@ describe("Cargo src/bin", () => {
     expect(rels).not.toContain("bin/tool.sh");
   });
 });
+
+describe("redaction gaps from the final engine re-check", () => {
+  it("masks a pw: value and a PEM body line with a blank inside", async () => {
+    const { redactText } = await import("../src/redact.js");
+    const yaml = "auth:\n  user: admin\n  pw: Zq8xLm2Vt9Rk4Wp7\n";
+    expect(redactText(yaml)).not.toContain("Zq8xLm2Vt9Rk4Wp7");
+    const half = "MIIEvQIBADANBgkqhkiG9w0BAQEFAAS";
+    const pem = [
+      "-----BEGIN PRIVATE KEY-----",
+      `${half}CBKcwggSjAgEAAoI ${half}BAQC7VJTUt9Us8cKj`,
+      `${half}MjdKDQEbo0pPq5Ty ${half}xjPqkY3Jk1d0wR8Zp`,
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    const out = redactText(pem);
+    expect(out).not.toContain("CBKcwggSjAgEAAoI");
+    expect(out).not.toContain("xjPqkY3Jk1d0wR8Zp");
+  });
+});

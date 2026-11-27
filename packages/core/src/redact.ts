@@ -118,7 +118,7 @@ export function isUrlPasswordReference(value: string): boolean {
  * masked, not what is reported.
  */
 const SECRET_WORD_SOURCE =
-  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z])|orit(?:y|ies)(?![A-Za-z])|oriz(?:e|ed|er)(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp)(?![A-Za-z])|[_-]key(?![A-Za-z])";
+  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z])|orit(?:y|ies)(?![A-Za-z])|oriz(?:e|ed|er)(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp|pw)(?![A-Za-z])|[_-]key(?![A-Za-z])";
 const SECRET_WORD = new RegExp(SECRET_WORD_SOURCE, "gi");
 const SECRET_WORD_TEST = new RegExp(SECRET_WORD_SOURCE, "i");
 
@@ -871,6 +871,8 @@ function isPemBodyLine(line: string): boolean {
     // A string prefix (b"...", r"...", L"...").
     .replace(/^[bBrRuUL]{1,2}(?=["'])["']/, "");
   if (/^[A-Za-z0-9+/]{1,}={0,2}$/.test(text)) return true;
+  // A hand-wrapped body with blanks inside (`MIIE... MIIB...`).
+  if (/^[A-Za-z0-9+/]{16,}(?: [A-Za-z0-9+/]{16,})+={0,2}$/.test(text)) return true;
   // Key material wrapped in something else: a trailing comment, a Markdown
   // quote (`> MII...`), a diff (`-MII...`), a margin (`|MII...`), a table
   // cell, a tag, `echo "MII..." >> key`. A run of 40 base64 characters is
