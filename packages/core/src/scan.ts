@@ -316,6 +316,7 @@ function emptySca(): ScaResult {
 
 function resolveEngines(options: ScanOptions): Set<EngineName> {
   if (options.engines) return new Set(options.engines);
+  if (options.profile === "quick") return new Set<EngineName>(["builtin"]);
   return new Set(ALL_ENGINES);
 }
 
@@ -355,7 +356,10 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const formats = options.formats ?? ALL_FORMATS;
   const profile = options.profile ?? "standard";
   const lang = options.lang ?? "en";
-  const offline = options.offline ?? false;
+  // `quick`: built-in engines only and no network, so a scan finishes in
+  // seconds (pre-commit hooks, editor saves). An explicit engine list still
+  // wins; `standard` runs every installed engine and queries OSV.dev.
+  const offline = options.offline === true || profile === "quick";
   const failOn = options.failOn ?? "high";
   const minConfidence = options.minConfidence ?? "medium";
   const ruleSet = loadRules(options.rulesDir ?? defaultRulesDir());

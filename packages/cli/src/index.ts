@@ -130,7 +130,9 @@ Scan options:
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
                          ~/.aws, ~/.config, /etc, ...) or one below it; refused
                          without this flag
-  --profile <name>       recorded in the run; quick and standard run the same engines
+  --profile <name>       standard (default): every installed engine, OSV.dev lookups;
+                         quick: built-in engines only, no network (same as
+                         --no-external --offline; --engines still applies)
 
 Auditing a repository you do not trust:
   --untrusted  ignore everything the audited repository could use to lower the

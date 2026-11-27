@@ -24,7 +24,7 @@ echo "code-audit: scanning changes since HEAD..." >&2
 # `|| status=$?`: with `set -e` a plain failing command would end the script
 # before the status could be examined.
 status=0
-code-audit scan . --since HEAD --ci || status=$?
+code-audit scan . --since HEAD --profile quick --ci || status=$?
 
 if [ "$status" -eq 1 ]; then
   echo "code-audit: new findings detected; commit blocked." >&2

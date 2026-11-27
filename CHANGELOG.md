@@ -48,7 +48,8 @@ so those findings would be reported as new.
   (`code-audit baseline`, `--baseline`, `--no-baseline`,
   `--fail-on-existing`), `.code-audit-ignore` with reasons and expiry dates,
   inline `code-audit:ignore` comments, incremental scans (`--since`),
-  `--latest-link`, exit codes 0 / 1 / 2.
+  `--latest-link`, `--profile quick` (built-in engines only, no network, for
+  pre-commit hooks), exit codes 0 / 1 / 2.
 - **Untrusted repositories:** `--untrusted`; a `WARNING` with counts for
   everything in the audited repository that takes findings out of the exit
   code (path context, dependency scope, placeholder secrets, baseline, ignore

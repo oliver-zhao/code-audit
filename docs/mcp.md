@@ -130,7 +130,7 @@ Starts a scan in the background and returns immediately.
 | `includePlaceholders` | boolean | false | Placeholder-looking secrets at normal confidence (`--include-placeholders`). |
 | `noIgnoreFile` | boolean | false | Do not apply `.code-audit-ignore` (`--no-ignore-file`). |
 | `untrusted` | boolean | false | The repository cannot lower its own result; implies the six switches above and scans default-excluded directories (`--untrusted`). |
-| `profile` | `quick` \| `standard` | `standard` | Recorded in the run; both run the same engines (`--profile`). |
+| `profile` | `quick` \| `standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups; `standard`: every installed engine (`--profile`). |
 | `since` | string | none | Only findings in files changed since this git ref (`--since`). |
 | `latestLink` | boolean | false | Also copy the reports to `<root>/.audit/latest/` (`--latest-link`). |
 

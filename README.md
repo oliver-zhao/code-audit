@@ -571,7 +571,7 @@ guarantees are in [docs/security-model.md](docs/security-model.md).
 | `--ci` | off | CI output (annotations, Markdown summary). |
 | `--latest-link` | off | Also copy the reports to `<out>/latest/`. |
 | `--allow-sensitive-root` | off | Audit a credential or configuration directory (`~/.ssh`, `~/.aws`, `~/.config`, `/etc`, ...) or one below it; refused without the flag. Not available over MCP. |
-| `--profile quick\|standard` | `standard` | Recorded in the run. Both profiles currently run the same engines. |
+| `--profile quick\|standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups (like `--no-external --offline`), for pre-commit hooks; an explicit `--engines` still applies. `standard`: every installed engine and OSV.dev lookups. |
 
 Other commands (`code-audit --help` prints the full synopsis):
 
@@ -667,7 +667,7 @@ Results on public repositories and the complete list of known limits:
 - [docs/rules.md](docs/rules.md): built-in rules, rule file schema, adding a rule
 - [docs/mcp.md](docs/mcp.md): MCP tools, arguments and results
 - [docs/security-model.md](docs/security-model.md): threat model and guarantees
-- [docs/README.md](docs/README.md): index, including historical development records
+- [docs/README.md](docs/README.md): index of the documentation
 - [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
 
 ## Testing

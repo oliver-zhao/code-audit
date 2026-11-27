@@ -225,4 +225,48 @@ describe("external engine wiring", () => {
     expect(statuses.get("gitleaks")).toBe("disabled");
     expect(statuses.get("builtin-rules")).toBe("ok");
   });
+  it("runs built-in engines only and makes no network request with --profile quick", async () => {
+    const calls: string[] = [];
+    const http = {
+      async postJson(url: string) {
+        calls.push(url);
+        return { results: [] };
+      },
+      async getJson(url: string) {
+        calls.push(url);
+        return {};
+      },
+    };
+    const quick = await scanProject({
+      root: VULNERABLE,
+      out: path.join(temp, "quick-out"),
+      formats: ["json"],
+      profile: "quick",
+      http,
+    });
+    const statuses = new Map(
+      quick.coverage.engines.map((engine) => [engine.name, engine.status]),
+    );
+    expect(statuses.get("opengrep")).toBe("disabled");
+    expect(statuses.get("osv-scanner")).toBe("disabled");
+    expect(statuses.get("gitleaks")).toBe("disabled");
+    expect(statuses.get("builtin-rules")).toBe("ok");
+    expect(calls).toEqual([]);
+    expect(quick.findings.length).toBeGreaterThan(0);
+
+    // An explicit engine list still wins over the profile.
+    const explicit = await scanProject({
+      root: VULNERABLE,
+      out: path.join(temp, "quick-explicit-out"),
+      formats: ["json"],
+      profile: "quick",
+      engines: ["builtin", "gitleaks"],
+      http,
+    });
+    const explicitStatuses = new Map(
+      explicit.coverage.engines.map((engine) => [engine.name, engine.status]),
+    );
+    expect(explicitStatuses.get("gitleaks")).not.toBe("disabled");
+    expect(calls).toEqual([]);
+  });
 });
