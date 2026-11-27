@@ -81,3 +81,11 @@ def run_answer(client, prompt):
 
 def share(path):
     os.chmod(path, stat.S_IRWXU | stat.S_IRWXO)  # seed: py-chmod-777
+
+
+def run_suggestion(llm_output):
+    os.system(llm_output)  # seed: py-llm-output-shell
+
+
+def load_any(name, trust_remote_code: bool = True):  # seed: py-hf-trust-remote-code-default
+    return AutoModel.from_pretrained(name, trust_remote_code=trust_remote_code)

@@ -8,6 +8,7 @@ Every sink line ends with a comment naming the rule expected to report it.
 import os
 import pickle
 import subprocess
+import ldap3
 
 import requests
 from django.db import connection
@@ -117,3 +118,12 @@ def staff_lookup(request, username):
     search_filter = f"(uid={username})"
     conn.search("ou=staff,dc=example,dc=com", search_filter)  # expect: py-taint-ldap
     return HttpResponse(str(len(conn.entries)))
+
+
+def quote_view(request):
+    return HttpResponse("<b>{}</b>".format(request.GET["q"]), "text/html")  # expect: py-taint-xss
+
+
+def order_query(request):
+    rows = db.orders.find(request.GET.dict())  # expect: py-taint-nosql
+    return HttpResponse(str(len(list(rows))))

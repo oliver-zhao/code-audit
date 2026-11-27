@@ -9,6 +9,7 @@ import os
 import subprocess
 
 import requests
+from django.contrib.staticfiles import finders
 from django.db import connection
 from django.db.models.expressions import RawSQL
 from django.http import FileResponse, HttpResponse, HttpResponseRedirect
@@ -130,3 +131,17 @@ def word_search(request):
     import re
 
     return HttpResponse(str(bool(re.search("^[a-z]+$", request.GET.get("q", "")))))
+
+
+def plain_positional(request):
+    return HttpResponse("Hello " + request.GET["name"], "text/plain")
+
+
+def cache_and_totals(request):
+    cache.delete_many(request.GET.getlist("keys"))
+    totals = Invoice.objects.aggregate(Sum(request.GET["field"]))
+    return HttpResponse(str(totals))
+
+
+def static_lookup(request, path):
+    return HttpResponse(str(bool(finders.find(path))))

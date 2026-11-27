@@ -267,3 +267,8 @@ def ldap_filter_chain():
     query = "(&(uid=%s)(objectClass=person))" % uid
     entries = directory.search_s("dc=example,dc=com", 2, query)
     return {"count": len(entries)}
+
+
+@app.route("/back")
+def go_back():
+    return make_response(redirect("/items/" + request.args["id"]))
