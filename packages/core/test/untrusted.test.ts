@@ -271,7 +271,9 @@ describe("D3 workflow script injection is decided on the parsed YAML", () => {
     const result = scanRules(inventory(root).files, ruleSet, { inlineIgnore: false });
     return {
       hits: result.hits
-        .filter((hit) => hit.rule.id.startsWith("gha-") && hit.rule.id !== "gha-pull-request-target")
+        // The expression-injection rules only; the other gha-* rules (permissions,
+        // pinning, ...) have their own tests in rules-iac.test.ts.
+        .filter((hit) => hit.rule.group === "gha-expression-injection")
         .map((hit) => `${hit.line} ${hit.rule.id}`)
         .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)),
       warnings: result.warnings,

@@ -1,4 +1,22 @@
 version: 1
+# Built-in Kubernetes rules. Written for code-audit (Apache-2.0); topics from
+# the CIS Kubernetes Benchmark (section 5, policies) and the Pod Security
+# Standards, patterns are original.
+#
+# Which files: any YAML file that declares an apiVersion (manifests, Helm
+# templates, Kustomize) or a securityContext (Helm values), outside workflow
+# and Compose files. Line rules start at the key, so a commented-out line
+# never matches. Rules about a value that only means something under one key
+# (hostPath, capabilities.add, RBAC verbs) use withinKeys: the file is parsed
+# and only values below that key are matched. A Helm template is usually not
+# valid YAML; withinKeys rules then fall back to line matching, where their
+# anchored patterns are deliberately strict.
+definitions:
+  K8S_PATH: '\.ya?ml$'
+  K8S_EXCLUDE: '(?:^|/)(?:\.github/|\.gitlab-ci[^/]*$|(?:docker-)?compose(?:[.-][\w.-]*)?\.ya?ml$)'
+  K8S_FILE: '^\s*(?:apiVersion|securityContext|podSecurityContext)\s*:'
+  WORKLOAD: '^\s*kind\s*:\s*["\x27]?(?:Pod|Deployment|StatefulSet|DaemonSet|Job|CronJob|ReplicaSet|ReplicationController|PodTemplate)["\x27]?\s*$'
+  RBAC_ROLE: '^\s*kind\s*:\s*["\x27]?(?:Cluster)?Role["\x27]?\s*$'
 rules:
   - id: k8s-privileged-container
     title: Kubernetes container runs privileged
@@ -7,30 +25,32 @@ rules:
     confidence: high
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: privileged\s*:\s*true
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    languages: [yaml]
+    pattern: '^\s*privileged\s*:\s*["\x27]?true\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
     message: A privileged container has almost all host capabilities, so a container escape has severe impact.
-    message_zh: 特权容器几乎拥有宿主机全部能力，容器逃逸影响极大。
+    message_zh: 特权容器几乎拥有宿主机全部能力，容器逃逸后影响极大。
     remediation: Remove privileged and grant only the specific capabilities the workload needs.
-    remediation_zh: 移除 privileged，仅按需授予容器所需的具体 capability。
+    remediation_zh: 移除 privileged，仅授予工作负载所需的具体 capabilities。
     references:
       - CWE-250
       - OWASP A05:2021
   - id: k8s-host-network
-    title: Kubernetes pod uses hostNetwork or hostPID
-    title_zh: Kubernetes Pod 使用 hostNetwork 或 hostPID
+    title: Kubernetes pod uses hostNetwork, hostPID or hostIPC
+    title_zh: Kubernetes Pod 使用 hostNetwork、hostPID 或 hostIPC
     severity: high
     confidence: high
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: host(?:Network|PID|IPC)\s*:\s*true
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    languages: [yaml]
+    pattern: '^\s*host(?:Network|PID|IPC)\s*:\s*["\x27]?true\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
     message: Sharing the host network, PID or IPC namespace weakens isolation and exposes host processes and ports.
-    message_zh: 共享宿主机网络、PID 或 IPC 命名空间会削弱隔离并暴露宿主机进程与端口。
+    message_zh: 共享宿主机网络、PID 或 IPC 命名空间会削弱隔离，暴露宿主机进程与端口。
     remediation: Remove hostNetwork/hostPID/hostIPC and use the pod own namespaces.
     remediation_zh: 移除 hostNetwork/hostPID/hostIPC，使用 Pod 自身的命名空间。
     references:
@@ -43,14 +63,15 @@ rules:
     confidence: high
     cwe: CWE-269
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: allowPrivilegeEscalation\s*:\s*true
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    languages: [yaml]
+    pattern: '^\s*allowPrivilegeEscalation\s*:\s*["\x27]?true\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
     message: allowPrivilegeEscalation lets a process gain more privileges than its parent, enabling setuid-style escalation.
-    message_zh: allowPrivilegeEscalation 允许进程获得比父进程更高的权限，可能实现 setuid 式提权。
+    message_zh: allowPrivilegeEscalation 允许进程获得比父进程更多的权限，可被 setuid 类手段利用提权。
     remediation: Set allowPrivilegeEscalation to false and drop all capabilities.
-    remediation_zh: 将 allowPrivilegeEscalation 设为 false 并丢弃所有 capability。
+    remediation_zh: 将 allowPrivilegeEscalation 设为 false，并 drop 全部 capabilities。
     references:
       - CWE-269
       - OWASP A05:2021
@@ -61,51 +82,225 @@ rules:
     confidence: medium
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: runAsNonRoot\s*:\s*false|runAsUser\s*:\s*0\b
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    languages: [yaml]
+    pattern: '^\s*(?:runAsNonRoot\s*:\s*["\x27]?false\b|runAsUser\s*:\s*["\x27]?0["\x27]?\s*(?:#.*)?$)'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
     message: Running as root (or explicitly non-root=false) amplifies the impact of a container compromise.
-    message_zh: 以 root 运行（或显式 runAsNonRoot=false）会放大容器被攻破后的影响。
+    message_zh: 以 root 运行（或显式设置 runAsNonRoot=false）会放大容器被攻破后的影响。
     remediation: Set runAsNonRoot to true and a non-zero runAsUser.
-    remediation_zh: 设置 runAsNonRoot 为 true 并使用非零的 runAsUser。
+    remediation_zh: 将 runAsNonRoot 设为 true，并设置非 0 的 runAsUser。
     references:
       - CWE-250
       - OWASP A05:2021
   - id: k8s-hostpath-mount
-    title: Kubernetes mounts a sensitive hostPath
-    title_zh: Kubernetes 挂载敏感 hostPath
+    title: Kubernetes mounts the host root or the container runtime socket
+    title_zh: Kubernetes 挂载宿主机根目录或容器运行时套接字
     severity: critical
     confidence: high
     cwe: CWE-552
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: path\s*:\s*"?/(?:var/run/docker\.sock|run/containerd|containerd)\b|path\s*:\s*"?/\s*$
+    languages: [yaml]
+    # Only values below a hostPath key, so an httpGet probe `path: /` is not
+    # taken for a mount. The second form serves the line fallback.
+    withinKeys: [hostPath]
+    pattern: '(?:^|^\s*path\s*:\s*["\x27]?)/(?:(?:var/)?run/(?:docker\.sock|containerd(?:/containerd\.sock)?|crio(?:/crio\.sock)?|cri-dockerd\.sock)|var/lib/docker)?/?["\x27]?\s*$'
     notPattern: mountPath
     filePattern: hostPath
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
-    message: Mounting the container runtime socket gives the pod control equivalent to host root.
-    message_zh: 挂载容器运行时套接字会让 Pod 获得等同宿主机 root 的控制权。
-    remediation: Avoid hostPath mounts of the runtime socket; use a restricted CSI driver or a dedicated volume.
-    remediation_zh: 避免挂载运行时套接字的 hostPath；改用受限的 CSI 驱动或专用卷。
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: Mounting the host root file system or the container runtime socket gives the pod control equivalent to host root.
+    message_zh: 挂载宿主机根文件系统或容器运行时套接字，等同于让 Pod 获得宿主机 root 控制权。
+    remediation: Avoid hostPath mounts of / and of the runtime socket; use a restricted CSI driver or a dedicated volume.
+    remediation_zh: 避免以 hostPath 挂载 / 和运行时套接字；使用受限的 CSI 驱动或专用卷。
     references:
       - CWE-552
       - OWASP A05:2021
+  - id: k8s-hostpath-sensitive-dir
+    title: Kubernetes mounts a sensitive host directory
+    title_zh: Kubernetes 挂载宿主机敏感目录
+    severity: high
+    confidence: medium
+    cwe: CWE-552
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [hostPath]
+    pattern: '(?:^|^\s*path\s*:\s*["\x27]?)/(?:etc(?:/kubernetes(?:/pki)?)?|proc|root|boot|sys|home|var/lib/kubelet|var/lib/etcd)/?["\x27]?\s*$'
+    notPattern: mountPath
+    filePattern: hostPath
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: A hostPath volume exposes host configuration, credentials or kernel interfaces (/etc, /proc, /sys, kubelet or etcd data) to the pod.
+    message_zh: hostPath 卷把宿主机配置、凭据或内核接口（/etc、/proc、/sys、kubelet 或 etcd 数据）暴露给 Pod。
+    remediation: Mount only the specific file needed, read-only, or use a ConfigMap, Secret or CSI volume instead.
+    remediation_zh: 仅以只读方式挂载所需的具体文件，或改用 ConfigMap、Secret 或 CSI 卷。
+  - id: k8s-cap-add-critical
+    title: Kubernetes container adds a root-equivalent capability
+    title_zh: Kubernetes 容器添加了等同 root 的 capability
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [add]
+    pattern: '^\s*(?:CAP_)?(?:ALL|SYS_ADMIN|SYS_MODULE|SYS_RAWIO|DAC_READ_SEARCH|BPF)\s*$'
+    filePattern: capabilities
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: ALL, SYS_ADMIN, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH and BPF each allow a container to escape to the node or read node files.
+    message_zh: ALL、SYS_ADMIN、SYS_MODULE、SYS_RAWIO、DAC_READ_SEARCH 和 BPF 中任意一个都能让容器逃逸到节点或读取节点文件。
+    remediation: Remove the capability; move the privileged task to a dedicated, isolated workload.
+    remediation_zh: 删除该 capability；把需要特权的任务移到专用的隔离工作负载。
+  - id: k8s-cap-add-elevated
+    title: Kubernetes container adds a sensitive capability
+    title_zh: Kubernetes 容器添加了敏感 capability
+    severity: medium
+    confidence: medium
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [add]
+    pattern: '^\s*(?:CAP_)?(?:NET_ADMIN|SYS_PTRACE|SYS_BOOT|SYS_TIME|PERFMON|MAC_ADMIN|MAC_OVERRIDE|SYSLOG)\s*$'
+    filePattern: capabilities
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The capability lets the container reconfigure node networking, trace other processes, or change kernel-wide state.
+    message_zh: 该 capability 允许容器重新配置节点网络、跟踪其他进程或修改内核全局状态。
+    remediation: Remove the capability unless the workload needs it, and document why when it does.
+    remediation_zh: 除非工作负载确实需要，否则删除该 capability；如需保留请记录原因。
+  - id: k8s-capabilities-not-dropped
+    title: Kubernetes workload does not drop all capabilities
+    title_zh: Kubernetes 工作负载未 drop 全部 capabilities
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*(?:init|ephemeral)?[cC]ontainers\s*:'
+    filePattern: '{{WORKLOAD}}'
+    fileAbsentPattern: '^\s*-\s*["\x27]?ALL["\x27]?\s*$|\bdrop\s*:\s*\[\s*["\x27]?ALL\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: No container in this file drops all Linux capabilities, so the runtime default set (including NET_RAW) stays available.
+    message_zh: 文件中没有容器 drop 全部 Linux capabilities，运行时默认集合（包括 NET_RAW）仍然可用。
+    remediation: Add securityContext.capabilities.drop [ALL] and add back only what is needed.
+    remediation_zh: 添加 securityContext.capabilities.drop [ALL]，仅加回确实需要的 capability。
+  - id: k8s-missing-resource-limits
+    title: Kubernetes workload sets no resource limits
+    title_zh: Kubernetes 工作负载未设置资源限制
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-770
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*(?:init|ephemeral)?[cC]ontainers\s*:'
+    filePattern: '{{WORKLOAD}}'
+    fileAbsentPattern: '^\s*limits\s*:'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: No container in this file has resource limits, so one compromised or faulty pod can exhaust the node.
+    message_zh: 文件中没有容器设置资源限制，一个被攻破或故障的 Pod 就可能耗尽节点资源。
+    remediation: Set resources.limits for memory (and CPU where appropriate), or enforce a LimitRange in the namespace.
+    remediation_zh: 设置内存（必要时还有 CPU）的 resources.limits，或在命名空间中配置 LimitRange。
+  - id: k8s-readonly-rootfs-disabled
+    title: Kubernetes container root file system is explicitly writable
+    title_zh: Kubernetes 容器根文件系统被显式设为可写
+    severity: low
+    confidence: medium
+    cwe: CWE-732
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*readOnlyRootFilesystem\s*:\s*["\x27]?false\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
+    message: A writable root file system lets an attacker who gets code execution modify binaries and persist in the container.
+    message_zh: 可写的根文件系统允许获得代码执行能力的攻击者修改程序并在容器内持久化。
+    remediation: Set readOnlyRootFilesystem to true and mount emptyDir volumes for the paths that must be writable.
+    remediation_zh: 将 readOnlyRootFilesystem 设为 true，为必须可写的路径挂载 emptyDir 卷。
+  - id: k8s-seccomp-unconfined
+    title: Kubernetes disables seccomp or AppArmor
+    title_zh: Kubernetes 关闭了 seccomp 或 AppArmor
+    severity: high
+    confidence: high
+    cwe: CWE-693
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*type\s*:\s*["\x27]?Unconfined\b|(?:seccomp|apparmor)\.security\.(?:alpha|beta)\.kubernetes\.io/[\w./-]{0,100}["\x27]?\s*:\s*["\x27]?unconfined\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
+    message: The seccomp or AppArmor profile is Unconfined, removing kernel syscall filtering that blocks many container escapes.
+    message_zh: seccomp 或 AppArmor 配置为 Unconfined，失去了能阻止多种容器逃逸的系统调用过滤。
+    remediation: Use the RuntimeDefault profile (seccompProfile.type RuntimeDefault) or a Localhost profile.
+    remediation_zh: 使用 RuntimeDefault 配置（seccompProfile.type 设为 RuntimeDefault）或 Localhost 配置。
+  - id: k8s-proc-mount-unmasked
+    title: Kubernetes container uses an unmasked /proc
+    title_zh: Kubernetes 容器使用未屏蔽的 /proc
+    severity: high
+    confidence: high
+    cwe: CWE-200
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*procMount\s*:\s*["\x27]?Unmasked\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
+    message: procMount Unmasked removes the masking of sensitive /proc paths, exposing kernel information and interfaces to the container.
+    message_zh: procMount 设为 Unmasked 会取消了对 /proc 敏感路径的屏蔽，向容器暴露内核信息与接口。
+    remediation: Remove procMount or set it to Default.
+    remediation_zh: 删除 procMount 或设为 Default。
+  - id: k8s-unsafe-sysctl
+    title: Kubernetes pod sets a node-wide sysctl
+    title_zh: Kubernetes Pod 设置了影响整个节点的 sysctl
+    severity: medium
+    confidence: medium
+    cwe: CWE-269
+    owasp: A05:2021
+    languages: [yaml]
+    # kernel.shm*, kernel.msg*, kernel.sem and fs.mqueue.* are namespaced
+    # (IPC namespace); the other kernel., vm. and fs. keys change the node.
+    withinKeys: [sysctls]
+    pattern: '^\s*(?:kernel\.(?!shm|msg|sem\b)|vm\.|fs\.(?!mqueue\.))[\w./-]{1,100}\s*$'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The sysctl is not namespaced, so setting it from a pod changes kernel behaviour for every workload on the node.
+    message_zh: 该 sysctl 不受命名空间隔离，从 Pod 设置会改变节点上所有工作负载的内核行为。
+    remediation: Remove the sysctl, or set it on dedicated nodes through node configuration.
+    remediation_zh: 删除该 sysctl，或通过节点配置在专用节点上设置。
+  - id: k8s-automount-sa-token
+    title: Kubernetes explicitly mounts the service account token
+    title_zh: Kubernetes 显式挂载 service account 令牌
+    severity: low
+    confidence: medium
+    cwe: CWE-269
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '^\s*automountServiceAccountToken\s*:\s*["\x27]?true\b'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
+    message: The API token of the service account is mounted into the pod, so code execution in the pod gives access to the Kubernetes API with that account's rights.
+    message_zh: service account 的 API 令牌被挂载进 Pod，Pod 内的代码执行即可凭该账号权限访问 Kubernetes API。
+    remediation: Set automountServiceAccountToken to false unless the workload calls the API, and give its account minimal RBAC rights.
+    remediation_zh: 除非工作负载需要调用 API，否则设为 false，并只授予该账号最小 RBAC 权限。
   - id: k8s-image-latest-tag
     title: Kubernetes image uses latest tag or no tag
-    title_zh: Kubernetes 镜像使用 latest 标签或未固定标签
-    severity: medium
+    title_zh: Kubernetes 镜像使用 latest 标签或未指定标签
+    severity: low
     confidence: medium
     cwe: CWE-1104
     owasp: A06:2021
-    languages:
-      - yaml
-    pattern: 'image\s*:\s*\S+:latest\s*$|image\s*:\s*(?!\S*@)(?:[^:\s/]+(?::\d+)?/)*[^:\s/]+\s*$'
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
-    filePattern: 'image\s*:'
+    languages: [yaml]
+    pattern: '^\s*(?:-\s*)?image\s*:\s*["\x27]?(?:\S+:latest|(?!\S*@)(?:[^:\s/"\x27{}<>]+(?::\d+)?/)*[^:\s/"\x27{}<>]+)["\x27]?\s*$'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    filePattern: '{{K8S_FILE}}'
     message: An image with the latest tag (or no tag) is not reproducible and may pull unaudited changes.
-    message_zh: 使用 latest 标签（或省略标签）的镜像不可复现，可能引入未审计的变更。
+    message_zh: 使用 latest 标签（或未指定标签）的镜像不可复现，可能拉取未审计的变更。
     remediation: Pin images to an explicit version or digest.
     remediation_zh: 将镜像固定到明确版本或 digest。
     references:
@@ -113,25 +308,167 @@ rules:
       - OWASP A06:2021
   - id: k8s-secret-in-env
     title: Kubernetes env value may be a secret
-    title_zh: Kubernetes env 值可能是密钥
+    title_zh: Kubernetes env 中的值可能是密钥
     severity: low
     confidence: low
     kind: hotspot
     cwe: CWE-798
     owasp: A07:2021
-    languages:
-      - yaml
+    languages: [yaml]
     # The built-in engine cannot correlate a value with the preceding name:
     # line, so a long value alone is only a low-confidence hotspot.
     # The secret group takes the whole value, not only its leading run of
     # word characters, so nothing after a special character stays visible.
-    pattern: value\s*:\s*["']?(?<secret>[A-Za-z0-9_\-]{12,}[^\s"']*)
+    pattern: 'value\s*:\s*["\x27]?(?<secret>[A-Za-z0-9_\-]{12,}[^\s"\x27]*)'
     redactEvidence: true
-    pathInclude: (?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$
+    # Kept on the folder names it always used: env lists also appear in
+    # partial manifests without apiVersion (Kustomize patches, Helm snippets).
+    pathInclude: '(?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$'
     message: A credential value is embedded directly in a pod env, exposing it to anyone who can read the manifest.
-    message_zh: 凭据值直接写入 Pod env，任何能读取清单的人都能看到。
+    message_zh: 凭据值直接写在 Pod env 中，任何能读取清单的人都能看到。
     remediation: Reference a Secret via valueFrom/secretKeyRef and keep the value out of the manifest.
-    remediation_zh: 通过 valueFrom/secretKeyRef 引用 Secret，避免把值写入清单。
+    remediation_zh: 通过 valueFrom/secretKeyRef 引用 Secret，不要把值写在清单中。
     references:
       - CWE-798
       - OWASP A07:2021
+  - id: k8s-secret-literal-data
+    title: Kubernetes Secret manifest contains data
+    title_zh: Kubernetes Secret 清单中包含数据
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [yaml]
+    # Entries of a top-level data / stringData map sit at exactly two
+    # spaces; deeper keys of other documents in the same file do not.
+    pattern: '^ {2}[\w.-]{1,100}\s*:\s*["\x27]?(?<secret>[A-Za-z0-9+/=_.@:!-]{8,})["\x27]?\s*$'
+    notPattern: '^\s*(?:name|namespace|app|kind|type|apiVersion|apiGroup|image|serviceAccountName|uid|resourceVersion|creationTimestamp|component|release|chart|heritage|version|tier|role|env|environment|[\w.-]+/[\w.-]+)\s*:'
+    redactEvidence: true
+    filePattern: '^\s*kind\s*:\s*["\x27]?Secret["\x27]?\s*$'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: A Secret manifest in the repository holds its values in the clear (base64 is an encoding, not encryption). Check whether these are real credentials.
+    message_zh: 仓库中的 Secret 清单以明文保存其值（base64 只是编码而非加密）。请确认这些是否为真实凭据。
+    remediation: Keep real values out of the repository; use Sealed Secrets, SOPS, External Secrets or create the Secret at deploy time.
+    remediation_zh: 不要把真实值放入仓库；使用 Sealed Secrets、SOPS、External Secrets，或在部署时创建 Secret。
+  - id: k8s-rbac-wildcard
+    title: Kubernetes RBAC role uses a wildcard
+    title_zh: Kubernetes RBAC 角色使用通配符
+    severity: high
+    confidence: medium
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [verbs, resources]
+    pattern: '^\s*\*\s*$'
+    filePattern: '{{RBAC_ROLE}}'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: A wildcard in verbs or resources grants every current and future permission of that kind, including secrets access and privilege escalation.
+    message_zh: verbs 或 resources 中的通配符会授予该类所有现有及未来的权限，包括访问 secrets 与提权。
+    remediation: List the exact resources and verbs the subject needs.
+    remediation_zh: 明确列出主体所需的具体资源和动作。
+  - id: k8s-rbac-cluster-admin-binding
+    title: Kubernetes binding grants cluster-admin
+    title_zh: Kubernetes 绑定授予 cluster-admin
+    severity: high
+    confidence: medium
+    cwe: CWE-269
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [roleRef]
+    pattern: '^\s*cluster-admin\s*$'
+    filePattern: 'RoleBinding'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The subject receives full control of the cluster; compromise of that service account or user compromises everything.
+    message_zh: 主体获得了集群的完全控制权；该 service account 或用户一旦被攻破，整个集群随之失守。
+    remediation: Bind a role that grants only the permissions the subject needs.
+    remediation_zh: 绑定仅包含主体所需权限的角色。
+  - id: k8s-rbac-anonymous-subject
+    title: Kubernetes binding grants rights to anonymous users
+    title_zh: Kubernetes 绑定向匿名用户授权
+    severity: critical
+    confidence: high
+    cwe: CWE-306
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [subjects]
+    pattern: '^\s*system:(?:anonymous|unauthenticated)\s*$'
+    filePattern: 'RoleBinding'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The role is bound to system:anonymous or system:unauthenticated, so anyone who can reach the API server gets these rights without credentials.
+    message_zh: 角色被绑定到 system:anonymous 或 system:unauthenticated，任何能访问 API Server 的人无需凭据即可获得这些权限。
+    remediation: Remove the anonymous subject and bind the role to specific authenticated users or service accounts.
+    remediation_zh: 删除匿名主体，把角色绑定到具体的已认证用户或 service account。
+  - id: k8s-rbac-escalation-verbs
+    title: Kubernetes role grants escalate, bind or impersonate
+    title_zh: Kubernetes 角色授予 escalate、bind 或 impersonate
+    severity: high
+    confidence: medium
+    cwe: CWE-269
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [verbs]
+    pattern: '^\s*(?:escalate|bind|impersonate)\s*$'
+    filePattern: '{{RBAC_ROLE}}'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: escalate, bind and impersonate let the subject grant itself, or act with, permissions it does not have.
+    message_zh: escalate、bind 和 impersonate 允许主体为自己授予或冒用其本不具备的权限。
+    remediation: Remove these verbs; grant them only to cluster administrators.
+    remediation_zh: 删除这些动作，仅授予集群管理员。
+  - id: k8s-rbac-secrets-access
+    title: Kubernetes role can access secrets
+    title_zh: Kubernetes 角色可以访问 secrets
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [resources]
+    pattern: '^\s*secrets\s*$'
+    filePattern: '{{RBAC_ROLE}}'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The role names the secrets resource; with get, list or watch it can read every Secret in its scope. Check the verbs and the scope.
+    message_zh: 该角色涉及 secrets 资源；若包含 get、list 或 watch，则可读取其范围内所有 Secret。请检查动作与范围。
+    remediation: Limit the role to named secrets (resourceNames) and to the verbs that are needed.
+    remediation_zh: 使用 resourceNames 限定具体 Secret，并只授予所需动作。
+  - id: k8s-service-admin-port-exposed
+    title: Kubernetes exposes an administrative port outside the cluster
+    title_zh: Kubernetes 将管理端口暴露到集群外
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-668
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*type\s*:\s*["\x27]?(?:LoadBalancer|NodePort)\b'
+    filePattern: '^\s*(?:-\s*)?(?:port|targetPort|nodePort)\s*:\s*["\x27]?(?:22|23|2375|2376|3389|5900|6443|10250|10255|2379|2380|3306|5432|6379|27017|9200|11211|5984)["\x27]?\s*$'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: A LoadBalancer or NodePort service in this file uses an SSH, remote-desktop, Docker, kubelet, etcd or database port. Check whether it must be reachable from outside the cluster.
+    message_zh: 该文件中的 LoadBalancer 或 NodePort 服务使用了 SSH、远程桌面、Docker、kubelet、etcd 或数据库端口。请确认是否必须从集群外访问。
+    remediation: Use a ClusterIP service and reach it through a VPN, bastion or kubectl port-forward; restrict loadBalancerSourceRanges otherwise.
+    remediation_zh: 使用 ClusterIP 服务并通过 VPN、堡垒机或 kubectl port-forward 访问；否则限制 loadBalancerSourceRanges。
+  - id: k8s-ingress-no-tls
+    title: Kubernetes Ingress without TLS
+    title_zh: Kubernetes Ingress 未配置 TLS
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '^\s*kind\s*:\s*["\x27]?Ingress["\x27]?\s*$'
+    fileAbsentPattern: '^\s*tls\s*:|ssl-redirect'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    message: The Ingress has no tls section, so traffic is served over plain HTTP unless TLS is terminated in front of it.
+    message_zh: Ingress 没有 tls 配置，除非前端另行终止 TLS，否则流量以明文 HTTP 传输。
+    remediation: Add a tls section with a certificate (for example from cert-manager) and redirect HTTP to HTTPS.
+    remediation_zh: 添加 tls 配置和证书（例如使用 cert-manager），并把 HTTP 重定向到 HTTPS。

@@ -1091,24 +1091,29 @@ describe("evidence of credential rules", () => {
       .sort();
     expect(flagged).toEqual([
       "agent-mcp-inline-secret",
+      "compose-env-literal-secret",
       "cpp-hardcoded-credential",
       "cs-config-machinekey-literal",
       "cs-hardcoded-crypto-key",
       "cs-jwt-hardcoded-key",
       "dep-http-install",
       "dep-pip-trusted-host",
+      "dockerfile-secret-env",
       "go-hardcoded-crypto-key",
       "go-jwt-hardcoded-secret",
       "java-hardcoded-crypto-key",
       "java-jwt-hardcoded-secret",
       "java-spring-datasource-password",
       "k8s-secret-in-env",
+      "k8s-secret-literal-data",
       "py-hardcoded-secret",
       "py-secret-key-literal",
       "py-static-iv",
       "rs-hardcoded-secret",
       "rs-jwt-hardcoded-secret",
       "tf-hardcoded-credentials",
+      "tf-secret-literal",
+      "tf-secret-variable-default",
     ]);
   });
 

@@ -1,0 +1,18 @@
+# Build stage; the final stage below runs as an unprivileged user.
+FROM node:22.11.0-bookworm AS build
+ARG NPM_TOKEN
+# RUN curl -fsSL https://example.invalid/install.sh | sh   (kept as a note, not run)
+RUN --mount=type=secret,id=npmrc npm ci
+RUN curl -fsSL https://example.invalid/tool-1.2.3.tgz -o /tmp/tool.tgz \
+ && echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  /tmp/tool.tgz" | sha256sum -c -
+RUN curl -fsSL https://api.example.invalid/releases | python3 -c "import json,sys; print(json.load(sys.stdin)[0])"
+RUN git config --global http.sslVerify true
+FROM build
+FROM gcr.io/distroless/nodejs22-debian12:nonroot
+ADD --checksum=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef https://example.invalid/tool.tar.gz /opt/tool.tar.gz
+ENV DB_PASSWORD_FILE=/run/secrets/db_password
+ENV API_TOKEN=${API_TOKEN}
+RUN chmod 1777 /tmp && chmod -R 755 /srv/app
+EXPOSE 8080 2222
+USER 10001:10001
+CMD ["/opt/tool/run"]

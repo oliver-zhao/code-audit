@@ -1,0 +1,23 @@
+name: nightly
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+permissions: write-all
+env:
+  ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+      - run: echo "::set-env name=MODE::nightly"
+      - run: curl -sSfL https://example.invalid/install.sh | sh
+      - env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: ./report.sh
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets: inherit

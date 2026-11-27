@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  template:
+    metadata:
+      labels:
+        app: node-agent
+    spec:
+      hostIPC: true
+      automountServiceAccountToken: true
+      securityContext:
+        sysctls:
+          - name: kernel.shm_rmid_forced
+            value: "1"
+          - name: vm.overcommit_memory
+            value: "1"
+      containers:
+        - name: agent
+          image: example/agent:2.3.1
+          securityContext:
+            runAsUser: 0
+            readOnlyRootFilesystem: false
+            procMount: Unmasked
+            seccompProfile:
+              type: Unconfined
+            capabilities:
+              add: ["SYS_ADMIN", "NET_ADMIN"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+          volumeMounts:
+            - name: etc
+              mountPath: /host/etc
+      volumes:
+        - name: etc
+          hostPath:
+            path: /etc

@@ -1,19 +1,42 @@
 version: 1
+# Built-in Dockerfile rules. Written for code-audit (Apache-2.0); the topics
+# follow the CIS Docker Benchmark (section 4, container images and build
+# files), the patterns are original.
+#
+# Matching: a Dockerfile is matched one physical line at a time, comments
+# included, and a RUN instruction continued with "\" is several lines. Every
+# rule therefore looks at one line, skips comment lines (notPattern), and an
+# instruction split over lines can be missed (see packages/core/test/rules-iac.test.ts).
+definitions:
+  DOCKERFILE: '(?:^|/)(?:[Dd]ockerfile(?:\.[^/]*)?|[^/]*\.[Dd]ockerfile)$'
+  COMMENT: '^\s*#'
+  # Instruction prefix that may be followed by flags such as --platform=...
+  FROM: '^\s*FROM\s+(?:--[\w-]+=\S+\s+){0,3}'
+  # A downloader piped into an interpreter, or an interpreter fed by one.
+  PIPE_TO_SHELL: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+){0,3})?(?:(?:ba|z|da|k|a)?sh|python[23]?(?!\s+-c\b))\b(?![.\w-])|\b(?:ba|z)?sh\s+(?:-c\s+)?["\x27]?(?:<\(|\$\()\s*(?:curl|wget)\b'
+  # Environment variable names that hold a credential (the name ends with it).
+  SECRET_NAME: '\w{0,60}?(?:PASSWORD|PASSWD|SECRET(?:_KEY(?:_BASE)?)?|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|_PASS|_PWD)'
 rules:
   - id: dockerfile-no-user
     title: Dockerfile does not declare a non-root user
     title_zh: Dockerfile 未声明非 root 用户
     severity: high
-    confidence: high
+    # The base image may set USER itself (distroless :nonroot, bitnami); an
+    # entrypoint that drops privileges (gosu, su-exec) is excluded below.
+    confidence: medium
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - dockerfile
-    pattern: ^FROM\s+
-    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
-    fileAbsentPattern: ^\s*USER\s+
-    message: The image runs as root by default, so a container breakout yields root privileges.
-    message_zh: 镜像默认以 root 运行，容器突破后可直接获得 root 权限。
+    languages: [dockerfile]
+    pattern: '{{FROM}}(?!scratch\b)\S'
+    # Named stages are build stages unless the name says they are the image
+    # that ships; the unnamed stage is usually the last one.
+    notPattern: '\sas\s+(?!(?:final|runtime|run|prod\w*|release|app|deploy\w*|image|dist|main)\b)\S'
+    pathInclude: '{{DOCKERFILE}}'
+    # Also exempt: language base images whose default command is an
+    # interactive interpreter (CMD ["python3"]); the derived image sets USER.
+    fileAbsentPattern: '^\s*USER\s+\S|\b(?:gosu|su-exec|setpriv|setuidgid|chpst)\b|{{FROM}}\S*[:-]nonroot\b|^\s*CMD\s+(?:\[\s*)?["\x27]?(?:python[\d.]*|node|bash|sh|irb|php|jshell|ghci|pwsh|powershell|iex|erl)["\x27]?(?:\s*\])?\s*$'
+    message: No USER instruction and no privilege drop in the entrypoint, so the container process runs as root and a breakout yields root privileges.
+    message_zh: 没有 USER 指令，入口点也未降权，容器进程以 root 运行，容器突破后可直接获得 root 权限。
     remediation: Create a dedicated user and add a USER instruction, for example USER 10001:10001.
     remediation_zh: 创建专用用户并添加 USER 指令，例如 USER 10001:10001。
     references:
@@ -26,14 +49,17 @@ rules:
     confidence: high
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - dockerfile
-    pattern: ^USER\s+(?:root|0)\b
-    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
-    message: Running the container as root amplifies the impact of any vulnerability.
-    message_zh: 显式使用 root 运行容器会放大漏洞影响。
-    remediation: Run the application as an unprivileged user (USER 10001:10001).
-    remediation_zh: 使用非特权用户（USER 10001:10001）运行应用。
+    languages: [dockerfile]
+    pattern: '^\s*USER\s+["\x27]?(?:root|0)(?::\S*)?["\x27]?\s*$'
+    pathInclude: '{{DOCKERFILE}}'
+    # A file that switches to any other user later (USER root to install
+    # packages, then USER app) does not end as root. Line matching cannot
+    # see the order, so any non-root USER line exempts the file.
+    fileAbsentPattern: '^\s*USER\s+["\x27]?(?!(?:root|0)(?::\S*)?["\x27]?\s*$)\S'
+    message: The last user of the image is root, which amplifies the impact of any vulnerability in the container.
+    message_zh: 镜像最终以 root 用户运行，会放大容器内任何漏洞的影响。
+    remediation: Switch back to an unprivileged user (USER 10001:10001) after the steps that need root.
+    remediation_zh: 在需要 root 的步骤之后切换回非特权用户（USER 10001:10001）。
     references:
       - CWE-250
       - OWASP A05:2021
@@ -44,28 +70,27 @@ rules:
     confidence: high
     cwe: CWE-829
     owasp: A08:2021
-    languages:
-      - dockerfile
-    pattern: curl[^|\n]{0,600}\|\s*(?:ba|z)?sh\b
-    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
-    message: Executing a remote script hands the build to uncontrolled content and creates supply-chain risk.
-    message_zh: 直接执行远程脚本会把构建过程交给不受控内容，存在供应链风险。
-    remediation: Pin versions and verify SHA256, or vendor installation archives in a controlled repository.
-    remediation_zh: 固定版本与 SHA256 校验，或把安装包纳入受控仓库。
+    languages: [dockerfile]
+    pattern: '{{PIPE_TO_SHELL}}'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{DOCKERFILE}}'
+    message: A downloaded script is executed without verification, so whoever controls the URL or the network path controls the build.
+    message_zh: 下载的脚本未经校验即被执行，控制该 URL 或网络路径的人即可控制构建过程。
+    remediation: Download a pinned version to a file, verify its SHA256, then run it; or vendor the installer.
+    remediation_zh: 下载固定版本到文件并校验 SHA256 后再执行，或把安装程序纳入受控仓库。
     references:
       - CWE-829
       - OWASP A08:2021
   - id: dockerfile-latest-tag
     title: Dockerfile uses the :latest base image tag
     title_zh: Dockerfile 使用 :latest 基础镜像
-    severity: medium
+    severity: low
     confidence: high
     cwe: CWE-1104
     owasp: A06:2021
-    languages:
-      - dockerfile
-    pattern: ^FROM\s+\S+:latest\b
-    pathInclude: (?:^|/)Dockerfile(?:\.[^/]*)?$
+    languages: [dockerfile]
+    pattern: '{{FROM}}\S+:latest\b'
+    pathInclude: '{{DOCKERFILE}}'
     message: The latest tag is not reproducible and may pull unaudited changes.
     message_zh: latest 标签不可复现，可能引入未审计的变更。
     remediation: Pin an explicit version or digest, for example FROM node:22.11.0-bookworm-slim.
@@ -73,3 +98,142 @@ rules:
     references:
       - CWE-1104
       - OWASP A06:2021
+  - id: dockerfile-untagged-base-image
+    title: Dockerfile base image has no tag or digest
+    title_zh: Dockerfile 基础镜像未指定标签或 digest
+    severity: low
+    confidence: medium
+    cwe: CWE-1104
+    owasp: A06:2021
+    languages: [dockerfile]
+    # A bare name may be an earlier build stage (FROM builder), so only names
+    # with a registry or namespace, or well-known official images, count.
+    pattern: '{{FROM}}(?:[\w.-]+(?::\d+)?(?:/[\w.-]+)+|(?:ubuntu|debian|alpine|centos|fedora|busybox|node|python|golang|ruby|php|openjdk|eclipse-temurin|nginx|httpd|redis|postgres|mysql|mongo|amazonlinux|rockylinux|almalinux|archlinux|gcc|rust|maven|gradle|perl|bash))\s*(?:$|\s+as\s+\S+\s*$)'
+    pathInclude: '{{DOCKERFILE}}'
+    message: A base image without a tag means :latest, which is not reproducible and may pull unaudited changes.
+    message_zh: 未指定标签的基础镜像等同于 :latest，不可复现，可能引入未审计的变更。
+    remediation: Pin an explicit version or digest.
+    remediation_zh: 固定到明确版本或 digest。
+  - id: dockerfile-add-remote-url
+    title: Dockerfile ADD downloads a remote URL without a checksum
+    title_zh: Dockerfile ADD 下载远程 URL 且未校验
+    severity: medium
+    confidence: high
+    cwe: CWE-494
+    owasp: A08:2021
+    languages: [dockerfile]
+    pattern: '^\s*ADD\s+(?:--[\w-]+(?:=\S+)?\s+){0,4}(?:\[\s*)?["\x27]?(?:https?|ftp)://'
+    notPattern: '--checksum='
+    pathInclude: '{{DOCKERFILE}}'
+    message: ADD fetches the URL at build time without verifying its content, so a compromised or redirected server changes the image.
+    message_zh: ADD 在构建时下载 URL 且不校验内容，服务器被攻破或被重定向即可篡改镜像。
+    remediation: Use ADD --checksum=sha256:... or download with curl, verify the SHA256 and extract in one RUN step.
+    remediation_zh: 使用 ADD --checksum=sha256:...，或在同一个 RUN 中用 curl 下载、校验 SHA256 后再解压。
+  - id: dockerfile-secret-env
+    title: Dockerfile ENV or ARG holds a literal secret
+    title_zh: Dockerfile 的 ENV 或 ARG 包含明文密钥
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [dockerfile]
+    pattern: '^\s*(?:ENV|ARG)\s+(?:[\w.-]+=\S+\s+){0,10}?{{SECRET_NAME}}(?:\s*=\s*|\s+)["\x27]?(?<secret>(?!(?:true|false|yes|no|none|null)\b)[^\s"\x27$/{][^\s"\x27]{5,200})'
+    notPattern: '_FILE\s*=|\b(?:changeme|change_me|placeholder|dummy|example|redacted)\b|<[^<>]{0,60}>|x{4,}|\*{3,}'
+    redactEvidence: true
+    pathInclude: '{{DOCKERFILE}}'
+    message: A credential is set with ENV or ARG; it is stored in the image layers and metadata, where anyone who can pull the image can read it.
+    message_zh: 通过 ENV 或 ARG 设置了凭据，它会保存在镜像层和元数据中，任何能拉取镜像的人都能读取。
+    remediation: Pass secrets at run time (environment, mounted file) or with RUN --mount=type=secret during the build.
+    remediation_zh: 在运行时传入密钥（环境变量、挂载文件），或在构建时使用 RUN --mount=type=secret。
+  - id: dockerfile-chmod-777
+    title: Dockerfile makes files world-writable
+    title_zh: Dockerfile 将文件设为所有人可写
+    severity: medium
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [dockerfile]
+    pattern: '\bchmod\s+(?:-[a-zA-Z]+\s+){0,3}(?:0?777|a\+rwx|ugo\+rwx|o\+rwx|a\+w|o\+w)(?=\s|$|;|&)'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{DOCKERFILE}}'
+    message: World-writable files let any process in the container replace programs or data that others execute or trust.
+    message_zh: 所有人可写的文件允许容器内任何进程替换他人执行或信任的程序和数据。
+    remediation: Give ownership to the user that needs write access (chown) and use 755 / 644, or 1777 for shared temporary directories.
+    remediation_zh: 把所有权交给需要写权限的用户（chown），使用 755 / 644；共享临时目录使用 1777。
+  - id: dockerfile-sudo
+    title: Dockerfile uses or installs sudo
+    title_zh: Dockerfile 使用或安装 sudo
+    severity: medium
+    confidence: medium
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [dockerfile]
+    pattern: '(?:^|[\s;&|(])sudo\s+\S|\bNOPASSWD\s*:\s*ALL\b'
+    notPattern: '{{COMMENT}}|\b(?:apt-get|apt|apk|yum|dnf)\s+(?:-\S+\s+){0,3}(?:purge|remove|del)\b'
+    pathInclude: '{{DOCKERFILE}}'
+    message: sudo in an image gives the runtime user a path back to root and has unpredictable TTY and signal behaviour.
+    message_zh: 镜像中的 sudo 让运行用户可以重新获得 root，且其 TTY 与信号行为不可预测。
+    remediation: Run the steps that need root before USER, and do not install sudo or grant NOPASSWD rules.
+    remediation_zh: 在 USER 之前执行需要 root 的步骤，不要安装 sudo 或配置 NOPASSWD 规则。
+  - id: dockerfile-expose-ssh
+    title: Dockerfile exposes the SSH port
+    title_zh: Dockerfile 暴露 SSH 端口
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-284
+    owasp: A05:2021
+    languages: [dockerfile]
+    pattern: '^\s*EXPOSE\s+(?:\S+\s+){0,20}22(?:/tcp)?(?=\s|$)'
+    pathInclude: '{{DOCKERFILE}}'
+    message: Port 22 is exposed, which usually means an SSH daemon runs in the container and adds a remote login surface. Check whether it is needed.
+    message_zh: 暴露了 22 端口，通常意味着容器内运行 SSH 服务，增加了远程登录攻击面。请确认是否必要。
+    remediation: Use docker exec / kubectl exec for access instead of an SSH daemon in the container.
+    remediation_zh: 使用 docker exec / kubectl exec 访问容器，而不是在容器内运行 SSH 服务。
+  - id: dockerfile-download-tls-disabled
+    title: Dockerfile downloads with TLS verification disabled
+    title_zh: Dockerfile 下载时关闭了 TLS 校验
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [dockerfile]
+    # Case-sensitive: curl -K reads a config file, -k disables verification.
+    flags: ''
+    pattern: '\bcurl\b[^\n|;&]{0,400}?\s(?:-[a-zA-Z]*k[a-zA-Z]*|--insecure)(?=\s|$)|\bwget\b[^\n|;&]{0,400}?\s--no-check-certificate\b|\b(?:insecure|check_certificate\s*=\s*off)\b[^\n]{0,40}\.(?:curlrc|wgetrc)\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{DOCKERFILE}}'
+    message: The download does not verify the server certificate, so anyone on the network path can replace what is built into the image.
+    message_zh: 下载不校验服务器证书，网络路径上的任何人都可以替换写入镜像的内容。
+    remediation: Remove -k / --insecure / --no-check-certificate; install the needed CA certificate instead, and verify a checksum.
+    remediation_zh: 删除 -k / --insecure / --no-check-certificate，改为安装所需的 CA 证书，并校验文件哈希。
+  - id: dockerfile-package-tls-disabled
+    title: Dockerfile disables TLS verification of a package manager
+    title_zh: Dockerfile 关闭了包管理器的 TLS 校验
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [dockerfile]
+    pattern: '\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:-g\s+)?strict-ssl(?:\s*=\s*|\s+)["\x27]?false\b|\bstrict-ssl\s*=\s*false\b|\bNODE_TLS_REJECT_UNAUTHORIZED(?:\s*=\s*|\s+)["\x27]?0\b|\bgit\s+config\s+(?:--\w+\s+){0,2}http\.sslVerify\s+["\x27]?false\b|\bGIT_SSL_NO_VERIFY(?:\s*=\s*|\s+)["\x27]?(?:1|true)\b|\bPYTHONHTTPSVERIFY(?:\s*=\s*|\s+)["\x27]?0\b|\bcomposer\s+config\s+(?:-g\s+)?(?:secure-http\s+false|disable-tls\s+true)\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{DOCKERFILE}}'
+    message: Certificate checking is switched off for a package manager or runtime, so a network attacker can serve modified packages during the build.
+    message_zh: 包管理器或运行时关闭了证书校验，网络攻击者可在构建时提供被篡改的软件包。
+    remediation: Keep TLS verification on; add the internal CA to the trust store (or cafile / NODE_EXTRA_CA_CERTS) instead.
+    remediation_zh: 保持 TLS 校验开启；改为把内部 CA 加入信任库（或使用 cafile / NODE_EXTRA_CA_CERTS）。
+  - id: dockerfile-unsigned-packages
+    title: Dockerfile installs packages without signature checks
+    title_zh: Dockerfile 安装软件包时跳过签名校验
+    severity: high
+    confidence: high
+    cwe: CWE-494
+    owasp: A08:2021
+    languages: [dockerfile]
+    pattern: '\bapk\b[^\n|;&]{0,300}?\s--allow-untrusted\b|\bapt(?:-get)?\b[^\n|;&]{0,300}?\s(?:--allow-unauthenticated|--force-yes|--allow-insecure-repositories|-o\s*Acquire::AllowInsecureRepositories=(?:true|1))\b|\[\s*trusted=yes\s*\](?!\s*(?:file|copy):)|\b(?:yum|dnf|microdnf|tdnf|zypper)\b[^\n|;&]{0,300}?\s(?:--nogpgcheck|--no-gpg-checks)\b|\bgpgcheck\s*=\s*0\b|\brpm\b[^\n|;&]{0,300}?\s--nosignature\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{DOCKERFILE}}'
+    message: Package signatures are not checked, so a mirror or network attacker can install arbitrary packages into the image.
+    message_zh: 不校验软件包签名，镜像源或网络攻击者可以向镜像中安装任意软件包。
+    remediation: Remove the option and import the repository signing key so that the package manager verifies packages.
+    remediation_zh: 删除该选项并导入仓库签名密钥，让包管理器校验软件包。

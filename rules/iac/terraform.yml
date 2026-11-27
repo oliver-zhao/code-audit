@@ -1,5 +1,23 @@
 version: 1
+# Built-in Terraform rules. Written for code-audit (Apache-2.0); topics from
+# the CIS AWS / Azure / GCP foundations benchmarks and the public check
+# catalogues of IaC scanners, patterns are original.
+#
+# Matching: .tf / .tfvars files are HCL. The inventory labels them "yaml"
+# but they are matched one physical line at a time, comments included, and a
+# block that spans lines is never seen as a whole. Every rule here is
+# therefore a single-attribute signal ("publicly_accessible = true") that is
+# wrong on its own. Where a risk needs two attributes of one block (an open
+# CIDR AND port 22), the rule is a hotspot that names one and gates on the
+# other in the same file (filePattern), and says so. Lines starting with # or
+# // are skipped.
+definitions:
+  TF: '\.tf(?:vars)?$'
+  COMMENT: '^\s*(?:#|//)'
+  NOT_LITERAL: '\$\{|\b(?:var|local|data|module)\.|\bchangeme\b|<[^<>]*>|x{3,}'
+  OPEN_CIDR: '"(?:0\.0\.0\.0/0|::/0)"'
 rules:
+  # ---------------------------------------------------------------- AWS
   - id: tf-sg-open-ssh
     title: Terraform security group opens 0.0.0.0/0
     title_zh: Terraform 安全组对 0.0.0.0/0 开放
@@ -8,38 +26,86 @@ rules:
     kind: hotspot
     cwe: CWE-284
     owasp: A05:2021
-    languages:
-      - yaml
+    languages: [yaml]
     # The built-in engine matches line by line and cannot correlate a from_port
     # with a cidr_blocks in the same resource block. Flagging either one alone
-    # is noisy, so this is a low-confidence hotspot for an open CIDR only.
-    pattern: cidr_blocks\s*=\s*\[[^\]]{0,600}0\.0\.0\.0/0
-    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    # is noisy, so this is a low-confidence hotspot for an open CIDR only
+    # (tf-sg-admin-port-open names the port line).
+    pattern: '\b(?:cidr_blocks|ipv6_cidr_blocks|cidr_ipv4|cidr_ipv6|source_ranges)\s*=\s*\[?[^\]\n]{0,600}?{{OPEN_CIDR}}'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
     message: A security group exposes 0.0.0.0/0; review whether the port is meant to be internet-facing.
-    message_zh: 安全组对 0.0.0.0/0 开放，请确认端口是否确实需要对公网开放。
+    message_zh: 安全组对 0.0.0.0/0 开放；请确认该端口是否确实需要面向互联网。
     remediation: Restrict the CIDR to trusted ranges or use a VPN/bastion host.
-    remediation_zh: 将来源 CIDR 限制为可信网段，或通过 VPN/堡垒机访问。
+    remediation_zh: 将 CIDR 限制为可信网段，或使用 VPN/堡垒机。
     references:
       - CWE-284
       - OWASP A05:2021
+  - id: tf-sg-admin-port-open
+    title: Terraform opens SSH or RDP in a file with an internet-wide rule
+    title_zh: Terraform 在含有全网开放规则的文件中开放 SSH 或 RDP
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-284
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\b(?:from_port|destination_port_range)\s*=\s*"?(?:22|3389)(?:-(?:22|3389))?"?\s*$|\b(?:ports|destination_port_ranges)\s*=\s*\[[^\]\n]{0,200}"(?:22|3389)(?:-(?:22|3389))?"'
+    notPattern: '{{COMMENT}}'
+    filePattern: '{{OPEN_CIDR}}|\bsource_address_prefix\s*=\s*"(?:\*|Internet|Any)"'
+    pathInclude: '{{TF}}'
+    message: Port 22 or 3389 is opened in a file that also allows 0.0.0.0/0, ::/0 or Internet as a source. Check whether this rule is the one that is open to everyone.
+    message_zh: 文件中开放了 22 或 3389 端口，且同一文件允许 0.0.0.0/0、::/0 或 Internet 作为来源。请确认该规则是否对所有人开放。
+    remediation: Allow SSH and RDP only from a bastion, VPN range or Session Manager, never from the internet.
+    remediation_zh: 仅允许来自堡垒机、VPN 网段或 Session Manager 的 SSH 与 RDP，绝不对互联网开放。
   - id: tf-public-s3-acl
     title: Terraform S3 bucket has a public ACL
-    title_zh: Terraform S3 存储桶使用公共 ACL
+    title_zh: Terraform S3 存储桶使用公开 ACL
     severity: high
     confidence: high
     cwe: CWE-732
     owasp: A01:2021
-    languages:
-      - yaml
-    pattern: acl\s*=\s*"(?:public-read|public-read-write)"
-    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    languages: [yaml]
+    pattern: '\bacl\s*=\s*"(?:public-read|public-read-write|authenticated-read)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
     message: A public S3 ACL exposes bucket contents to the internet.
-    message_zh: 公共 S3 ACL 会把存储桶内容暴露给互联网。
+    message_zh: 公开的 S3 ACL 会把存储桶内容暴露到互联网。
     remediation: Use acl = "private" and grant access through IAM policies.
-    remediation_zh: 使用 acl = "private"，通过 IAM 策略授权访问。
+    remediation_zh: 使用 acl = "private"，并通过 IAM 策略授权访问。
     references:
       - CWE-732
       - OWASP A01:2021
+  - id: tf-s3-public-access-block-disabled
+    title: Terraform S3 public access block is switched off
+    title_zh: Terraform 关闭了 S3 公共访问阻止
+    severity: medium
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\b(?:block_public_acls|block_public_policy|ignore_public_acls|restrict_public_buckets)\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: A public access block setting is false, so a public ACL or bucket policy can expose the bucket.
+    message_zh: 公共访问阻止设置为 false，公开 ACL 或存储桶策略即可暴露存储桶。
+    remediation: Set all four public access block settings to true.
+    remediation_zh: 将四项公共访问阻止设置全部设为 true。
+  - id: tf-rds-publicly-accessible
+    title: Terraform database is publicly accessible
+    title_zh: Terraform 数据库可公开访问
+    severity: high
+    confidence: high
+    cwe: CWE-668
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\bpublicly_accessible\s*=\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The database instance gets a public address and can be reached from the internet if its security group allows it.
+    message_zh: 数据库实例获得公网地址，只要安全组允许即可从互联网访问。
+    remediation: Set publicly_accessible = false and reach the database from inside the VPC.
+    remediation_zh: 设置 publicly_accessible = false，从 VPC 内部访问数据库。
   - id: tf-unencrypted-storage
     title: Terraform storage not encrypted
     title_zh: Terraform 存储未加密
@@ -47,52 +113,465 @@ rules:
     confidence: medium
     cwe: CWE-311
     owasp: A02:2021
-    languages:
-      - yaml
-    pattern: encrypted\s*=\s*false|storage_encrypted\s*=\s*false
-    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
+    languages: [yaml]
+    pattern: '\b(?:encrypted|storage_encrypted|at_rest_encryption_enabled|enable_encryption)\s*=\s*false\b|\bencryption_disabled\s*=\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
     message: Storage is explicitly unencrypted, exposing data at rest to anyone with disk or snapshot access.
-    message_zh: 存储被显式设为未加密，拥有磁盘或快照访问权限的人可读取静态数据。
+    message_zh: 存储被显式设置为不加密，任何能访问磁盘或快照的人都能读取静态数据。
     remediation: Enable encryption (SSE) with a managed key.
-    remediation_zh: 启用服务端加密（SSE）并使用托管密钥。
+    remediation_zh: 使用托管密钥启用加密（SSE）。
     references:
       - CWE-311
       - OWASP A02:2021
-  - id: tf-hardcoded-credentials
-    title: Terraform provider block has hard-coded credentials
-    title_zh: Terraform provider 块中硬编码凭据
-    severity: critical
+  - id: tf-transit-encryption-disabled
+    title: Terraform disables encryption in transit
+    title_zh: Terraform 关闭了传输加密
+    severity: medium
     confidence: high
-    cwe: CWE-798
-    owasp: A07:2021
-    languages:
-      - yaml
-    pattern: (?:access_key|secret_key|token|password)\s*=\s*"[^"]{8,}"
-    notPattern: \$\{|\b(?:var|local|data)\.|\bchangeme\b|<[^<>]*>|x{3,}
-    redactEvidence: true
-    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
-    message: A credential is embedded in a provider block, leaking it to anyone who reads the source.
-    message_zh: 凭据直接写入 provider 块，任何能读取源码的人都能获取。
-    remediation: Use environment variables or a secrets manager; never commit credentials.
-    remediation_zh: 使用环境变量或密钥管理器；切勿提交凭据。
-    references:
-      - CWE-798
-      - OWASP A07:2021
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\btransit_encryption_enabled\s*=\s*false\b|\bclient_broker\s*=\s*"(?:PLAINTEXT|TLS_PLAINTEXT)"|\bin_cluster\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Traffic to the cache or broker is not encrypted, so anyone on the network path can read or change it.
+    message_zh: 到缓存或消息代理的流量未加密，网络路径上的任何人都能读取或篡改。
+    remediation: Enable transit encryption (TLS) for clients and between nodes.
+    remediation_zh: 为客户端和节点之间启用传输加密（TLS）。
   - id: tf-iam-wildcard
-    title: Terraform IAM policy allows Action and Resource wildcards
-    title_zh: Terraform IAM 策略使用 Action 与 Resource 通配符
+    title: Terraform IAM policy allows every action
+    title_zh: Terraform IAM 策略允许所有操作
     severity: high
     confidence: medium
     cwe: CWE-732
     owasp: A01:2021
-    languages:
-      - yaml
-    pattern: actions?\s*=\s*\[[^\]]{0,600}"\*"|resources?\s*=\s*\[[^\]]{0,600}"\*"
-    pathInclude: (?:^|/)(?:terraform|tf|infra)/.*\.(?:tf|yaml|yml)$
-    message: An IAM policy with Action "*" and Resource "*" grants unrestricted access.
-    message_zh: Action 与 Resource 均为 "*" 的 IAM 策略授予不受限的访问权限。
+    languages: [yaml]
+    # Action "*" only: Resource "*" alone is normal for actions that have no
+    # resource-level permissions (ec2:Describe*). A list written over several
+    # lines is not seen.
+    pattern: '\bactions?["\x27]?\s*[=:]\s*(?:\[\s*)?["\x27]\*["\x27]'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: An IAM policy with Action "*" grants every API call of every service on the resources it names (all of them with Resource "*").
+    message_zh: Action 为 "*" 的 IAM 策略允许对所列资源调用所有服务的所有 API（Resource 为 "*" 时即全部资源）。
     remediation: Scope actions and resources to the minimum required.
-    remediation_zh: 将 Action 与 Resource 收窄到最小所需范围。
+    remediation_zh: 将操作与资源限制在最小必要范围。
     references:
       - CWE-732
       - OWASP A01:2021
+  - id: tf-iam-passrole-wildcard
+    title: Terraform IAM policy allows iam:PassRole in a policy file with Resource "*"
+    title_zh: Terraform IAM 策略在含 Resource "*" 的文件中允许 iam:PassRole
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-269
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '["\x27]iam:(?:PassRole|\*)["\x27]'
+    notPattern: '{{COMMENT}}'
+    filePattern: '\bresources?["\x27]?\s*[=:]\s*(?:\[\s*)?["\x27]\*["\x27]'
+    pathInclude: '{{TF}}'
+    message: iam:PassRole together with Resource "*" lets the principal hand any role (including admin roles) to a service it controls. Check that this statement names specific roles.
+    message_zh: iam:PassRole 与 Resource "*" 组合可让主体把任意角色（包括管理员角色）交给其控制的服务。请确认该语句只指定了具体角色。
+    remediation: Restrict iam:PassRole to the ARNs of the roles that must be passed, with an iam:PassedToService condition.
+    remediation_zh: 将 iam:PassRole 限定为需要传递的角色 ARN，并加上 iam:PassedToService 条件。
+  - id: tf-iam-admin-policy-attached
+    title: Terraform attaches an AWS administrator policy
+    title_zh: Terraform 附加了 AWS 管理员策略
+    severity: high
+    confidence: medium
+    cwe: CWE-269
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: 'arn:aws:iam::aws:policy/(?:AdministratorAccess|IAMFullAccess|PowerUserAccess)\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: AdministratorAccess, IAMFullAccess and PowerUserAccess give the principal (near) full control of the account.
+    message_zh: AdministratorAccess、IAMFullAccess 和 PowerUserAccess 让主体获得（几乎）完整的账户控制权。
+    remediation: Attach a policy limited to the actions and resources the principal needs.
+    remediation_zh: 附加仅包含所需操作与资源的策略。
+  - id: tf-kms-rotation-disabled
+    title: Terraform KMS key rotation is switched off
+    title_zh: Terraform 关闭了 KMS 密钥轮换
+    severity: medium
+    confidence: high
+    cwe: CWE-320
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\benable_key_rotation\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Automatic key rotation is disabled, so a leaked key stays valid for all data it protects, indefinitely.
+    message_zh: 自动密钥轮换被关闭，泄露的密钥将无限期地对其保护的全部数据有效。
+    remediation: Set enable_key_rotation = true.
+    remediation_zh: 设置 enable_key_rotation = true。
+  - id: tf-kms-rotation-not-enabled
+    title: Terraform KMS key without rotation
+    title_zh: Terraform KMS 密钥未开启轮换
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-320
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '^\s*resource\s+"aws_kms_key"'
+    fileAbsentPattern: '\benable_key_rotation\s*=\s*(?:true|var\.|local\.)'
+    pathInclude: '{{TF}}'
+    message: No KMS key in this file enables rotation, and the AWS default is off.
+    message_zh: 该文件中没有任何 KMS 密钥开启轮换，而 AWS 默认是关闭的。
+    remediation: Set enable_key_rotation = true on symmetric keys.
+    remediation_zh: 对对称密钥设置 enable_key_rotation = true。
+  - id: tf-cloudtrail-logging-disabled
+    title: Terraform CloudTrail logging or log validation is off
+    title_zh: Terraform 关闭了 CloudTrail 日志或日志校验
+    severity: medium
+    confidence: high
+    cwe: CWE-778
+    owasp: A09:2021
+    languages: [yaml]
+    pattern: '\b(?:enable_logging|enable_log_file_validation)\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    filePattern: '"aws_cloudtrail"'
+    pathInclude: '{{TF}}'
+    message: The trail does not record API activity, or its log files can be altered without detection.
+    message_zh: 该 trail 不记录 API 活动，或其日志文件可被篡改而不被发现。
+    remediation: Set enable_logging and enable_log_file_validation to true.
+    remediation_zh: 将 enable_logging 和 enable_log_file_validation 设为 true。
+  - id: tf-lb-http-listener
+    title: Terraform load balancer listens on plain HTTP
+    title_zh: Terraform 负载均衡器使用明文 HTTP 监听
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    flags: ''
+    pattern: '^\s*protocol\s*=\s*"HTTP"|\blb_protocol\s*=\s*"(?:http|HTTP)"'
+    filePattern: '"aws_(?:a?lb_listener|elb)"'
+    pathInclude: '{{TF}}'
+    message: A listener accepts plain HTTP. That is fine when it only redirects to HTTPS; check that it does.
+    message_zh: 监听器接受明文 HTTP。若仅用于重定向到 HTTPS 则没有问题，请确认。
+    remediation: Serve HTTPS, and make the HTTP listener a redirect to HTTPS.
+    remediation_zh: 提供 HTTPS，并让 HTTP 监听器只做 HTTPS 重定向。
+  - id: tf-lb-outdated-ssl-policy
+    title: Terraform load balancer allows TLS 1.0 or 1.1
+    title_zh: Terraform 负载均衡器允许 TLS 1.0 或 1.1
+    severity: medium
+    confidence: high
+    cwe: CWE-326
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\bssl_policy\s*=\s*"ELBSecurityPolicy-(?:2015-05|2016-08|TLS-1-0-2015-04|TLS-1-1-2017-01|FS-2018-06|FS-1-1-2019-08|TLS13-1-0-2021-06|TLS13-1-1-2021-06)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The SSL policy accepts TLS 1.0 or 1.1, which are deprecated and allow weak cipher suites.
+    message_zh: 该 SSL 策略接受已弃用的 TLS 1.0 或 1.1，并允许弱加密套件。
+    remediation: Use ELBSecurityPolicy-TLS13-1-2-2021-06 or another policy with TLS 1.2 as the minimum.
+    remediation_zh: 使用 ELBSecurityPolicy-TLS13-1-2-2021-06 或其他最低版本为 TLS 1.2 的策略。
+  - id: tf-cloudfront-allow-http
+    title: Terraform CloudFront allows plain HTTP to viewers
+    title_zh: Terraform CloudFront 允许查看者使用明文 HTTP
+    severity: medium
+    confidence: high
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\bviewer_protocol_policy\s*=\s*"allow-all"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The distribution serves content over plain HTTP, so it can be read or changed in transit.
+    message_zh: 该分发以明文 HTTP 提供内容，传输中可被读取或篡改。
+    remediation: Use redirect-to-https or https-only.
+    remediation_zh: 使用 redirect-to-https 或 https-only。
+  - id: tf-cloudfront-outdated-tls
+    title: Terraform CloudFront allows an outdated TLS version
+    title_zh: Terraform CloudFront 允许过时的 TLS 版本
+    severity: medium
+    confidence: high
+    cwe: CWE-326
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\bminimum_protocol_version\s*=\s*"(?:SSLv3|TLSv1|TLSv1_2016|TLSv1\.1_2016)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The viewer certificate accepts SSLv3, TLS 1.0 or TLS 1.1.
+    message_zh: 查看者证书配置接受 SSLv3、TLS 1.0 或 TLS 1.1。
+    remediation: Set minimum_protocol_version to TLSv1.2_2021.
+    remediation_zh: 将 minimum_protocol_version 设为 TLSv1.2_2021。
+  - id: tf-ec2-imdsv1
+    title: Terraform instance allows IMDSv1
+    title_zh: Terraform 实例允许 IMDSv1
+    severity: medium
+    confidence: high
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [yaml]
+    pattern: '\bhttp_tokens\s*=\s*"optional"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The instance metadata service accepts requests without a session token, so a server-side request forgery in the workload can read the instance role credentials.
+    message_zh: 实例元数据服务接受无会话令牌的请求，工作负载中的 SSRF 即可读取实例角色凭据。
+    remediation: Set http_tokens = "required" in metadata_options.
+    remediation_zh: 在 metadata_options 中设置 http_tokens = "required"。
+  - id: tf-hardcoded-credentials
+    title: Terraform has hard-coded credentials
+    title_zh: Terraform 中硬编码了凭据
+    severity: critical
+    confidence: high
+    cwe: CWE-798
+    owasp: A07:2021
+    group: tf-credential-literal
+    languages: [yaml]
+    pattern: '(?:access_key|secret_key|token|password)\s*=\s*"[^"]{8,}"'
+    notPattern: '{{NOT_LITERAL}}|{{COMMENT}}'
+    redactEvidence: true
+    pathInclude: '{{TF}}'
+    message: A credential is embedded in Terraform source (provider, resource or tfvars), leaking it to anyone who reads the source or the state.
+    message_zh: 凭据被写入 Terraform 源码（provider、资源或 tfvars），任何能阅读源码或 state 的人都能获得。
+    remediation: Use environment variables or a secrets manager; never commit credentials.
+    remediation_zh: 使用环境变量或密钥管理服务；不要提交凭据。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: tf-secret-literal
+    title: Terraform assigns a literal secret, API key or connection string
+    title_zh: Terraform 中赋值了明文密钥、API key 或连接字符串
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    group: tf-credential-literal
+    languages: [yaml]
+    # Lambda / app environment variables and resource arguments whose name
+    # ends with a credential word (secret_arn, api_key_id do not).
+    pattern: '\b\w{0,60}?(?:secret|api_?key|apikey|private_key|client_secret|auth_token|connection_string|passwd|pwd)\s*=\s*"(?<secret>[^"$\s]{8,200})"'
+    notPattern: '{{NOT_LITERAL}}|{{COMMENT}}|"arn:|\b(?:example|placeholder|dummy|redacted)\b'
+    redactEvidence: true
+    pathInclude: '{{TF}}'
+    message: A secret value is written into Terraform source; it ends up in the repository, the plan output and the state file.
+    message_zh: 密钥值被写入 Terraform 源码，会出现在仓库、plan 输出和 state 文件中。
+    remediation: Read it from a secrets manager (data source) or a sensitive variable supplied at apply time.
+    remediation_zh: 通过数据源从密钥管理服务读取，或使用在 apply 时提供的 sensitive 变量。
+  - id: tf-secret-variable-default
+    title: Terraform secret variable has a literal default
+    title_zh: Terraform 密钥变量带有明文默认值
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [yaml]
+    # Only the one-line form `variable "db_password" { default = "..." }`:
+    # in the usual multi-line block the default line does not show the
+    # variable name.
+    pattern: '\bvariable\s+"[^"\n]{0,60}(?:password|passwd|secret|token|api_?key|private_key)[^"\n]{0,20}"\s*\{[^}\n]{0,200}?\bdefault\s*=\s*"(?<secret>[^"$\s]{6,200})"'
+    notPattern: '{{COMMENT}}|\b(?:changeme|example|placeholder|dummy)\b'
+    redactEvidence: true
+    pathInclude: '{{TF}}'
+    message: A variable meant for a secret has a literal default, so the secret is in the repository and used whenever no value is supplied.
+    message_zh: 用于密钥的变量带有明文默认值，密钥因此进入仓库，并在未提供值时被使用。
+    remediation: Remove the default, mark the variable sensitive, and supply the value at apply time.
+    remediation_zh: 删除默认值，将变量标记为 sensitive，并在 apply 时提供值。
+  - id: tf-iam-service-wildcard
+    title: Terraform IAM policy allows every action of a service
+    title_zh: Terraform IAM 策略允许某服务的所有操作
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '["\x27][a-z][\w-]{1,40}:\*["\x27]'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: An action such as s3:* or iam:* grants every present and future API call of that service. Check that the statement is limited to specific resources.
+    message_zh: 诸如 s3:* 或 iam:* 的操作会授予该服务所有现有及未来的 API 调用。请确认该语句限定了具体资源。
+    remediation: List the specific actions the principal needs.
+    remediation_zh: 列出主体所需的具体操作。
+  # -------------------------------------------------------------- Azure
+  - id: tf-azure-storage-public-access
+    title: Terraform Azure storage allows public blob access
+    title_zh: Terraform Azure 存储允许公开访问 Blob
+    severity: high
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\b(?:allow_blob_public_access|allow_nested_items_to_be_public)\s*=\s*true\b|\bcontainer_access_type\s*=\s*"(?:blob|container)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Blobs or containers can be read anonymously from the internet.
+    message_zh: Blob 或容器可以被互联网匿名读取。
+    remediation: Set allow_nested_items_to_be_public = false and container_access_type = "private".
+    remediation_zh: 设置 allow_nested_items_to_be_public = false 和 container_access_type = "private"。
+  - id: tf-azure-public-network-access
+    title: Terraform Azure resource enables public network access
+    title_zh: Terraform Azure 资源开启了公网访问
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-668
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\bpublic_network_access_enabled\s*=\s*true\b|\bpublic_network_access\s*=\s*"Enabled"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The resource is reachable from the public internet. That is expected for a public web app, not for a database, key vault or storage account.
+    message_zh: 该资源可从公网访问。对公开 Web 应用属正常，但不应用于数据库、Key Vault 或存储账户。
+    remediation: Disable public network access and use private endpoints, or restrict network rules to known ranges.
+    remediation_zh: 关闭公网访问并使用专用终结点，或把网络规则限制为已知网段。
+  - id: tf-outdated-tls-version
+    title: Terraform allows TLS 1.0 or 1.1 as the minimum version
+    title_zh: Terraform 允许 TLS 1.0 或 1.1 作为最低版本
+    severity: medium
+    confidence: high
+    cwe: CWE-326
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\b\w{0,40}tls_version\w{0,20}\s*=\s*"(?:TLS)?1[._][01]"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The service accepts TLS 1.0 or 1.1, which are deprecated and allow weak cipher suites.
+    message_zh: 该服务接受已弃用的 TLS 1.0 或 1.1，并允许弱加密套件。
+    remediation: Set the minimum TLS version to 1.2 (TLS1_2).
+    remediation_zh: 将最低 TLS 版本设为 1.2（TLS1_2）。
+  - id: tf-azure-https-only-disabled
+    title: Terraform Azure resource allows plain HTTP
+    title_zh: Terraform Azure 资源允许明文 HTTP
+    severity: medium
+    confidence: high
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\b(?:https_only|enable_https_traffic_only|https_traffic_only_enabled)\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The app or storage account accepts unencrypted HTTP requests.
+    message_zh: 应用或存储账户接受未加密的 HTTP 请求。
+    remediation: Set https_only (or https_traffic_only_enabled) to true.
+    remediation_zh: 将 https_only（或 https_traffic_only_enabled）设为 true。
+  - id: tf-azure-network-default-allow
+    title: Terraform Azure network rules allow by default
+    title_zh: Terraform Azure 网络规则默认允许
+    severity: medium
+    confidence: medium
+    cwe: CWE-284
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\bdefault_action\s*=\s*"Allow"'
+    notPattern: '{{COMMENT}}'
+    filePattern: '"azurerm_'
+    pathInclude: '{{TF}}'
+    message: The network rules of the storage account or key vault let every network in, so the IP and subnet rules have no effect.
+    message_zh: 存储账户或 Key Vault 的网络规则默认放行所有网络，IP 与子网规则因而失效。
+    remediation: Set default_action = "Deny" and list the allowed networks.
+    remediation_zh: 设置 default_action = "Deny" 并列出允许的网络。
+  - id: tf-azure-sql-firewall-all
+    title: Terraform Azure firewall rule allows every IPv4 address
+    title_zh: Terraform Azure 防火墙规则允许所有 IPv4 地址
+    severity: high
+    confidence: high
+    cwe: CWE-284
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\bend_ip_address\s*=\s*"255\.255\.255\.255"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The firewall rule ends at 255.255.255.255, which opens the database server to the whole internet.
+    message_zh: 防火墙规则的结束地址为 255.255.255.255，使数据库服务器对整个互联网开放。
+    remediation: Allow only the addresses of known clients, or use private endpoints.
+    remediation_zh: 仅允许已知客户端地址，或使用专用终结点。
+  # ---------------------------------------------------------------- GCP
+  - id: tf-gcp-public-member
+    title: Terraform GCP grants a role to allUsers or allAuthenticatedUsers
+    title_zh: Terraform GCP 向 allUsers 或 allAuthenticatedUsers 授权
+    severity: high
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '"(?:[A-Za-z]+:)?(?:allUsers|allAuthenticatedUsers)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: allUsers is anyone on the internet and allAuthenticatedUsers is anyone with a Google account; the resource becomes public.
+    message_zh: allUsers 表示互联网上的任何人，allAuthenticatedUsers 表示任何拥有 Google 账号的人；资源因此公开。
+    remediation: Grant the role to specific users, groups or service accounts.
+    remediation_zh: 将角色授予具体的用户、组或服务账号。
+  - id: tf-gcp-public-bucket-acl
+    title: Terraform GCS bucket or object has a public ACL
+    title_zh: Terraform GCS 存储桶或对象使用公开 ACL
+    severity: high
+    confidence: high
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\bpredefined_acl\s*=\s*"(?:publicRead|publicReadWrite)"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: The predefined ACL makes the bucket or object readable by anyone on the internet.
+    message_zh: 预定义 ACL 使存储桶或对象可被互联网上的任何人读取。
+    remediation: Use uniform bucket-level access and grant IAM roles to specific principals.
+    remediation_zh: 使用统一存储桶级访问控制，并向具体主体授予 IAM 角色。
+  - id: tf-gcp-legacy-abac
+    title: Terraform GKE enables legacy ABAC
+    title_zh: Terraform GKE 启用了旧版 ABAC
+    severity: high
+    confidence: high
+    cwe: CWE-285
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\benable_legacy_abac\s*=\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Legacy ABAC grants broad rights that RBAC cannot restrict, for example to every service account in the cluster.
+    message_zh: 旧版 ABAC 授予的宽泛权限无法用 RBAC 限制，例如授予集群中每个服务账号。
+    remediation: Set enable_legacy_abac = false and use RBAC.
+    remediation_zh: 设置 enable_legacy_abac = false 并使用 RBAC。
+  - id: tf-gcp-authorized-network-open
+    title: Terraform GCP authorized network is 0.0.0.0/0
+    title_zh: Terraform GCP 授权网络为 0.0.0.0/0
+    severity: high
+    confidence: medium
+    cwe: CWE-284
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\b(?:cidr_block|value)\s*=\s*"0\.0\.0\.0/0"'
+    notPattern: '{{COMMENT}}'
+    filePattern: 'authorized_networks'
+    pathInclude: '{{TF}}'
+    message: The GKE control plane or Cloud SQL instance accepts connections from every IPv4 address.
+    message_zh: GKE 控制平面或 Cloud SQL 实例接受来自所有 IPv4 地址的连接。
+    remediation: List only the networks of known clients, or use private IP.
+    remediation_zh: 仅列出已知客户端的网络，或使用私有 IP。
+  - id: tf-gke-logging-disabled
+    title: Terraform GKE cluster has logging or monitoring turned off
+    title_zh: Terraform GKE 集群关闭了日志或监控
+    severity: medium
+    confidence: high
+    cwe: CWE-778
+    owasp: A09:2021
+    languages: [yaml]
+    pattern: '\b(?:logging_service|monitoring_service)\s*=\s*"none"'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Cluster logs or metrics are not sent anywhere, so an intrusion leaves no trace.
+    message_zh: 集群日志或指标没有被发送到任何地方，入侵不会留下痕迹。
+    remediation: Use logging.googleapis.com/kubernetes and monitoring.googleapis.com/kubernetes.
+    remediation_zh: 使用 logging.googleapis.com/kubernetes 和 monitoring.googleapis.com/kubernetes。
+  - id: tf-db-ssl-not-required
+    title: Terraform database does not require SSL
+    title_zh: Terraform 数据库未强制 SSL
+    severity: medium
+    confidence: high
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [yaml]
+    pattern: '\brequire_ssl\s*=\s*false\b|\bssl_mode\s*=\s*"ALLOW_UNENCRYPTED_AND_ENCRYPTED"|\bssl_enforcement_enabled\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathInclude: '{{TF}}'
+    message: Clients may connect to the database without TLS.
+    message_zh: 客户端可以不使用 TLS 连接数据库。
+    remediation: Require TLS (Cloud SQL ssl_mode = "ENCRYPTED_ONLY", Azure ssl_enforcement_enabled = true).
+    remediation_zh: 强制 TLS（Cloud SQL 设置 ssl_mode = "ENCRYPTED_ONLY"，Azure 设置 ssl_enforcement_enabled = true）。
