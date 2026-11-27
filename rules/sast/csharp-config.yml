@@ -1,0 +1,128 @@
+version: 1
+# Built-in rules for .NET configuration: web.config / app.config (*.config,
+# language xml, matched line by line) and appsettings*.json (language json).
+# Written for code-audit (Apache-2.0). See csharp.yml for the conventions.
+definitions:
+  TESTPATH: '(?:^|/)(?:[Tt]ests?|[Tt]esting|[Ss]pecs?)/|(?:^|/)[^/]{0,200}\.(?:[A-Za-z]{1,40}\.)?Tests?/'
+  SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:[Ee]xamples?|[Ss]amples?|[Dd]ocs?|[Dd]emos?)/'
+  # web.config transforms for local builds, where debug settings are expected.
+  DEVCONFIG: '(?:^|/)[Ww]eb\.[Dd]ebug\.config$|{{SAMPLEPATH}}'
+  # appsettings files of a production-like environment (not Development,
+  # Local or a test environment).
+  APPSETTINGS: '(?:^|/)appsettings(?:\.[\w-]{1,80})?\.json$'
+  DEVAPPSETTINGS: '(?:^|/)appsettings\.(?:[Dd]evelopment|[Dd]ev|[Ll]ocal|[Tt]est\w{0,40}|[Dd]ocker\w{0,40})\.json$|{{SAMPLEPATH}}'
+rules:
+  - id: cs-config-debug-compilation
+    title: ASP.NET compiled in debug mode (web.config)
+    title_zh: ASP.NET 以调试模式编译（web.config）
+    severity: medium
+    confidence: medium
+    cwe: CWE-489
+    owasp: A05:2021
+    languages: [xml]
+    pathExclude: '{{DEVCONFIG}}'
+    pattern: '<compilation\b[^>]{0,600}\bdebug\s*=\s*["\x27]true["\x27]'
+    message: debug="true" disables batch compilation and timeouts and adds debug information to error pages; it is not meant for a deployed site.
+    message_zh: debug="true" 会关闭批量编译和超时设置，并在错误页中加入调试信息；不应用于已部署的网站。
+    remediation: Set debug="false" (or remove it in Web.Release.config with xdt:Transform="RemoveAttributes(debug)").
+    remediation_zh: 设置 debug="false"（或在 Web.Release.config 中通过 xdt:Transform="RemoveAttributes(debug)" 移除）。
+  - id: cs-config-custom-errors-off
+    title: ASP.NET custom errors off (web.config)
+    title_zh: ASP.NET 关闭了自定义错误页（web.config）
+    severity: medium
+    confidence: medium
+    cwe: CWE-209
+    owasp: A05:2021
+    languages: [xml]
+    pathExclude: '{{DEVCONFIG}}'
+    pattern: '<customErrors\b[^>]{0,600}\bmode\s*=\s*["\x27]Off["\x27]'
+    message: customErrors mode="Off" shows detailed error pages with stack traces to every visitor.
+    message_zh: customErrors mode="Off" 会向所有访问者显示带堆栈跟踪的详细错误页。
+    remediation: Use mode="RemoteOnly" or "On" with a defaultRedirect error page.
+    remediation_zh: 使用 mode="RemoteOnly" 或 "On"，并配置 defaultRedirect 错误页。
+  - id: cs-config-insecure-cookies
+    title: ASP.NET cookies without HttpOnly or Secure (web.config)
+    title_zh: ASP.NET Cookie 不带 HttpOnly 或 Secure（web.config）
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages: [xml]
+    pathExclude: '{{DEVCONFIG}}'
+    pattern: '<httpCookies\b[^>]{0,600}\b(?:httpOnlyCookies|requireSSL)\s*=\s*["\x27]false["\x27]'
+    message: Cookies are readable by scripts (httpOnlyCookies="false") or sent over plain HTTP (requireSSL="false").
+    message_zh: Cookie 可被脚本读取（httpOnlyCookies="false"）或经明文 HTTP 发送（requireSSL="false"）。
+    remediation: Set <httpCookies httpOnlyCookies="true" requireSSL="true" />.
+    remediation_zh: 设置 <httpCookies httpOnlyCookies="true" requireSSL="true" />。
+  - id: cs-config-trace-enabled
+    title: ASP.NET tracing enabled (web.config)
+    title_zh: ASP.NET 启用了跟踪（web.config）
+    severity: low
+    confidence: medium
+    cwe: CWE-489
+    owasp: A05:2021
+    languages: [xml]
+    pathExclude: '{{DEVCONFIG}}'
+    pattern: '<trace\b[^>]{0,600}\benabled\s*=\s*["\x27]true["\x27]'
+    notPattern: '\blocalOnly\s*=\s*["\x27]true["\x27]'
+    message: Application tracing is on; trace.axd (and pageOutput) show request details, session values and headers, to every client when localOnly="false".
+    message_zh: 应用跟踪已开启；trace.axd（以及 pageOutput）会显示请求详情、会话值和请求头，localOnly="false" 时对所有客户端可见。
+    remediation: Set <trace enabled="false" /> on deployed sites, or at least keep localOnly="true".
+    remediation_zh: 已部署的网站设置 <trace enabled="false" />，至少保持 localOnly="true"。
+  - id: cs-config-request-validation-disabled
+    title: ASP.NET request validation disabled (web.config)
+    title_zh: ASP.NET 关闭了请求校验（web.config）
+    severity: medium
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [xml]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '\bvalidateRequest\s*=\s*["\x27]false["\x27]|\brequestValidationMode\s*=\s*["\x27](?:[0-3]\.\d)["\x27]'
+    message: Request validation is off for all pages (validateRequest="false"), or limited to pages only (requestValidationMode="2.0"); HTML and script reach the application unchecked.
+    message_zh: 所有页面都关闭了请求校验（validateRequest="false"），或请求校验只作用于页面（requestValidationMode="2.0"）；HTML 和脚本可不经检查进入应用。
+    remediation: Keep request validation on and encode every value on output.
+    remediation_zh: 保持请求校验开启，并在输出时编码所有值。
+  - id: cs-config-viewstate-mac-disabled
+    title: ASP.NET ViewState MAC disabled (web.config)
+    title_zh: ASP.NET 关闭了 ViewState MAC（web.config）
+    severity: high
+    confidence: high
+    cwe: CWE-642
+    owasp: A08:2021
+    languages: [xml]
+    pattern: '\benableViewStateMac\s*=\s*["\x27]false["\x27]'
+    message: Without the ViewState MAC a client can send a forged ViewState, which ASP.NET deserializes (code execution through LosFormatter gadgets).
+    message_zh: 没有 ViewState MAC 时客户端可以发送伪造的 ViewState，ASP.NET 会反序列化它（可通过 LosFormatter 利用链执行代码）。
+    remediation: Remove enableViewStateMac="false"; ASP.NET 4.5.2 and later refuse to turn it off.
+    remediation_zh: 删除 enableViewStateMac="false"；ASP.NET 4.5.2 及以后版本不允许关闭它。
+  - id: cs-config-machinekey-literal
+    title: ASP.NET machineKey with literal keys (web.config)
+    title_zh: ASP.NET machineKey 使用字面量密钥（web.config）
+    severity: high
+    confidence: high
+    cwe: CWE-798
+    owasp: A02:2021
+    languages: [xml]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '(?<=<machineKey\b[^>]{0,800})\b(?:validationKey|decryptionKey)\s*=\s*["\x27](?<secret>[0-9A-Fa-f]{16,512})["\x27]'
+    redactEvidence: true
+    message: The machine keys that sign and encrypt ViewState, forms-authentication tickets and cookies are in the file; with them anyone can forge a ViewState (code execution) or an authentication cookie.
+    message_zh: 用于签名和加密 ViewState、表单认证票据和 Cookie 的机器密钥写在文件中；拿到它们就能伪造 ViewState（代码执行）或认证 Cookie。
+    remediation: Rotate the keys and keep them out of source control (encrypted configuration section, or AutoGenerate,IsolateApps on a single server).
+    remediation_zh: 轮换密钥并将其移出源码管理（使用加密的配置节，或单服务器上使用 AutoGenerate,IsolateApps）。
+  - id: cs-appsettings-insecure
+    title: ASP.NET Core appsettings with detailed errors or HTTP metadata
+    title_zh: ASP.NET Core appsettings 开启详细错误或允许 HTTP 元数据
+    severity: medium
+    confidence: medium
+    cwe: CWE-209
+    owasp: A05:2021
+    languages: [json]
+    pathInclude: '{{APPSETTINGS}}'
+    pathExclude: '{{DEVAPPSETTINGS}}'
+    pattern: '"DetailedErrors"\s*:\s*true\b|"RequireHttpsMetadata"\s*:\s*false\b'
+    message: A settings file that is not for development turns on detailed errors (stack traces to clients) or allows OpenID Connect metadata and signing keys over plain HTTP.
+    message_zh: 非开发环境的配置文件开启了详细错误（向客户端显示堆栈），或允许通过明文 HTTP 获取 OpenID Connect 元数据和签名密钥。
+    remediation: Keep these settings in appsettings.Development.json only.
+    remediation_zh: 这些设置只放在 appsettings.Development.json 中。

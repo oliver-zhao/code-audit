@@ -132,6 +132,26 @@ describe("rule coverage of fixtures", () => {
     expect(inScope.filter((hit) => hit.rule.kind === "hotspot").length).toBeGreaterThan(20);
   });
 
+  it("lists every finding and hotspot the engine reports in the C# rule fixtures", () => {
+    // Bidirectional for csharp/**: C# sources, Razor views, web.config and
+    // appsettings.json. A result that EXPECTED.json does not list (or lists
+    // with another kind) is an unreviewed result.
+    const listed = new Set(
+      expected.seeds.map(
+        (seed) => `${seed.file}:${seed.line}:${seed.ruleId}:${seed.kind ?? "finding"}`,
+      ),
+    );
+    const inScope = result.hits.filter((hit) => hit.file.relPath.startsWith("csharp/"));
+    const unlisted = inScope
+      .map((hit) => `${hit.file.relPath}:${hit.line}:${hit.rule.id}:${hit.rule.kind}`)
+      .filter((key) => !listed.has(key));
+    expect(unlisted).toEqual([]);
+    const languages = new Set(inScope.map((hit) => hit.file.language));
+    expect([...languages].sort()).toEqual(["csharp", "json", "razor", "xml"]);
+    expect(inScope.filter((hit) => hit.rule.kind === "finding").length).toBeGreaterThan(40);
+    expect(inScope.filter((hit) => hit.rule.kind === "hotspot").length).toBeGreaterThan(15);
+  });
+
   it("supports inline code-audit:ignore with a reason", () => {
     const project = path.join(temp, "suppressed");
     writeFile(
@@ -1071,6 +1091,9 @@ describe("evidence of credential rules", () => {
       .sort();
     expect(flagged).toEqual([
       "agent-mcp-inline-secret",
+      "cs-config-machinekey-literal",
+      "cs-hardcoded-crypto-key",
+      "cs-jwt-hardcoded-key",
       "dep-http-install",
       "dep-pip-trusted-host",
       "k8s-secret-in-env",

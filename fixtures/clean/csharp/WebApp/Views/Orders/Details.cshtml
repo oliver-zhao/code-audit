@@ -1,0 +1,8 @@
+@model SafeShop.OrderViewModel
+@{
+    ViewData["Title"] = "Order";
+}
+<h1>@Model.Title</h1>
+<div class="notes">@Model.Notes</div>
+<div class="echo">@Context.Request.Query["message"]</div>
+<p>@Html.Raw("<em>static markup</em>")</p>

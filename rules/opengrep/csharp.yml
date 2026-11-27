@@ -1,5 +1,6 @@
 # Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# Not copied from the Semgrep registry; validated as YAML only.
+# Not copied from the Semgrep registry. Validated with Opengrep 1.33.1 against
+# fixtures/vulnerable/csharp and fixtures/clean/csharp.
 rules:
   - id: cs-opengrep-binary-formatter
     languages: [csharp]
@@ -24,3 +25,139 @@ rules:
       - pattern: $ARGS[0]
     pattern-sinks:
       - pattern: Process.Start(...)
+
+  - id: cs-opengrep-aspnet-sql
+    languages: [csharp]
+    severity: ERROR
+    message: Data from the HTTP request (query string, form, headers, cookies or a [FromQuery]/[FromForm]/[FromBody]/[FromRoute] parameter) reaches the SQL text of a command (SqlCommand, CommandText, EF Core FromSqlRaw/ExecuteSqlRaw). Pass it as a parameter instead.
+    metadata:
+      cwe: "CWE-89"
+      confidence: HIGH
+    mode: taint
+    pattern-sources: &aspnet-sources
+      - pattern: Request.Query[...]
+      - pattern: Request.Form[...]
+      - pattern: Request.Headers[...]
+      - pattern: Request.Cookies[...]
+      - pattern: HttpContext.Request.Query[...]
+      - pattern: HttpContext.Request.Form[...]
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromQuery] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromQuery(...)] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromForm] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromForm(...)] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromBody] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromBody(...)] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromRoute] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+      - patterns:
+          - pattern-inside: |
+              $RET $METHOD(..., [FromRoute(...)] $TYPE $PARAM, ...) { ... }
+          - pattern: $PARAM
+    pattern-sanitizers: &aspnet-sanitizers
+      - pattern: int.Parse(...)
+      - pattern: long.Parse(...)
+      - pattern: Guid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new SqlCommand($SQL, ...)
+              - pattern: new SqliteCommand($SQL, ...)
+              - pattern: new NpgsqlCommand($SQL, ...)
+              - pattern: new MySqlCommand($SQL, ...)
+              - pattern: $CMD.CommandText = $SQL
+              - pattern: $DB.FromSqlRaw($SQL, ...)
+              - pattern: $DB.ExecuteSqlRaw($SQL, ...)
+              - pattern: $DB.ExecuteSqlRawAsync($SQL, ...)
+          - focus-metavariable: $SQL
+
+  - id: cs-opengrep-aspnet-command
+    languages: [csharp]
+    severity: ERROR
+    message: Data from the HTTP request reaches the program or argument string of a process (Process.Start, ProcessStartInfo). Use a fixed program and ProcessStartInfo.ArgumentList with allowlisted values.
+    metadata:
+      cwe: "CWE-78"
+      confidence: HIGH
+    mode: taint
+    pattern-sources: *aspnet-sources
+    pattern-sanitizers: *aspnet-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Process.Start($ARG, ...)
+              - pattern: Process.Start($EXE, $ARG)
+              - pattern: new ProcessStartInfo($ARG, ...)
+              - pattern: new ProcessStartInfo($EXE, $ARG)
+              - pattern: $PSI.FileName = $ARG
+              - pattern: $PSI.Arguments = $ARG
+          - focus-metavariable: $ARG
+
+  - id: cs-opengrep-aspnet-path
+    languages: [csharp]
+    severity: ERROR
+    message: Data from the HTTP request reaches a file path (File.*, Path.Combine, FileStream, PhysicalFile); "../" in it reaches files outside the intended directory.
+    metadata:
+      cwe: "CWE-22"
+      confidence: HIGH
+    mode: taint
+    pattern-sources: *aspnet-sources
+    pattern-sanitizers:
+      - pattern: Path.GetFileName(...)
+      - pattern: int.Parse(...)
+      - pattern: Guid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: File.$METHOD($PATH, ...)
+              - pattern: System.IO.File.$METHOD($PATH, ...)
+              - pattern: Path.Combine(..., $PATH, ...)
+              - pattern: new FileStream($PATH, ...)
+              - pattern: PhysicalFile($PATH, ...)
+          - focus-metavariable: $PATH
+
+  - id: cs-opengrep-aspnet-redirect
+    languages: [csharp]
+    severity: WARNING
+    message: Data from the HTTP request is used as a redirect target without Url.IsLocalUrl; the site can send users to any other site (open redirect). Use LocalRedirect or check Url.IsLocalUrl first.
+    metadata:
+      cwe: "CWE-601"
+      confidence: HIGH
+    mode: taint
+    pattern-sources: *aspnet-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Redirect($URL)
+              - pattern: RedirectPermanent($URL)
+              - pattern: Response.Redirect($URL, ...)
+          - pattern-not-inside: |
+              if (<... Url.IsLocalUrl(...) ...>) { ... }
+          - pattern-not-inside: |
+              if (<... Url.IsLocalUrl(...) ...>) $STMT;
+          # A URL built by a helper method (which may fix the host) is not
+          # reported; the request value must be the target or part of it.
+          - metavariable-pattern:
+              metavariable: $URL
+              patterns:
+                - pattern-not: $OBJ.$HELPER(...)
+                - pattern-not: $HELPER(...)
+          - focus-metavariable: $URL

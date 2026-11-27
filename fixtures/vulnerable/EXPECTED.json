@@ -11,7 +11,7 @@
     {
       "file": "csharp/Program.cs",
       "line": 16,
-      "ruleId": "cs-command-injection",
+      "ruleId": "cs-command-shell",
       "language": "csharp",
       "kind": "finding"
     },
@@ -25,9 +25,9 @@
     {
       "file": "csharp/Program.cs",
       "line": 18,
-      "ruleId": "cs-path-traversal",
+      "ruleId": "cs-path-api",
       "language": "csharp",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "csharp/Program.cs",
@@ -48,6 +48,440 @@
       "line": 22,
       "ruleId": "cs-xxe",
       "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/appsettings.json",
+      "line": 7,
+      "ruleId": "cs-appsettings-insecure",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/appsettings.json",
+      "line": 11,
+      "ruleId": "cs-appsettings-insecure",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 38,
+      "ruleId": "cs-sql-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 48,
+      "ruleId": "cs-sql-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 49,
+      "ruleId": "cs-sql-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 50,
+      "ruleId": "cs-sql-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 51,
+      "ruleId": "cs-sql-dynamic",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 52,
+      "ruleId": "cs-sql-string-built",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 59,
+      "ruleId": "cs-command-shell",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 60,
+      "ruleId": "cs-command-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 68,
+      "ruleId": "cs-ldap-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 71,
+      "ruleId": "cs-xpath-injection",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 78,
+      "ruleId": "cs-open-redirect",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 84,
+      "ruleId": "cs-path-traversal",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 96,
+      "ruleId": "cs-zip-slip",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 102,
+      "ruleId": "cs-antiforgery-disabled",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 105,
+      "ruleId": "cs-type-from-request",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 106,
+      "ruleId": "cs-dynamic-code",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 113,
+      "ruleId": "cs-xss-raw-request",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 20,
+      "ruleId": "cs-weak-cipher",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 22,
+      "ruleId": "cs-ecb-mode",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 23,
+      "ruleId": "cs-hardcoded-crypto-key",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 24,
+      "ruleId": "cs-pbkdf2-weak",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 25,
+      "ruleId": "cs-pbkdf2-weak",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 26,
+      "ruleId": "cs-weak-hash",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 27,
+      "ruleId": "cs-weak-hmac",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 29,
+      "ruleId": "cs-rsa-pkcs1-encryption",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 35,
+      "ruleId": "cs-insecure-deserialization",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 36,
+      "ruleId": "cs-json-typenamehandling",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 37,
+      "ruleId": "cs-javascriptserializer-type-resolver",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 38,
+      "ruleId": "cs-deserialize-runtime-type",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 39,
+      "ruleId": "cs-insecure-deserialization",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 40,
+      "ruleId": "cs-xmltextreader",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 41,
+      "ruleId": "cs-xxe-prohibit-dtd",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 42,
+      "ruleId": "cs-xxe-url-resolver",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 44,
+      "ruleId": "cs-dataset-readxml",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/LegacyController.cs",
+      "line": 9,
+      "ruleId": "cs-request-validation-disabled",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/LegacyController.cs",
+      "line": 16,
+      "ruleId": "cs-request-validation-disabled",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/LegacyController.cs",
+      "line": 19,
+      "ruleId": "cs-xss-raw-request",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 22,
+      "ruleId": "cs-jwt-https-metadata-disabled",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 25,
+      "ruleId": "cs-jwt-claims-validation-disabled",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 26,
+      "ruleId": "cs-jwt-lifetime-disabled",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 27,
+      "ruleId": "cs-jwt-unsigned-tokens",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 28,
+      "ruleId": "cs-jwt-hardcoded-key",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 33,
+      "ruleId": "cs-cors-any-origin-credentials",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 39,
+      "ruleId": "cs-cookie-insecure",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 40,
+      "ruleId": "cs-cookie-samesite-none",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 45,
+      "ruleId": "cs-tls-cert-validation-disabled",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 46,
+      "ruleId": "cs-tls-revocation-check-disabled",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 47,
+      "ruleId": "cs-tls-weak-protocol",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 50,
+      "ruleId": "cs-tls-weak-protocol",
+      "language": "csharp",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Startup.cs",
+      "line": 55,
+      "ruleId": "cs-developer-exception-page",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Views/Orders/Details.cshtml",
+      "line": 6,
+      "ruleId": "cs-xss-raw-html",
+      "language": "razor",
+      "kind": "hotspot"
+    },
+    {
+      "file": "csharp/WebApp/Views/Orders/Details.cshtml",
+      "line": 7,
+      "ruleId": "cs-xss-raw-request",
+      "language": "razor",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 5,
+      "ruleId": "cs-config-debug-compilation",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 6,
+      "ruleId": "cs-config-custom-errors-off",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 7,
+      "ruleId": "cs-config-insecure-cookies",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 8,
+      "ruleId": "cs-config-trace-enabled",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 9,
+      "ruleId": "cs-config-request-validation-disabled",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 10,
+      "ruleId": "cs-config-request-validation-disabled",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 10,
+      "ruleId": "cs-config-viewstate-mac-disabled",
+      "language": "xml",
+      "kind": "finding"
+    },
+    {
+      "file": "csharp/WebApp/Web.config",
+      "line": 11,
+      "ruleId": "cs-config-machinekey-literal",
+      "language": "xml",
       "kind": "finding"
     },
     {
@@ -1361,6 +1795,48 @@
     {
       "file": "csharp/Program.cs",
       "line": 17,
+      "ruleId": "cs-opengrep-binary-formatter",
+      "confidence": "medium"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 39,
+      "ruleId": "cs-opengrep-aspnet-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 59,
+      "ruleId": "cs-opengrep-aspnet-command",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 60,
+      "ruleId": "cs-opengrep-aspnet-command",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 78,
+      "ruleId": "cs-opengrep-aspnet-redirect",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 84,
+      "ruleId": "cs-opengrep-aspnet-path",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 85,
+      "ruleId": "cs-opengrep-aspnet-path",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/CryptoHelper.cs",
+      "line": 35,
       "ruleId": "cs-opengrep-binary-formatter",
       "confidence": "medium"
     },
