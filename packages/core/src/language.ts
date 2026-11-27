@@ -144,9 +144,12 @@ const REQUIREMENTS_FILE =
 
 export function detectLanguage(filePath: string): Language {
   const base = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  // Dockerfile, Dockerfile.prod, api.Dockerfile. A name such as
+  // dockerfile.py or Dockerfile.md keeps the language of its extension.
+  const suffix = base.startsWith("dockerfile.") ? base.slice("dockerfile".length) : "";
   if (
     base === "dockerfile" ||
-    base.startsWith("dockerfile.") ||
+    (suffix !== "" && EXTENSION_LANGUAGE[`.${suffix.split(".").pop()}`] === undefined) ||
     base.endsWith(".dockerfile")
   ) {
     return "dockerfile";

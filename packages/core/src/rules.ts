@@ -238,8 +238,10 @@ function compileRule(definition: RuleDefinition, sourceFile: string): LoadedRule
         "notPattern",
         definition.flags ?? "i",
       ),
-      pathInclude: compile(definition.pathInclude, sourceFile, "pathInclude", ""),
-      pathExclude: compile(definition.pathExclude, sourceFile, "pathExclude", ""),
+      // Paths are matched case-insensitively: file names are routed to a
+      // language case-insensitively (Web.config, WEB.CONFIG, AppSettings.json).
+      pathInclude: compile(definition.pathInclude, sourceFile, "pathInclude", "i"),
+      pathExclude: compile(definition.pathExclude, sourceFile, "pathExclude", "i"),
       filePattern: compile(definition.filePattern, sourceFile, "filePattern", "im"),
       fileAbsentPattern: compile(
         definition.fileAbsentPattern,

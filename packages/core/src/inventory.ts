@@ -629,7 +629,13 @@ export function inventory(
 
       if (entry.isDirectory()) {
         const lowerName = entry.name.toLowerCase();
-        if (excludedDirs.has(lowerName) && (!untrusted || NEVER_SCANNED_DIRS.has(lowerName))) {
+        // `src/bin/` holds Cargo binary targets (source code), not build output.
+        const cargoBin = lowerName === "bin" && path.basename(dir).toLowerCase() === "src";
+        if (
+          excludedDirs.has(lowerName) &&
+          !cargoBin &&
+          (!untrusted || NEVER_SCANNED_DIRS.has(lowerName))
+        ) {
           skipped.push({ relPath: `${rel}/`, reason: "default-excluded directory" });
           if (!NEVER_SCANNED_DIRS.has(lowerName)) countExcluded(abs, lowerName, 0);
           continue;

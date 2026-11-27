@@ -35,3 +35,6 @@ ignore:
   - rule: "dep-missing-lockfile"
     paths: ["packages/*/package.json"]
     reason: "pnpm workspace: the lockfile is pnpm-lock.yaml in the repository root."
+  - rule: "secret-generic-assignment"
+    paths: ["rules/**"]
+    reason: "Rule definitions: regular expressions that list password-like words (for example DEV_SECRET in rules/iac/compose.yml), not credentials."
