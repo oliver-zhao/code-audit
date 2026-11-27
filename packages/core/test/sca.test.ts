@@ -34,12 +34,13 @@ import { comparePypiVersions } from "../src/pypi.js";
 import {
   evaluateNuGetProject,
   exactNuGetVersion,
-  expandProperties,
+  expandValues,
   parsePackagesConfig,
 } from "../src/nuget.js";
 import { XML_LIMITS, parseXml } from "../src/xmlScan.js";
 import { scanSecrets } from "../src/secrets.js";
-import { recommendUpgrade } from "../src/report.js";
+import { groupVulnerablePackages, recommendUpgrade } from "../src/report.js";
+import { createFinding } from "../src/finding.js";
 import { parseTomlSubset } from "../src/toml.js";
 import { FIXTURES, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
@@ -2808,7 +2809,8 @@ describe("NuGet project files", () => {
         "src/App/App.csproj:9 First@4.0.0 direct:runtime",
         "src/App/App.csproj:9 Second@4.0.0 direct:runtime",
         "src/App/App.csproj:11 Updated@5.0.0 direct:runtime",
-        "src/App/App.csproj:14 Overridden@7.1.0 direct:runtime",
+        // VersionOverride counts only with Central Package Management.
+        "src/App/App.csproj:14 Overridden@7.0.0 direct:runtime",
         "src/App/App.csproj:15 Esc&aped@1.0.0 direct:runtime",
       ].sort(),
     );
@@ -2832,7 +2834,7 @@ describe("NuGet project files", () => {
     expect(names.sort()).toEqual(["Cdata@2.0.0", "Conditional@1.0.0", "Gt@3.0.0"]);
   });
 
-  it("labels build-only references as dev", () => {
+  it("labels only references without compile and runtime assets as dev", () => {
     const content = csproj(
       '<PackageReference Include="Analyzer" Version="1.0.0" PrivateAssets="All" />',
       '<PackageReference Include="Child.Private" Version="1.0.0"><PrivateAssets>all</PrivateAssets></PackageReference>',
@@ -2845,8 +2847,9 @@ describe("NuGet project files", () => {
       parseLockfile("App.csproj", content).packages.map((p) => [p.name, `${p.scope}:${p.dev === true}`]),
     );
     expect(scopes).toEqual({
-      Analyzer: "dev:true",
-      "Child.Private": "dev:true",
+      // PrivateAssets only stops the package flowing to consumers.
+      Analyzer: "runtime:false",
+      "Child.Private": "runtime:false",
       Generator: "dev:true",
       Excluded: "dev:true",
       "Runtime.Assets": "runtime:false",
@@ -2882,25 +2885,21 @@ describe("NuGet project files", () => {
     );
   });
 
-  it("bounds property expansion (cycles and exponential growth)", () => {
-    const properties = new Map<string, string>();
-    for (let level = 0; level < 40; level += 1) {
-      properties.set(`p${level}`, `$(p${level + 1})$(p${level + 1})`);
-    }
-    properties.set("p40", "1");
+  it("bounds property expansion (self references and exponential growth)", () => {
+    const properties = new Map<string, Array<string | null>>();
+    properties.set("a", ["1", "2", "3", "4"]);
+    expect(expandValues("$(a).$(a).$(a)", properties)).toContain(null); // 64 combinations > bound
+    expect(expandValues("$(a).0", properties)).toEqual(["1.0", "2.0", "3.0", "4.0"]);
+    expect(expandValues("$(missing)", properties)).toEqual([null]);
+    expect(expandValues("$([MSBuild]::Add(1, 2))", properties)).toEqual([null]);
+    const lines = ["<Project>", "  <PropertyGroup>", "    <P0>1</P0>"];
+    for (let level = 1; level <= 40; level += 1) lines.push(`    <P${level}>$(P${level - 1})$(P${level - 1})</P${level}>`);
+    lines.push("  </PropertyGroup>", '  <ItemGroup><PackageReference Include="X" Version="$(P40)" /></ItemGroup>', "</Project>");
     const started = Date.now();
-    expect(expandProperties("$(p0)", properties)).toBeUndefined();
-    expect(expandProperties("$(a)", new Map([["a", "$(a)"]]))).toBeUndefined();
-    expect(
-      expandProperties(
-        "$(a).$(b)",
-        new Map([
-          ["a", "1"],
-          ["b", "2"],
-        ]),
-      ),
-    ).toBe("1.2");
-    expect(Date.now() - started).toBeLessThan(200);
+    const result = parseLockfile("App.csproj", lines.join("\n"));
+    expect(result.packages).toEqual([]);
+    expect(result.warnings.some((w) => w.startsWith("App.csproj: 1 NuGet package reference(s) not checked"))).toBe(true);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it("reads Directory.Build.props and Directory.Build.targets of the project", async () => {
@@ -2932,7 +2931,7 @@ describe("NuGet project files", () => {
     const { packages, result } = await nugetPackages(root);
     expect(packages).toEqual(
       [
-        "Directory.Build.props:4 SourceLink@1.1.1 direct:dev",
+        "Directory.Build.props:4 SourceLink@1.1.1 direct:runtime",
         "Directory.Build.props:5 Everywhere@1.0.0 direct:runtime",
         "Directory.Build.targets:3 Late@3.0.0 direct:runtime",
         "src/A/A.csproj:3 Shared@2.0.0 direct:runtime",
@@ -2998,7 +2997,7 @@ describe("NuGet Central Package Management", () => {
         "Directory.Packages.props:7 System.Text.Encodings.Web@4.5.0 direct:runtime",
         "Directory.Packages.props:10 Multi@1.0.0 direct:runtime",
         "Directory.Packages.props:11 Multi@2.0.0 direct:runtime",
-        "Directory.Packages.props:12 Global.Analyzer@3.0.0 direct:dev",
+        "Directory.Packages.props:12 Global.Analyzer@3.0.0 direct:runtime",
         "src/Api/Api.csproj:4 newtonsoft.json@13.0.1 direct:runtime",
       ].sort(),
     );
@@ -3141,6 +3140,242 @@ describe("NuGet Central Package Management", () => {
   });
 });
 
+describe("NuGet conditions (review regressions)", () => {
+  const versions = (result: { packages: Array<{ name: string; version: string }> }, name: string): string[] =>
+    result.packages
+      .filter((p) => p.name === name)
+      .map((p) => p.version)
+      .sort();
+
+  it("keeps the versions of every conditional ItemGroup, When and Otherwise in Directory.Packages.props", async () => {
+    const root = path.join(temp, "nuget-cond-itemgroups");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      [
+        "<Project>",
+        "  <ItemGroup Condition=\"'$(TargetFramework)' == 'net6.0'\">",
+        '    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="6.0.1" />',
+        "  </ItemGroup>",
+        "  <ItemGroup Condition=\"'$(TargetFramework)' == 'net8.0'\">",
+        '    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />',
+        "  </ItemGroup>",
+        "  <Choose>",
+        "    <When Condition=\"'$(Configuration)' == 'Debug'\">",
+        '      <ItemGroup><PackageVersion Include="Chosen" Version="1.0.0" /></ItemGroup>',
+        "    </When>",
+        "    <Otherwise>",
+        '      <ItemGroup><PackageVersion Include="Chosen" Version="2.0.0" /></ItemGroup>',
+        "    </Otherwise>",
+        "  </Choose>",
+        "  <ItemGroup>",
+        '    <PackageVersion Include="Base" Version="1.0.0" />',
+        "  </ItemGroup>",
+        "  <ItemGroup Condition=\"'$(X)' == 'y'\">",
+        '    <PackageVersion Include="Base" Version="2.0.0" />',
+        '    <PackageVersion Update="Base" Version="3.0.0" />',
+        '    <PackageVersion Remove="Base" />',
+        "  </ItemGroup>",
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "App.csproj",
+      csproj(
+        '<PackageReference Include="Microsoft.EntityFrameworkCore" />',
+        '<PackageReference Include="Chosen" />',
+        '<PackageReference Include="Base" />',
+      ),
+    );
+    const { result } = await nugetPackages(root);
+    expect(versions(result, "Microsoft.EntityFrameworkCore")).toEqual(["6.0.1", "8.0.0"]);
+    expect(versions(result, "Chosen")).toEqual(["1.0.0", "2.0.0"]);
+    expect(versions(result, "Base")).toEqual(["1.0.0", "2.0.0", "3.0.0"]);
+  });
+
+  it("treats a conditional Update as another candidate and a conditional Remove as a no-op", () => {
+    const content = [
+      "<Project>",
+      "  <ItemGroup>",
+      '    <PackageReference Include="X" Version="1.0.0" />',
+      '    <PackageReference Include="Y" Version="1.0.0" />',
+      '    <PackageReference Include="Z" Version="1.0.0" />',
+      "  </ItemGroup>",
+      "  <ItemGroup Condition=\"'$(TargetFramework)' == 'net8.0'\">",
+      '    <PackageReference Update="X" Version="2.0.0" />',
+      '    <PackageReference Remove="Y" />',
+      "  </ItemGroup>",
+      "  <ItemGroup>",
+      '    <PackageReference Update="Z">',
+      "      <Version>2.0.0</Version>",
+      "      <Version Condition=\"'$(A)' == 'b'\">3.0.0</Version>",
+      "    </PackageReference>",
+      "  </ItemGroup>",
+      "  <Target Name=\"Late\">",
+      "    <ItemGroup><PackageReference Remove=\"Z\" /></ItemGroup>",
+      "  </Target>",
+      "</Project>",
+    ].join("\n");
+    const result = parseLockfile("App.csproj", content);
+    expect(versions(result, "X")).toEqual(["1.0.0", "2.0.0"]);
+    expect(versions(result, "Y")).toEqual(["1.0.0"]);
+    expect(versions(result, "Z")).toEqual(["2.0.0", "3.0.0"]);
+  });
+
+  it("keeps every value of conditionally defined properties", async () => {
+    const root = path.join(temp, "nuget-cond-properties");
+    writeFile(
+      root,
+      "Directory.Build.props",
+      [
+        "<Project>",
+        "  <PropertyGroup Condition=\"'$(TargetFramework)' == 'net6.0'\"><EfVer>6.0.1</EfVer></PropertyGroup>",
+        "  <PropertyGroup Condition=\"'$(TargetFramework)' == 'net8.0'\"><EfVer>8.0.0</EfVer></PropertyGroup>",
+        "  <PropertyGroup><Plain>1.0.0</Plain><Plain Condition=\"'$(X)' == 'y'\">1.5.0</Plain></PropertyGroup>",
+        "</Project>",
+      ].join("\n"),
+    );
+    writeFile(
+      root,
+      "App.csproj",
+      csproj(
+        '<PackageReference Include="Microsoft.EntityFrameworkCore" Version="$(EfVer)" />',
+        '<PackageReference Include="P" Version="$(Plain)" />',
+      ),
+    );
+    const { result } = await nugetPackages(root);
+    expect(versions(result, "Microsoft.EntityFrameworkCore")).toEqual(["6.0.1", "8.0.0"]);
+    expect(versions(result, "P")).toEqual(["1.0.0", "1.5.0"]);
+  });
+
+  it("evaluates properties in document order, as MSBuild does", () => {
+    const content = [
+      "<Project>",
+      "  <PropertyGroup>",
+      "    <V>1.0.0</V>",
+      "    <W>$(V)</W>",
+      "    <V>2.0.0</V>",
+      "    <Major>3</Major>",
+      "    <Full>$(Major).1</Full>",
+      "    <Full>$(Full).5</Full>",
+      "  </PropertyGroup>",
+      "  <ItemGroup>",
+      '    <PackageReference Include="W" Version="$(W)" />',
+      '    <PackageReference Include="V" Version="$(V)" />',
+      '    <PackageReference Include="Full" Version="$(Full)" />',
+      "  </ItemGroup>",
+      "</Project>",
+    ].join("\n");
+    const result = parseLockfile("App.csproj", content);
+    expect(result.packages.map((p) => `${p.name}@${p.version}`).sort()).toEqual([
+      "Full@3.1.5",
+      "V@2.0.0",
+      "W@1.0.0",
+    ]);
+  });
+
+  it("ignores VersionOverride without Central Package Management", () => {
+    const result = parseLockfile(
+      "App.csproj",
+      csproj('<PackageReference Include="X" Version="1.0.0" VersionOverride="9.0.0" />'),
+    );
+    expect(versions(result, "X")).toEqual(["1.0.0"]);
+  });
+
+  it("recognises GetPathOfFileAbove($(MSBuildThisFile), ...) imports", async () => {
+    const root = path.join(temp, "nuget-this-file-above");
+    writeFile(
+      root,
+      "Directory.Packages.props",
+      '<Project><ItemGroup><PackageVersion Include="Outer" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    writeFile(
+      root,
+      "sub/Directory.Packages.props",
+      '<Project>\n  <Import Project="$([MSBuild]::GetPathOfFileAbove($(MSBuildThisFile), $(MSBuildThisFileDirectory)..))" />\n</Project>\n',
+    );
+    writeFile(root, "sub/app/App.csproj", csproj('<PackageReference Include="Outer" />'));
+    const { packages } = await nugetPackages(root);
+    expect(packages).toEqual(["Directory.Packages.props:1 Outer@1.0.0 direct:runtime"]);
+  });
+
+  it("does not flag a project whose only references come from Directory.Build.props as reference-free", () => {
+    const root = path.join(temp, "nuget-hotspot-dbp");
+    writeFile(
+      root,
+      "Directory.Build.props",
+      '<Project><ItemGroup><PackageReference Include="Shared" Version="1.0.0" /></ItemGroup></Project>',
+    );
+    writeFile(root, "a/A.csproj", "<Project />\n");
+    expect(manifestLockfileIssues(inventory(root))).toEqual([{ file: "a/A.csproj", line: 1, manifest: "A.csproj" }]);
+  });
+
+  it("groups NuGet findings of the same package case-insensitively", () => {
+    const base = {
+      category: "sca" as const,
+      ecosystem: "NuGet",
+      installedVersion: "12.0.1",
+      file: "App.csproj",
+      startLine: 3,
+      dependencyPath: "nuget direct dependency",
+    };
+    const findings = [
+      { ...base, package: "Newtonsoft.Json", advisoryId: "GHSA-1", severity: "high" },
+      { ...base, package: "newtonsoft.json", advisoryId: "GHSA-2", severity: "high" },
+    ].map((f) =>
+      createFinding({
+        ruleId: `sca-${f.advisoryId.toLowerCase()}`,
+        title: "t",
+        category: "sca",
+        severity: "high",
+        confidence: "high",
+        file: f.file,
+        startLine: f.startLine,
+        evidence: `${f.package}@12.0.1`,
+        message: "m",
+        remediation: "r",
+        package: f.package,
+        ecosystem: f.ecosystem,
+        installedVersion: f.installedVersion,
+        advisoryId: f.advisoryId,
+        dependencyPath: f.dependencyPath,
+        provenance: { engine: "osv" },
+      }),
+    );
+    expect(groupVulnerablePackages(findings)).toHaveLength(1);
+  });
+});
+
+describe("XML scanner timing (review regressions)", () => {
+  it("stays linear on many declarations without a closing bracket", () => {
+    for (const content of ["<!a>".repeat(2_000_000), `<Project>${"<!DOCTYPE x>".repeat(600_000)}</Project>`]) {
+      const started = Date.now();
+      parseXml(content);
+      parseLockfile("Directory.Build.props", content);
+      parseLockfile("App.csproj", content);
+      expect(Date.now() - started).toBeLessThan(2000);
+    }
+  });
+
+  it("bounds the work of expanding many-valued conditional properties", () => {
+    const size = 8 * 1024 * 1024;
+    const long = "x".repeat(500);
+    const defs = Array.from({ length: 16 }, (_, i) => `<P Condition="c">${long}${i}</P>`).join("");
+    const cases = [
+      `<Project><PropertyGroup>${defs}${"<Q>$(P)$(P)</Q>".repeat(size / 16)}</PropertyGroup></Project>`,
+      `<Project><PropertyGroup>${defs}${'<P Condition="c">$(P)$(P)</P>'.repeat(Math.floor(size / 30))}</PropertyGroup></Project>`,
+      `<Project><PropertyGroup>${defs}</PropertyGroup><ItemGroup>${'<PackageReference Include="$(P)" Version="$(P)"/>'.repeat(Math.floor(size / 52))}</ItemGroup></Project>`,
+    ];
+    for (const content of cases) {
+      const started = Date.now();
+      const result = parseLockfile("App.csproj", content);
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(result.warnings.some((w) => w.includes("property expansion stopped at its size limit"))).toBe(true);
+    }
+  });
+});
+
 describe("packages.config", () => {
   it("reads exact versions, development dependencies and lines", () => {
     const content = [
@@ -3214,14 +3449,14 @@ describe("NuGet packages.lock.json", () => {
       "src/App/App.csproj",
       csproj(
         '<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />',
-        '<PackageReference Include="Analyzer" Version="1.0.0" PrivateAssets="all" />',
+        '<PackageReference Include="Analyzer" Version="1.0.0" PrivateAssets="all" IncludeAssets="analyzers; build" />',
       ),
     );
-    // A second project in the same directory with its own named lockfile.
-    writeFile(root, "src/App/Tool.csproj", csproj('<PackageReference Include="Tool.Only" Version="1.0.0" />'));
+    // A project with its own named lockfile.
+    writeFile(root, "src/Tool/Tool.csproj", csproj('<PackageReference Include="Tool.Only" Version="1.0" />'));
     writeFile(
       root,
-      "src/App/packages.Tool.lock.json",
+      "src/Tool/packages.Tool.lock.json",
       JSON.stringify({ version: 1, dependencies: { "net8.0": { "Tool.Only": { type: "Direct", resolved: "1.0.0" } } } }),
     );
     const { packages, result } = await nugetPackages(root);
@@ -3232,11 +3467,92 @@ describe("NuGet packages.lock.json", () => {
         "src/App/packages.lock.json:18 System.Buffers@4.5.0 transitive:-",
         "src/App/packages.lock.json:18 System.Buffers@4.5.1 transitive:-",
         "src/App/packages.lock.json:22 Central.Transitive@2.0.0 transitive:-",
-        "src/App/packages.Tool.lock.json:1 Tool.Only@1.0.0 direct:runtime",
+        "src/Tool/packages.Tool.lock.json:1 Tool.Only@1.0.0 direct:runtime",
       ].sort(),
     );
     expect(result.warnings.join("\n")).not.toContain("unresolved transitive dependencies");
     expect(manifestLockfileIssues(inventory(root))).toEqual([]);
+  });
+
+  it("does not attribute a shared packages.lock.json to any of several projects in its directory", async () => {
+    const root = path.join(temp, "nuget-lock-shared-dir");
+    writeFile(root, "src/packages.lock.json", lock);
+    writeFile(root, "src/App.csproj", csproj('<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />'));
+    writeFile(root, "src/Other.csproj", csproj('<PackageReference Include="Other.Only" Version="2.0.0" />'));
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toContain("src/App.csproj:3 Newtonsoft.Json@12.0.1 direct:runtime");
+    expect(packages).toContain("src/Other.csproj:3 Other.Only@2.0.0 direct:runtime");
+    expect(packages).toContain("src/packages.lock.json:10 Newtonsoft.Json@12.0.1 direct:-");
+    expect(result.unresolvedManifests).toHaveLength(2);
+    expect(manifestLockfileIssues(inventory(root)).map((issue) => issue.file)).toEqual([
+      "src/App.csproj",
+      "src/Other.csproj",
+    ]);
+  });
+
+  it("reads the project when its lockfile is malformed, empty or too large for the inventory", async () => {
+    const root = path.join(temp, "nuget-lock-unusable");
+    writeFile(root, "bad/packages.lock.json", "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n");
+    writeFile(root, "bad/Bad.csproj", csproj('<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />'));
+    writeFile(root, "empty/packages.lock.json", '{"version": 1, "dependencies": {}}\n');
+    writeFile(root, "empty/Empty.csproj", csproj('<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />'));
+    const big = JSON.stringify({
+      version: 1,
+      dependencies: { "net8.0": { "Newtonsoft.Json": { type: "Direct", resolved: "12.0.1" } } },
+      padding: "x".repeat(2 * 1024 * 1024),
+    });
+    writeFile(root, "big/packages.lock.json", big);
+    writeFile(root, "big/Big.csproj", csproj('<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />'));
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toEqual(
+      [
+        "bad/Bad.csproj:3 Newtonsoft.Json@12.0.1 direct:runtime",
+        "big/Big.csproj:3 Newtonsoft.Json@12.0.1 direct:runtime",
+        "empty/Empty.csproj:3 Newtonsoft.Json@12.0.1 direct:runtime",
+      ].sort(),
+    );
+    expect(result.warnings).toContain(
+      "bad/packages.lock.json: is not valid JSON; dependencies were read from bad/Bad.csproj instead",
+    );
+    expect(result.warnings).toContain(
+      "empty/packages.lock.json: lists no packages; dependencies were read from empty/Empty.csproj instead",
+    );
+    expect(result.warnings).toContain(
+      "big/packages.lock.json: was not read (skipped by the inventory, e.g. too large); dependencies were read from big/Big.csproj instead",
+    );
+    expect(result.unresolvedManifests).toHaveLength(3);
+  });
+
+  it("reports project references a stale lockfile does not list", async () => {
+    const root = path.join(temp, "nuget-lock-stale");
+    writeFile(root, "packages.lock.json", lock);
+    writeFile(
+      root,
+      "App.csproj",
+      csproj(
+        '<PackageReference Include="newtonsoft.json" Version="12.0.1" />',
+        '<PackageReference Include="Added.Later" Version="3.0.0" />',
+      ),
+    );
+    const { packages, result } = await nugetPackages(root);
+    expect(packages).toContain("App.csproj:4 Added.Later@3.0.0 direct:runtime");
+    expect(packages.filter((p) => p.startsWith("App.csproj"))).toHaveLength(1);
+    expect(result.warnings).toContain(
+      "App.csproj: 1 package reference(s) not in packages.lock.json (stale lockfile?), checked from the project file: Added.Later@3.0.0",
+    );
+  });
+
+  it("uses a lockfile that OSV-Scanner covers for precedence, without reporting it twice", async () => {
+    const root = path.join(temp, "nuget-lock-osv");
+    writeFile(root, "packages.lock.json", lock);
+    writeFile(root, "App.csproj", csproj('<PackageReference Include="Newtonsoft.Json" Version="12.0.1" />'));
+    const result = await runSca({
+      root,
+      inventory: inventory(root),
+      offline: true,
+      skipLockfiles: ["packages.lock.json"],
+    });
+    expect(result.packages).toEqual([]);
   });
 });
 
@@ -3284,8 +3600,8 @@ describe("NuGet inventory and hygiene", () => {
     writeFile(root, "d/packages.lock.json", "{}\n");
     writeFile(root, "Directory.Packages.props", "<Project />\n");
     expect(manifestLockfileIssues(inventory(root))).toEqual([
+      // B.vbproj and C.csproj have no package references.
       { file: "a/A.csproj", line: 3, manifest: "A.csproj" },
-      { file: "b/B.vbproj", line: 1, manifest: "B.vbproj" },
     ]);
   });
 

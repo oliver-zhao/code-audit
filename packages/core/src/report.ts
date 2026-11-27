@@ -13,7 +13,7 @@ import {
 import type { CoverageReport } from "./coverage.js";
 import type { BaselineEntry } from "./baseline.js";
 import { localizeRule, type LoadedRule } from "./rules.js";
-import { compareVersions, versionComparator } from "./sca.js";
+import { compareVersions, normalizePackageName, versionComparator } from "./sca.js";
 import { countPathContexts } from "./pathContext.js";
 import { redactText } from "./redact.js";
 
@@ -934,8 +934,8 @@ const SCOPE_GROUP_RANK: Record<DependencyScopeGroup, number> = {
 function packageKey(finding: Finding): string {
   const ecosystem = finding.ecosystem ?? "";
   const raw = finding.package ?? finding.evidence;
-  const name =
-    ecosystem === "PyPI" ? raw.toLowerCase().replace(/[-_.]+/g, "-") : raw;
+  // PyPI and NuGet names compare case-insensitively (see normalizePackageName).
+  const name = normalizePackageName(raw, ecosystem);
   return `${ecosystem}\u0000${name}\u0000${finding.installedVersion ?? ""}`;
 }
 

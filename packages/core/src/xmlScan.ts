@@ -159,10 +159,19 @@ export function parseXml(content: string): XmlDocument {
     if (content.startsWith("<!", lt)) {
       // DOCTYPE or another declaration: skipped, never interpreted. An
       // internal subset (`[ ... ]`) may contain `>`, so skip past `]` first.
+      // Only look for `[` before that `>`: searching to the end of the input
+      // for every declaration would make the scan quadratic.
       const close = content.indexOf(">", lt + 2);
-      const bracket = content.indexOf("[", lt + 2);
+      const limit = close < 0 ? n : close;
+      let bracket = -1;
+      for (let k = lt + 2; k < limit; k += 1) {
+        if (content.charCodeAt(k) === 91 /* [ */) {
+          bracket = k;
+          break;
+        }
+      }
       let end = close;
-      if (bracket >= 0 && (close < 0 || bracket < close)) {
+      if (bracket >= 0) {
         const subsetEnd = content.indexOf("]", bracket + 1);
         end = subsetEnd < 0 ? -1 : content.indexOf(">", subsetEnd + 1);
       }

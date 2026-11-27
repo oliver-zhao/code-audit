@@ -27,10 +27,11 @@ import {
   isNuGetImportedFile,
   isNuGetLockfileName,
   isPackagesConfigName,
-  lockfileProjects,
+  exactNuGetVersion,
+  lockfileOwner,
   parseNuGetLock,
   parsePackagesConfig,
-  projectLockfileNames,
+  projectLockfileCandidates,
   type NuGetCache,
 } from "./nuget.js";
 
@@ -1873,6 +1874,24 @@ export interface ParseLockfileOptions {
    * scan so each is read once.
    */
   nugetCache?: NuGetCache;
+  /**
+   * NuGet lockfile of each project file that has one (see
+   * `nugetLockStates`). Without it a project is treated as having none.
+   */
+  nugetLocks?: ReadonlyMap<string, NuGetLockState>;
+}
+
+/** The lockfile that belongs to a NuGet project, and whether it was usable. */
+export interface NuGetLockState {
+  lockfile: string;
+  /** `name\0version` of every package it lists, when it parsed to at least one. */
+  packages?: Set<string>;
+  /** Why it could not be used. */
+  problem?: string;
+}
+
+function nugetPackageKey(name: string, version: string): string {
+  return `${name.toLowerCase()}\u0000${exactNuGetVersion(version) ?? version}`;
 }
 
 /** True when `rel` is a regular file inside the root (symbolic links resolved). */
@@ -1886,9 +1905,68 @@ function jailedFileExists(root: string, rel: string): boolean {
 }
 
 /**
- * Parse a NuGet project file. A project with its own packages.lock.json is
- * covered by that lockfile (resolved versions and transitive dependencies),
- * so nothing is reported from the project file itself.
+ * For each NuGet project of the inventory, the lockfile that belongs to it
+ * (`packages.<Project>.lock.json`, or `packages.lock.json` when the project
+ * is the only one in its directory) and whether that lockfile is usable: in
+ * the inventory, readable, and parsed to at least one package. A lockfile
+ * that exists but is not usable (too large for the inventory, malformed) is
+ * recorded with the problem, so the project is read instead.
+ */
+export function nugetLockStates(
+  root: string,
+  inventory: InventoryResult,
+): Map<string, NuGetLockState> {
+  const states = new Map<string, NuGetLockState>();
+  const projects = inventory.lockfiles
+    .map((entry) => entry.relPath)
+    .filter((rel) => NUGET_PROJECT_FILE.test(path.posix.basename(rel)));
+  for (const entry of inventory.lockfiles) {
+    const base = path.posix.basename(entry.relPath);
+    if (!isNuGetLockfileName(base)) continue;
+    const owner = lockfileOwner(entry.relPath, projects);
+    if (!owner) continue;
+    let content: string;
+    try {
+      content = fs.readFileSync(path.join(root, entry.relPath), "utf8");
+    } catch (error) {
+      states.set(owner, {
+        lockfile: entry.relPath,
+        problem: `cannot be read (${(error as NodeJS.ErrnoException).code ?? String(error)})`,
+      });
+      continue;
+    }
+    const parsed = parsePackagesLock(content, entry.relPath);
+    if (parsed.packages.length === 0) {
+      states.set(owner, {
+        lockfile: entry.relPath,
+        problem: parsed.warnings[0]?.startsWith("packages.lock.json parse failed") ? "is not valid JSON" : "lists no packages",
+      });
+      continue;
+    }
+    states.set(owner, {
+      lockfile: entry.relPath,
+      packages: new Set(parsed.packages.map((pkg) => nugetPackageKey(pkg.name, pkg.version))),
+    });
+  }
+  // A lockfile on disk that the inventory did not take (too large, for
+  // example) is said out loud.
+  for (const project of projects) {
+    if (states.has(project)) continue;
+    for (const candidate of projectLockfileCandidates(project, projects)) {
+      if (jailedFileExists(root, candidate)) {
+        states.set(project, { lockfile: candidate, problem: "was not read (skipped by the inventory, e.g. too large)" });
+        break;
+      }
+    }
+  }
+  return states;
+}
+
+/**
+ * Parse a NuGet project file. A project whose own lockfile is usable is
+ * covered by it (resolved versions and transitive dependencies); only
+ * references the lockfile does not list (a stale lockfile) are reported from
+ * the project. Otherwise every reference is reported from the project.
  */
 function parseNuGetProjectFile(
   relPath: string,
@@ -1896,15 +1974,34 @@ function parseNuGetProjectFile(
   options: ParseLockfileOptions,
 ): ParsedDependencies {
   const root = options.root;
-  if (root && projectLockfileNames(relPath).some((rel) => jailedFileExists(root, rel))) {
-    return { packages: [], warnings: [] };
-  }
   const result = evaluateNuGetProject(content, relPath, {
     read: root ? (rel) => readJailedFile(root, rel) : undefined,
     cache: options.nugetCache,
   });
+  const lock = options.nugetLocks?.get(relPath);
+  if (lock?.packages) {
+    const listed = lock.packages;
+    const missing = result.packages.filter((pkg) => !listed.has(nugetPackageKey(pkg.name, pkg.version)));
+    const warnings: string[] = [];
+    if (missing.length > 0) {
+      const names = [...new Set(missing.map((pkg) => `${pkg.name}@${pkg.version}`))];
+      warnings.push(
+        `${relPath}: ${names.length} package reference(s) not in ${lock.lockfile} (stale lockfile?), checked from the project file: ${names.slice(0, 10).join(", ")}${names.length > 10 ? ", ..." : ""}`,
+      );
+    }
+    return { packages: missing, warnings };
+  }
   const warnings = [...result.warnings];
-  if (result.references > 0) warnings.push(`${relPath}: ${NO_NUGET_LOCKFILE_WARNING}`);
+  if (lock?.problem) {
+    warnings.push(`${lock.lockfile}: ${lock.problem}; dependencies were read from ${relPath} instead`);
+  }
+  if (result.references > 0) {
+    warnings.push(
+      lock
+        ? `${relPath}: ${lock.lockfile} not usable; direct dependencies only (unresolved transitive dependencies)`
+        : `${relPath}: ${NO_NUGET_LOCKFILE_WARNING}`,
+    );
+  }
   return { packages: result.packages, warnings };
 }
 
@@ -2075,10 +2172,19 @@ function dependencyDeclarationLine(absPath: string, base: string): number {
  * exposed as structured issues so the scanner can emit one low-confidence
  * hotspot per manifest that has no lockfile next to it.
  */
+/** Package references of a NuGet project after evaluation; 0 when unreadable. */
+function nugetReferenceCount(root: string, rel: string, cache: NuGetCache): number {
+  const read = readJailedFile(root, rel);
+  if ("error" in read) return 0;
+  return evaluateNuGetProject(read.content, rel, { read: (file) => readJailedFile(root, file), cache })
+    .references;
+}
+
 export function manifestLockfileIssues(
   inventory: InventoryResult,
 ): ManifestLockfileIssue[] {
   const cargoCache: CargoWorkspaceCache = new Map();
+  const nugetCache: NuGetCache = new Map();
   const byDir = new Map<string, Set<string>>();
   for (const manifest of inventory.manifests) {
     const dir = dirOf(manifest.relPath);
@@ -2098,10 +2204,16 @@ export function manifestLockfileIssues(
       // with the lockfiles), but its transitive dependencies float unless
       // NuGet's lockfile is committed. A packages.config project pins every
       // package, transitive ones included.
-      const lockNames = new Set(projectLockfileNames(manifest.relPath));
+      // Only a project that has package references (after evaluating its
+      // Directory.* files) and no lockfile of its own is flagged.
+      const projects = [...present].filter((rel) => NUGET_PROJECT_FILE.test(path.posix.basename(rel)));
+      const ownLock = [...present].some(
+        (rel) => isNuGetLockfileName(path.posix.basename(rel)) && lockfileOwner(rel, projects) === manifest.relPath,
+      );
       missing =
-        ![...present].some((rel) => lockNames.has(rel)) &&
-        ![...present].some((rel) => isPackagesConfigName(path.posix.basename(rel)));
+        !ownLock &&
+        ![...present].some((rel) => isPackagesConfigName(path.posix.basename(rel))) &&
+        nugetReferenceCount(inventory.root, manifest.relPath, nugetCache) > 0;
     } else {
       if (manifest.isLockfile) continue;
       const required = EXPECTED_LOCKFILES[base];
@@ -2454,8 +2566,9 @@ function readNuGetProjects(
   lockfileRel: string,
   manifestPaths: readonly string[],
 ): ManifestDependencies | undefined {
-  const projects = lockfileProjects(lockfileRel, manifestPaths);
-  if (projects.length === 0) return undefined;
+  const owner = lockfileOwner(lockfileRel, manifestPaths);
+  if (!owner) return undefined;
+  const projects = [owner];
   const combined = emptyManifest();
   const cache: NuGetCache = new Map();
   for (const rel of projects) {
@@ -2776,6 +2889,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
   const overCap = new Map<string, number>();
   let scanCapExceeded = false;
   const nugetCache: NuGetCache = new Map();
+  const nugetLocks = nugetLockStates(options.root, options.inventory);
 
   for (const lockfile of options.inventory.lockfiles) {
     if (skipLockfiles.has(lockfile.relPath)) continue;
@@ -2807,6 +2921,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
         directNames: manifest,
         visitedRequirements,
         nugetCache,
+        nugetLocks,
       });
     } catch (error) {
       warnings.push(

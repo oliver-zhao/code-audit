@@ -20,9 +20,11 @@ import { lineLookup, parseXml, type XmlElement } from "./xmlScan.js";
  * - `$(Property)` references, resolved from literal `PropertyGroup`
  *   definitions of those files (bounded; anything else stays unresolved).
  *
- * MSBuild conditions are not evaluated: every item and property is taken as
- * present. Only exact versions are queried; ranges, floating versions and
- * unresolved properties are counted in one warning per file.
+ * MSBuild conditions are not evaluated. Where one decides between values
+ * (conditional properties, item groups, Update items, central versions),
+ * every possible value is kept as a candidate and reported; a conditional
+ * Remove removes nothing. Only exact versions are queried; ranges, floating
+ * versions and unresolved properties are counted in one warning per file.
  */
 
 /** Read a file relative to the audit root through the path jail. */
@@ -83,20 +85,34 @@ export function exactNuGetVersion(raw: string): string | undefined {
 // ---------------------------------------------------------------------------
 // MSBuild files
 
+/** One metadata value of an item; conditional when its element has a Condition. */
+interface MetaValue {
+  value: string;
+  conditional: boolean;
+}
+
 interface ItemDecl {
   kind: "packagereference" | "packageversion" | "globalpackagereference";
   op: "include" | "update" | "remove";
   spec: string;
-  /** Lower-cased metadata name -> raw value; child elements override attributes. */
-  metadata: Map<string, string>;
+  /** Lower-cased metadata name -> values in document order (attribute first). */
+  metadata: Map<string, MetaValue[]>;
+  /** The item or an enclosing ItemGroup / When / Otherwise / Target has a condition. */
   conditional: boolean;
   file: string;
   line: number;
 }
 
+interface PropertyDecl {
+  name: string;
+  value: string;
+  /** The property or an enclosing PropertyGroup / When / Otherwise / Target has a condition. */
+  conditional: boolean;
+}
+
 interface MsbuildFile {
   rel: string;
-  properties: Array<{ name: string; value: string }>;
+  properties: PropertyDecl[];
   items: ItemDecl[];
   /** True when the file imports the same-named file of a parent directory. */
   importsAbove: boolean;
@@ -116,7 +132,18 @@ const METADATA = new Set([
   "excludeassets",
 ]);
 
-/** Scan one MSBuild file for properties, package items and parent imports. */
+/** `<Import>` of the same-named file in a parent directory (GetPathOfFileAbove). */
+function importsSameFileAbove(project: string, base: string): boolean {
+  if (!/GetPathOfFileAbove/i.test(project)) return false;
+  const lower = project.toLowerCase();
+  return (
+    lower.includes(base) ||
+    lower.includes("$(msbuildthisfile)") ||
+    lower.includes("$(msbuildthisfilename)$(msbuildthisfileextension)")
+  );
+}
+
+/** Scan one MSBuild file for properties, package items and imports. */
 export function readMsbuildFile(content: string, rel: string): MsbuildFile {
   const parsed = parseXml(content);
   const lineOf = lineLookup(content);
@@ -125,22 +152,36 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
   const base = path.posix.basename(rel).toLowerCase();
 
   // Iterative walk in document order; ProjectExtensions holds arbitrary XML.
-  const queue: Array<{ element: XmlElement; parent: string }> = [];
+  // `conditional` is inherited: an element inside a conditional ItemGroup,
+  // PropertyGroup, When, Otherwise or Target only applies to some builds.
+  interface Frame {
+    element: XmlElement;
+    parent: string;
+    conditional: boolean;
+  }
+  const queue: Frame[] = [];
   for (let k = parsed.root.children.length - 1; k >= 0; k -= 1) {
-    queue.push({ element: parsed.root.children[k] as XmlElement, parent: "#document" });
+    queue.push({ element: parsed.root.children[k] as XmlElement, parent: "#document", conditional: false });
   }
   while (queue.length > 0) {
-    const { element, parent } = queue.pop() as { element: XmlElement; parent: string };
+    const frame = queue.pop() as Frame;
+    const { element, parent } = frame;
     const name = element.name.toLowerCase();
     if (name === "projectextensions") continue;
+    const conditional =
+      frame.conditional ||
+      element.attrs.has("condition") ||
+      name === "when" ||
+      name === "otherwise" ||
+      name === "target";
     if (parent === "propertygroup") {
-      file.properties.push({ name: name, value: element.text.trim() });
+      file.properties.push({ name, value: element.text.trim(), conditional });
       continue;
     }
     if (name === "import") {
       const project = element.attrs.get("project") ?? "";
       if (/GetPathOfFileAbove/i.test(project)) {
-        if (project.toLowerCase().includes(base)) file.importsAbove = true;
+        if (importsSameFileAbove(project, base)) file.importsAbove = true;
       } else if (!element.attrs.has("sdk") && project && file.imports.length < MAX_IMPORTS_PER_FILE) {
         file.imports.push(project.trim());
       }
@@ -152,77 +193,157 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
       const remove = element.attrs.get("remove");
       const op = include !== undefined ? "include" : update !== undefined ? "update" : remove !== undefined ? "remove" : undefined;
       if (!op) continue;
-      const metadata = new Map<string, string>();
-      for (const [key, value] of element.attrs) if (METADATA.has(key)) metadata.set(key, value);
+      const metadata = new Map<string, MetaValue[]>();
+      const add = (key: string, value: string, valueConditional: boolean): void => {
+        const list = metadata.get(key) ?? [];
+        // An unconditional value replaces earlier ones; a conditional one is
+        // another candidate.
+        if (!valueConditional) list.length = 0;
+        if (list.length < MAX_CANDIDATES) list.push({ value, conditional: valueConditional });
+        metadata.set(key, list);
+      };
+      for (const [key, value] of element.attrs) if (METADATA.has(key)) add(key, value, false);
       for (const child of element.children) {
         const key = child.name.toLowerCase();
-        if (METADATA.has(key)) metadata.set(key, child.text.trim());
+        if (METADATA.has(key)) add(key, child.text.trim(), child.attrs.has("condition"));
       }
       file.items.push({
         kind: name as ItemDecl["kind"],
         op,
         spec: (include ?? update ?? remove ?? "").trim(),
         metadata,
-        conditional: element.attrs.has("condition"),
+        conditional,
         file: rel,
         line: lineOf(element.offset),
       });
       continue;
     }
     for (let k = element.children.length - 1; k >= 0; k -= 1) {
-      queue.push({ element: element.children[k] as XmlElement, parent: name });
+      queue.push({ element: element.children[k] as XmlElement, parent: name, conditional });
     }
   }
   return file;
 }
 
 // ---------------------------------------------------------------------------
-// Property expansion
+// Property evaluation
 
-const MAX_EXPANSION_DEPTH = 8;
+/** Possible values per property or expression; bounded. */
+const MAX_CANDIDATES = 16;
 const MAX_EXPANDED_LENGTH = 1024;
-const MAX_EXPANSION_STEPS = 256;
+const MAX_REFERENCES_PER_VALUE = 64;
 
 /**
- * Expand `$(Name)` references from `properties`. Returns undefined when a
- * reference cannot be resolved (unknown property, property function, item
- * transform), when expansion nests too deep (a cycle) or grows too long.
+ * Possible values of a property: every value a conditional definition may
+ * have given it. `null` stands for a value that cannot be known statically.
  */
-export function expandProperties(
-  value: string,
-  properties: ReadonlyMap<string, string>,
-): string | undefined {
-  let steps = 0;
-  const expand = (text: string, depth: number): string | undefined => {
-    if (!text.includes("$(") && !text.includes("@(") && !text.includes("%(")) return text;
-    if (text.includes("@(") || text.includes("%(")) return undefined;
-    if (depth > MAX_EXPANSION_DEPTH) return undefined;
-    let out = "";
-    let i = 0;
-    for (;;) {
-      const start = text.indexOf("$(", i);
-      if (start < 0) {
-        out += text.slice(i);
-        break;
+type Values = ReadonlyArray<string | null>;
+
+/** Characters one project's evaluation may build by expanding references. */
+const MAX_EXPANSION_CHARS = 4_000_000;
+
+/**
+ * Evaluated properties of one project, with the expansion budget they share:
+ * once spent, every further expansion is unknown (and reported as such).
+ */
+class PropertyMap extends Map<string, Values> {
+  budget = MAX_EXPANSION_CHARS;
+}
+
+function uniqueValues(values: Array<string | null>): Array<string | null> {
+  const out: Array<string | null> = [];
+  const seen = new Set<string | null>();
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Expand `$(Name)` references against already-evaluated properties. Every
+ * combination of the referenced properties' possible values is a result
+ * (bounded). An unknown property, a property function, an item reference
+ * (`@(...)`, `%(...)`) or an over-long result yields `null`; when the
+ * combinations exceed the bound, `null` is added so the caller reports
+ * that something was not checked.
+ */
+export function expandValues(text: string, properties: ReadonlyMap<string, Values>): Array<string | null> {
+  if (!text.includes("$(") && !text.includes("@(") && !text.includes("%(")) return [text];
+  if (text.includes("@(") || text.includes("%(")) return [null];
+  const budgeted = properties instanceof PropertyMap ? properties : undefined;
+  if (budgeted && budgeted.budget <= 0) return [null];
+  let results: Array<string | null> = [""];
+  let truncated = false;
+  let i = 0;
+  let references = 0;
+  const append = (options: Values): void => {
+    const next: Array<string | null> = [];
+    for (const prefix of results) {
+      for (const option of options) {
+        if (prefix === null || option === null) next.push(null);
+        else {
+          const joined = prefix + option;
+          if (budgeted) budgeted.budget -= joined.length;
+          next.push(joined.length > MAX_EXPANDED_LENGTH ? null : joined);
+        }
+        if (next.length >= MAX_CANDIDATES * MAX_CANDIDATES) break;
       }
-      out += text.slice(i, start);
-      const end = text.indexOf(")", start + 2);
-      if (end < 0) return undefined;
-      const name = text.slice(start + 2, end).trim();
-      if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) return undefined;
-      steps += 1;
-      if (steps > MAX_EXPANSION_STEPS) return undefined;
-      const raw = properties.get(name.toLowerCase());
-      if (raw === undefined) return undefined;
-      const inner = expand(raw, depth + 1);
-      if (inner === undefined) return undefined;
-      out += inner;
-      if (out.length > MAX_EXPANDED_LENGTH) return undefined;
-      i = end + 1;
     }
-    return out.length > MAX_EXPANDED_LENGTH ? undefined : out;
+    results = uniqueValues(next);
+    if (results.length > MAX_CANDIDATES) {
+      results = results.slice(0, MAX_CANDIDATES);
+      truncated = true;
+    }
   };
-  return expand(value, 0);
+  for (;;) {
+    const start = text.indexOf("$(", i);
+    if (start < 0) {
+      append([text.slice(i)]);
+      break;
+    }
+    append([text.slice(i, start)]);
+    const end = text.indexOf(")", start + 2);
+    if (end < 0) return [null];
+    references += 1;
+    if (references > MAX_REFERENCES_PER_VALUE) return [null];
+    const name = text.slice(start + 2, end).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) return [null];
+    append(properties.get(name.toLowerCase()) ?? [null]);
+    if (budgeted && budgeted.budget <= 0) return [null];
+    i = end + 1;
+  }
+  if (truncated && !results.includes(null)) results.push(null);
+  return results;
+}
+
+/**
+ * Evaluate property definitions in order, as MSBuild does: each value is
+ * expanded when it is defined (so `<V>$(V).5</V>` extends the earlier V).
+ * An unconditional definition replaces the property; a conditional one adds
+ * its values to the possible ones, since the condition is not evaluated.
+ */
+function evaluateProperties(files: readonly MsbuildFile[], start?: PropertyMap): PropertyMap {
+  const properties = new PropertyMap(start ?? []);
+  if (start) properties.budget = start.budget;
+  for (const file of files) {
+    for (const property of file.properties) {
+      const values = expandValues(property.value, properties);
+      const previous = properties.get(property.name);
+      if (!property.conditional || previous === undefined) {
+        properties.set(property.name, values);
+      } else {
+        let merged = uniqueValues([...previous, ...values]);
+        if (merged.length > MAX_CANDIDATES) {
+          merged = merged.slice(0, MAX_CANDIDATES);
+          if (!merged.includes(null)) merged.push(null);
+        }
+        properties.set(property.name, merged);
+      }
+    }
+  }
+  return properties;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,12 +358,12 @@ export interface NuGetContext {
 }
 
 const MAX_IMPORT_CHAIN = 16;
+/** Evaluated Directory.*.props properties per scan cache, by file list. */
+const prefixCaches = new WeakMap<NuGetCache, Map<string, PropertyMap>>();
 /** Package references kept per project; a real project has a few hundred. */
 const MAX_REFERENCES_PER_PROJECT = 50_000;
 /** Item updates applied per project (Update items x matching items). */
 const MAX_UPDATE_STEPS = 1_000_000;
-/** Conditional central versions kept per package. */
-const MAX_CENTRAL_CANDIDATES = 64;
 
 function dirOf(rel: string): string {
   return path.posix.dirname(rel.split(path.sep).join("/"));
@@ -356,6 +477,35 @@ function expandImports(
   return out;
 }
 
+/** A value an item metadata or a central version may have, and where it was set. */
+interface Candidate {
+  value: string;
+  file: string;
+  line: number;
+}
+
+/**
+ * Possible values of one item metadata (or central version). `definite` is
+ * true when an unconditional declaration set it, so it has a value in every
+ * build; otherwise builds where no candidate applies also exist.
+ */
+interface CandidateList {
+  entries: readonly Candidate[];
+  definite: boolean;
+}
+
+/** Apply a set of the value: unconditional replaces, conditional adds. */
+function setCandidate(
+  list: CandidateList | undefined,
+  entry: Candidate,
+  conditional: boolean,
+): CandidateList {
+  if (!conditional) return { entries: [entry], definite: true };
+  const entries = list ? [...list.entries] : [];
+  if (entries.length < MAX_CANDIDATES) entries.push(entry);
+  return { entries, definite: list?.definite ?? false };
+}
+
 interface CentralIndex {
   /** Package key -> PackageVersion items naming it literally, in file order. */
   literal: Map<string, ItemDecl[]>;
@@ -389,13 +539,10 @@ function centralIndex(file: MsbuildFile): CentralIndex {
 
 interface PackageItem {
   name: string;
-  metadata: Map<string, string>;
   file: string;
   line: number;
-  /** Where the version metadata was last set (an Update item may set it). */
-  versionFile: string;
-  versionLine: number;
-  global: boolean;
+  /** Lower-cased metadata name -> possible values. */
+  metadata: Map<string, CandidateList>;
   removed: boolean;
 }
 
@@ -406,32 +553,78 @@ function splitSpec(spec: string): string[] {
     .filter((part) => part.length > 0);
 }
 
-function assetList(value: string | undefined, properties: ReadonlyMap<string, string>): string[] | undefined {
-  if (value === undefined) return undefined;
-  const expanded = expandProperties(value, properties);
-  if (expanded === undefined) return undefined;
-  return expanded
-    .split(";")
-    .map((part) => part.trim().toLowerCase())
-    .filter((part) => part.length > 0);
+/** Names an Include / Update / Remove may stand for; null entries are unknown. */
+function specNames(spec: string, properties: PropertyMap): { names: string[]; unknown: boolean } {
+  const names: string[] = [];
+  let unknown = false;
+  for (const value of expandValues(spec, properties)) {
+    if (value === null) unknown = true;
+    else for (const name of splitSpec(value)) names.push(name);
+  }
+  return { names: [...new Set(names)], unknown };
+}
+
+/** Apply one item's metadata values to a candidate map. */
+function applyMetadata(
+  target: Map<string, CandidateList>,
+  decl: ItemDecl,
+  forceConditional: boolean,
+): void {
+  for (const [key, values] of decl.metadata) {
+    let list = target.get(key);
+    for (const value of values) {
+      list = setCandidate(
+        list,
+        { value: value.value, file: decl.file, line: decl.line },
+        forceConditional || value.conditional,
+      );
+    }
+    if (list) target.set(key, list);
+  }
+}
+
+function assetSets(list: CandidateList | undefined, properties: PropertyMap): string[][] | undefined {
+  if (!list) return undefined;
+  const sets: string[][] = [];
+  for (const entry of list.entries) {
+    for (const value of expandValues(entry.value, properties)) {
+      if (value === null) return undefined; // unknown: may include everything
+      sets.push(
+        value
+          .split(";")
+          .map((part) => part.trim().toLowerCase())
+          .filter((part) => part.length > 0),
+      );
+    }
+  }
+  return sets;
 }
 
 /**
- * Dev scope for build-only references: `PrivateAssets="all"` (analyzers,
- * source generators, SourceLink), or `IncludeAssets` / `ExcludeAssets` that
- * leave neither the compile nor the runtime assets.
+ * Dev scope only for references that bring neither compile nor runtime
+ * assets in any build: every possible `IncludeAssets` lacks `compile`,
+ * `runtime` and `all`, or every possible `ExcludeAssets` removes both.
+ * `PrivateAssets` alone does not make a package dev: it only keeps the
+ * package from flowing to consumers, the project itself still ships it.
  */
-function referenceScope(item: PackageItem, properties: ReadonlyMap<string, string>): DependencyScope {
-  const privateAssets = assetList(item.metadata.get("privateassets"), properties);
-  if (privateAssets?.includes("all")) return "dev";
-  if (item.global && item.metadata.get("privateassets") === undefined) return "dev";
-  const include = assetList(item.metadata.get("includeassets"), properties);
-  if (include && !include.some((asset) => asset === "all" || asset === "compile" || asset === "runtime")) {
-    return "dev";
+function referenceScope(item: PackageItem, properties: PropertyMap): DependencyScope {
+  const includeList = item.metadata.get("includeassets");
+  if (includeList?.definite) {
+    const sets = assetSets(includeList, properties);
+    if (sets && sets.length > 0 && sets.every((set) => !set.some((a) => a === "all" || a === "compile" || a === "runtime"))) {
+      return "dev";
+    }
   }
-  const exclude = assetList(item.metadata.get("excludeassets"), properties);
-  if (exclude && (exclude.includes("all") || (exclude.includes("compile") && exclude.includes("runtime")))) {
-    return "dev";
+  const excludeList = item.metadata.get("excludeassets");
+  if (excludeList?.definite) {
+    const sets = assetSets(excludeList, properties);
+    if (
+      sets &&
+      sets.length > 0 &&
+      sets.every((set) => set.includes("all") || (set.includes("compile") && set.includes("runtime")))
+    ) {
+      return "dev";
+    }
   }
   return "runtime";
 }
@@ -452,8 +645,13 @@ export const NO_NUGET_LOCKFILE_WARNING =
 
 /**
  * Evaluate the NuGet package references of one project file. `context.read`
- * reads the `Directory.*` files above it through the path jail; without it
- * only the project file itself is used.
+ * reads the `Directory.*` files above it (and plain imports) through the path
+ * jail; without it only the project file itself is used.
+ *
+ * Conditions are not evaluated. Where a condition decides between values
+ * (conditional properties, item groups, Update items, central versions),
+ * every possible value is a candidate and reported; a conditional Remove
+ * removes nothing. When unsure, more is reported, never less.
  */
 export function evaluateNuGetProject(
   content: string,
@@ -477,14 +675,22 @@ export function evaluateNuGetProject(
   const projectFiles = withImports([project]);
   const buildTargets = chain("Directory.Build.targets");
 
-  // MSBuild evaluates all properties before any item, in import order:
-  // Directory.Build.props, Directory.Packages.props, the project, then
-  // Directory.Build.targets. Later definitions win; conditions are ignored.
-  const properties = new Map<string, string>();
-  for (const file of [...buildProps, ...packagesProps, ...projectFiles, ...buildTargets]) {
-    for (const property of file.properties) properties.set(property.name, property.value);
+  // MSBuild evaluates all properties (in import order: Directory.Build.props,
+  // Directory.Packages.props, the project, Directory.Build.targets) before
+  // any item.
+  // The Directory.*.props part is the same for every project that shares
+  // those files, so it is evaluated once per scan.
+  const prefixFiles = [...buildProps, ...packagesProps];
+  let prefix: PropertyMap | undefined;
+  const prefixCache = context.cache ? prefixCaches.get(context.cache) ?? new Map<string, PropertyMap>() : undefined;
+  if (context.cache && prefixCache) prefixCaches.set(context.cache, prefixCache);
+  const prefixKey = prefixFiles.map((file) => file.rel).join("\u0000");
+  prefix = prefixCache?.get(prefixKey);
+  if (!prefix) {
+    prefix = evaluateProperties(prefixFiles);
+    prefixCache?.set(prefixKey, prefix);
   }
-  const expand = (value: string): string | undefined => expandProperties(value, properties);
+  const properties = evaluateProperties([...projectFiles, ...buildTargets], prefix);
 
   // Package references, in evaluation order. `byKey` indexes the live items
   // so Update and Remove cost the number of matching items, not all items.
@@ -497,29 +703,18 @@ export function evaluateNuGetProject(
   const unresolved = (file: string): void => {
     unresolvedByFile.set(file, (unresolvedByFile.get(file) ?? 0) + 1);
   };
-  const applyReference = (decl: ItemDecl, global: boolean): void => {
-    const spec = expand(decl.spec);
-    if (spec === undefined) {
-      if (decl.op === "include") unresolved(decl.file);
-      return;
-    }
-    for (const name of splitSpec(spec)) {
+  const applyReference = (decl: ItemDecl): void => {
+    const { names, unknown } = specNames(decl.spec, properties);
+    if (unknown && decl.op === "include") unresolved(decl.file);
+    for (const name of names) {
       const key = nugetKey(name);
       if (decl.op === "include") {
         if (items.length >= MAX_REFERENCES_PER_PROJECT) {
           dropped += 1;
           continue;
         }
-        const item: PackageItem = {
-          name,
-          metadata: new Map(decl.metadata),
-          file: decl.file,
-          line: decl.line,
-          versionFile: decl.file,
-          versionLine: decl.line,
-          global,
-          removed: false,
-        };
+        const item: PackageItem = { name, file: decl.file, line: decl.line, metadata: new Map(), removed: false };
+        applyMetadata(item.metadata, decl, false);
         items.push(item);
         const list = byKey.get(key);
         if (list) list.push(item);
@@ -531,37 +726,30 @@ export function evaluateNuGetProject(
             updatesStopped = true;
             return;
           }
-          for (const [meta, value] of decl.metadata) item.metadata.set(meta, value);
-          if (decl.metadata.has("version") || decl.metadata.has("versionoverride")) {
-            item.versionFile = decl.file;
-            item.versionLine = decl.line;
-          }
+          // A conditional Update adds candidates instead of replacing.
+          applyMetadata(item.metadata, decl, decl.conditional);
         }
-      } else {
+      } else if (!decl.conditional) {
+        // A conditional Remove may not apply: the item stays.
         for (const item of byKey.get(key) ?? []) item.removed = true;
         byKey.delete(key);
       }
     }
   };
   for (const file of [...buildProps, ...projectFiles, ...buildTargets]) {
-    for (const decl of file.items) if (decl.kind === "packagereference") applyReference(decl, false);
+    for (const decl of file.items) if (decl.kind === "packagereference") applyReference(decl);
   }
   for (const file of packagesProps) {
-    for (const decl of file.items) if (decl.kind === "globalpackagereference") applyReference(decl, true);
+    for (const decl of file.items) if (decl.kind === "globalpackagereference") applyReference(decl);
   }
 
-  // Central versions: name -> candidate declarations. An unconditional
-  // declaration replaces earlier ones; conditional ones are added, since the
-  // condition is not evaluated and each may apply to some build.
-  // Only the referenced packages are looked up, through a per-file index, so
+  // Central versions of the referenced packages, through a per-file index so
   // a large Directory.Packages.props shared by many projects is cheap.
   const centralFiles = [...packagesProps, ...projectFiles, ...buildTargets].map((file) => {
     const index = centralIndex(file);
     const dynamic = new Map<string, ItemDecl[]>();
     for (const decl of index.dynamic) {
-      const spec = expand(decl.spec);
-      if (spec === undefined) continue;
-      for (const name of splitSpec(spec)) {
+      for (const name of specNames(decl.spec, properties).names) {
         const key = nugetKey(name);
         const list = dynamic.get(key);
         if (list) list.push(decl);
@@ -570,37 +758,33 @@ export function evaluateNuGetProject(
     }
     return { index, dynamic };
   });
-  const central = new Map<string, Array<{ version: string; file: string; line: number }>>();
-  const centralFor = (key: string): Array<{ version: string; file: string; line: number }> => {
-    const cached = central.get(key);
-    if (cached) return cached;
-    let entries: Array<{ version: string; file: string; line: number }> = [];
+  const central = new Map<string, CandidateList | undefined>();
+  const centralFor = (key: string): CandidateList | undefined => {
+    if (central.has(key)) return central.get(key);
+    let list: CandidateList | undefined;
     for (const { index, dynamic } of centralFiles) {
       const decls = [...(index.literal.get(key) ?? []), ...(dynamic.get(key) ?? [])].sort(
         (a, b) => a.line - b.line,
       );
       for (const decl of decls) {
         if (decl.op === "remove") {
-          entries = [];
+          if (!decl.conditional) list = undefined;
           continue;
         }
-        const version = decl.metadata.get("version");
-        if (version === undefined) continue;
-        const entry = { version, file: decl.file, line: decl.line };
-        if (decl.op === "update") {
-          if (entries.length > 0) entries = [entry];
-        } else if (!decl.conditional) {
-          entries = [entry];
-        } else if (entries.length < MAX_CENTRAL_CANDIDATES) {
-          entries.push(entry);
-        }
+        if (decl.op === "update" && !list) continue;
+        const versions = new Map<string, CandidateList>(list ? [["version", list]] : []);
+        const only = new Map([["version", decl.metadata.get("version") ?? []]]);
+        applyMetadata(versions, { ...decl, metadata: only }, decl.conditional);
+        list = versions.get("version") ?? list;
       }
     }
-    central.set(key, entries);
-    return entries;
+    central.set(key, list);
+    return list;
   };
-  const cpmSetting = expand(properties.get("managepackageversionscentrally") ?? "")?.trim().toLowerCase();
-  const cpmEnabled = cpmSetting === "true" || (packagesProps.length > 0 && cpmSetting !== "false");
+  const cpmValues = properties.get("managepackageversionscentrally") ?? [];
+  const cpmEnabled =
+    cpmValues.some((value) => value?.trim().toLowerCase() === "true") ||
+    (packagesProps.length > 0 && !(cpmValues.length > 0 && cpmValues.every((value) => value?.trim().toLowerCase() === "false")));
 
   const packages: ScaPackage[] = [];
   const manifest: ManifestDependencies = {
@@ -620,37 +804,45 @@ export function evaluateNuGetProject(
     const previous = manifest.scopes.get(key);
     manifest.scopes.set(key, previous === "runtime" || scope === "runtime" ? "runtime" : scope);
 
-    const own = item.metadata.get("versionoverride") ?? item.metadata.get("version");
-    const candidates =
-      own !== undefined
-        ? [{ version: own, file: item.versionFile, line: item.versionLine }]
-        : cpmEnabled
-          ? centralFor(key)
-          : [];
+    // VersionOverride only counts with Central Package Management; where it
+    // may not apply, the regular version is a candidate too.
+    const candidates: Candidate[] = [];
+    let definite = false;
+    const override = cpmEnabled ? item.metadata.get("versionoverride") : undefined;
+    if (override) {
+      candidates.push(...override.entries);
+      definite = override.definite;
+    }
+    if (!definite) {
+      const own = item.metadata.get("version");
+      const fallback = own ?? (cpmEnabled ? centralFor(key) : undefined);
+      if (fallback) candidates.push(...fallback.entries);
+    }
     if (candidates.length === 0) {
       unresolved(item.file);
       continue;
     }
     for (const candidate of candidates) {
-      const expanded = expand(candidate.version);
-      const version = expanded === undefined ? undefined : exactNuGetVersion(expanded);
-      if (version === undefined) {
-        unresolved(candidate.file);
-        continue;
+      for (const expanded of expandValues(candidate.value, properties)) {
+        const version = expanded === null ? undefined : exactNuGetVersion(expanded);
+        if (version === undefined) {
+          unresolved(candidate.file);
+          continue;
+        }
+        const pkg: ScaPackage = {
+          name: item.name,
+          version,
+          ecosystem: "NuGet",
+          file: candidate.file,
+          line: candidate.line,
+          manager: "nuget",
+          direct: true,
+          scope,
+        };
+        if (scope === "dev") pkg.dev = true;
+        if (candidate.file !== rel) pkg.via = rel;
+        packages.push(pkg);
       }
-      const pkg: ScaPackage = {
-        name: item.name,
-        version,
-        ecosystem: "NuGet",
-        file: candidate.file,
-        line: candidate.line,
-        manager: "nuget",
-        direct: true,
-        scope,
-      };
-      if (scope === "dev") pkg.dev = true;
-      if (candidate.file !== rel) pkg.via = rel;
-      packages.push(pkg);
     }
   }
 
@@ -664,11 +856,25 @@ export function evaluateNuGetProject(
       `${rel}: more than ${MAX_REFERENCES_PER_PROJECT} NuGet package references; ${dropped} further entries were not checked`,
     );
   }
+  if (properties.budget <= 0) {
+    warnings.push(`${rel}: MSBuild property expansion stopped at its size limit; later values were treated as unknown`);
+  }
   if (updatesStopped) {
     warnings.push(`${rel}: too many PackageReference Update items; the rest were not applied`);
   }
   const references = items.reduce((count, item) => count + (item.removed ? 0 : 1), 0);
-  return { packages, warnings, manifest, references };
+  return { packages: dedupeOccurrences(packages), warnings, manifest, references };
+}
+
+/** One entry per (file, line, name, version) within a project. */
+function dedupeOccurrences(packages: ScaPackage[]): ScaPackage[] {
+  const seen = new Set<string>();
+  return packages.filter((pkg) => {
+    const key = `${pkg.file}\u0000${pkg.line}\u0000${nugetKey(pkg.name)}\u0000${pkg.version}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -812,26 +1018,30 @@ export function parseNuGetLock(
   return { packages, warnings };
 }
 
-/**
- * The project file(s) a NuGet lockfile belongs to: `packages.lock.json` goes
- * with the project files in its directory, `packages.<name>.lock.json` with
- * `<name>.*proj`.
- */
-export function lockfileProjects(lockfileRel: string, projectPaths: readonly string[]): string[] {
-  const dir = dirOf(lockfileRel);
-  const base = path.posix.basename(lockfileRel);
-  const named = /^packages\.(.+)\.lock\.json$/.exec(base)?.[1];
-  return projectPaths.filter((rel) => {
-    if (dirOf(rel) !== dir || !NUGET_PROJECT_FILE.test(rel)) return false;
-    if (!named) return true;
-    return path.posix.basename(rel).replace(NUGET_PROJECT_FILE, "") === named;
-  });
+function projectStem(rel: string): string {
+  return path.posix.basename(rel).replace(NUGET_PROJECT_FILE, "");
 }
 
-/** NuGet lockfile names that would cover the project file `rel`. */
-export function projectLockfileNames(rel: string): string[] {
+/**
+ * The project a NuGet lockfile belongs to: `packages.<Name>.lock.json` to
+ * `<Name>.*proj` in its directory, `packages.lock.json` to the project file
+ * in its directory when it is the only one there (with several, NuGet would
+ * need per-project names, so the shared file is not attributed to any).
+ */
+export function lockfileOwner(lockfileRel: string, projectPaths: readonly string[]): string | undefined {
+  const dir = dirOf(lockfileRel);
+  const named = /^packages\.(.+)\.lock\.json$/.exec(path.posix.basename(lockfileRel))?.[1];
+  const inDir = projectPaths.filter((rel) => dirOf(rel) === dir && NUGET_PROJECT_FILE.test(rel));
+  if (named) return inDir.find((rel) => projectStem(rel).toLowerCase() === named.toLowerCase());
+  return inDir.length === 1 ? inDir[0] : undefined;
+}
+
+/** Lockfile paths that would belong to the project `rel` (see `lockfileOwner`). */
+export function projectLockfileCandidates(rel: string, projectPaths: readonly string[]): string[] {
   const dir = dirOf(rel);
   const prefix = dir === "." ? "" : `${dir}/`;
-  const stem = path.posix.basename(rel).replace(NUGET_PROJECT_FILE, "");
-  return [`${prefix}packages.lock.json`, `${prefix}packages.${stem}.lock.json`];
+  const candidates = [`${prefix}packages.${projectStem(rel)}.lock.json`];
+  const inDir = projectPaths.filter((other) => dirOf(other) === dir && NUGET_PROJECT_FILE.test(other));
+  if (inDir.length <= 1) candidates.push(`${prefix}packages.lock.json`);
+  return candidates;
 }
