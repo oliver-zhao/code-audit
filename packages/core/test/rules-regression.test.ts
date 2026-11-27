@@ -173,8 +173,9 @@ describe("defect 5 rule regressions", () => {
 
   it("does not flag agent instructions in a README but flags a SKILL file", () => {
     const { result } = scan("agents");
+    // The launch flag is a hotspot of its own rule since the agent-rule review.
     const disable = result.hits.filter(
-      (hit) => hit.rule.id === "agent-disable-permissions",
+      (hit) => hit.rule.id === "agent-cli-permission-bypass-flag",
     );
     expect(disable.map((hit) => hit.file.relPath)).toEqual(["agents/SKILL.md"]);
     const exfil = result.hits.filter(

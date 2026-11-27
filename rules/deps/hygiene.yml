@@ -13,7 +13,9 @@ definitions:
   README: '(?:^|/)(?:README|Readme|readme|INSTALL|Install|install|INSTALLATION|Installation|installation|SETUP|Setup|setup|GETTING[-_]STARTED|Getting[-_]Started|getting[-_]started|BUILDING|Building|building|DEVELOPMENT|Development|development|CONTRIBUTING|Contributing|contributing|HACKING)[^/]*\.mdx?$'
   PLACEHOLDER: '(?:your|xxx|<|\.\.\.|example|placeholder|changeme|replace|dummy|redacted|insert|todo|fake|\*\*\*)'
   # Well-known vendor installers that are documented as curl | sh.
-  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|mise\.run)'
+  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|chatgpt\.com/codex/install\.sh|zed\.dev/install\.sh|mise\.run)'
+  # Downloaded code executed (shell or interpreter); a URL or variable must be named.
+  REMOTE_EXEC_DOC: '\b(?:curl|wget)\b[^|\n]{0,300}?(?:https?://|\$\{?\w)[^|\n]{0,300}(?<!\\)\|\s*(?:sudo\s+(?:-\S+\s+)?)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\b(?!\s+-[ceE]\b)|\b(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+(?:-\S+\s+)?<\(\s*(?:curl|wget)\b|\b(?:ba|z|da)?sh\s+-c\s+\\?[\"\x27]?\$\(\s*(?:curl|wget)\b|\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)[=\s]{0,3}[\"\x27]?[^\s\"\x27;&|]{1,200}[^\n]{0,40}?(?:&&|;)\s*(?:chmod\s+\+x\s+\S{1,200}\s*(?:&&|;)\s*)?(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+[\"\x27]?[\w./~$]|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*(?:iex|Invoke-Expression)\b'
 rules:
   - id: dep-http-install
     title: Dependency installed over plain HTTP or unpinned git URL
@@ -38,7 +40,7 @@ rules:
       - CWE-494
       - OWASP A08:2021
   - id: dep-postinstall-download
-    title: Install script downloads and executes code
+    title: Install or prepare script downloads and executes code
     title_zh: 安装脚本下载并执行代码
     severity: high
     confidence: high
@@ -46,11 +48,11 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: "['\"]?(?:preinstall|install|postinstall)['\"]?\\s*:\\s*\"[^\"]{0,600}(?:curl|wget)[^\"]{0,600}\\|\\s*(?:sudo\\s+)?(?:ba|z)?sh"
+    pattern: '[\"\x27]?(?:pre|post)?(?:install|prepare)[\"\x27]?\s*:\s*\"[^\"\n]{0,600}?\b(?:curl|wget)\b[^\"\n]{0,600}?(?:\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|node|perl|ruby)\b|(?:&&|;)\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|node|perl|ruby)\s+[\w./~$])|[\"\x27]?(?:pre|post)?(?:install|prepare)[\"\x27]?\s*:\s*\"[^\"\n]{0,600}?\b(?:ba|z)?sh\s+(?:-c\s+\\?[\"\x27]?\$\(|<\()\s*(?:curl|wget)\b'
     pathInclude: (?:^|/)package\.json$
     group: dep-remote-exec
-    message: A preinstall/install/postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
-    message_zh: preinstall/install/postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
+    message: An install or prepare lifecycle script downloads and runs code during install, a supply-chain risk that executes without review.
+    message_zh: install 或 prepare 生命周期脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
     remediation: Remove the download from the install script or vendor the binary with a pinned checksum.
     remediation_zh: 移除安装脚本中的下载，或将二进制纳入仓库并固定校验和。
     references:
@@ -121,7 +123,7 @@ rules:
     cwe: CWE-494
     owasp: A08:2021
     languages: [markdown, json]
-    pattern: '\b(?:curl|wget)\b[^|\n"]{0,300}?(?:https?://|\$\{?\w)[^|\n"]{0,300}\|\s*(?:sudo\s+)?(?:-E\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n"]{0,300}\|\s*iex\b'
+    pattern: '{{REMOTE_EXEC_DOC}}'
     notPattern: '{{KNOWN_INSTALLER}}'
     pathInclude: '{{README}}|(?:^|/)(?:package|composer)\.json$'
     group: dep-remote-exec
@@ -138,7 +140,7 @@ rules:
     cwe: CWE-829
     owasp: A08:2021
     languages: [json]
-    pattern: '"(?:preinstall|install|postinstall)"\s*:\s*"[^"]{0,400}(?:\b(?:curl|wget)\b|https?://)'
+    pattern: '\"(?:pre|post)?(?:install|prepare)\"\s*:\s*\"[^\"]{0,400}(?:\b(?:curl|wget)\b|https?://)'
     pathInclude: '(?:^|/)package\.json$'
     group: dep-remote-exec
     message: An npm lifecycle script that runs on every install downloads something; check what it fetches and whether it is verified.
@@ -153,7 +155,7 @@ rules:
     cwe: CWE-319
     owasp: A08:2021
     languages: [json, yaml, markdown]
-    pattern: '^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|bin|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+http://(?!{{LOCALHOST}})|http://(?!{{LOCALHOST}})[^"\s]{1,300}\.(?:tgz|tar\.gz|git)(?:#[^"]{0,100})?")|"registry"\s*:\s*"http://(?!{{LOCALHOST}})|^\s*npmRegistryServer\s*:\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*enableStrictSsl\s*:\s*false\b|"strict-ssl"\s*:\s*false|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry\s+["\x27]?http://(?!{{LOCALHOST}})|strict-ssl\s+false\b)|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\b[^\n]{0,200}?\s(?:--registry[= ]\s*)?["\x27]?http://(?!{{LOCALHOST}})'
+    pattern: '^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|bin|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+http://(?!{{LOCALHOST}})|http://(?!{{LOCALHOST}})[^"\s]{1,300}\.(?:tgz|tar\.gz|git)(?:#[^"]{0,100})?")|"registry"\s*:\s*"http://(?!{{LOCALHOST}})|^\s*npmRegistryServer\s*:\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*enableStrictSsl\s*:\s*false\b|"strict-ssl"\s*:\s*false|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry\s+["\x27]?http://(?!{{LOCALHOST}})|strict-ssl\s+false\b)|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\b[^#\n]{0,200}?\s--registry[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\s+(?:-\S+\s+){0,3}["\x27]?(?:git\+)?http://(?!{{LOCALHOST}})'
     pathInclude: '(?:^|/)package\.json$|(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$'
     pathExclude: '{{NOT_IAC}}'
     message: Packages are fetched over plain HTTP or with certificate checks off, so anyone on the network path can replace them.
@@ -204,7 +206,7 @@ rules:
     # The variable must start the line (a YAML/JSON key, a shell line in a
     # code block) or follow export / set / env / go env -w, so prose and
     # lists that name the setting as something to avoid are not matched.
-    pattern: '(?:^\s*["\x27]?|\b(?:export|set|setenv|env|go\s+env\s+-w)\s+)(?:GOSUMDB["\x27]?\s*[=:]\s*["\x27]?off\b|GOINSECURE["\x27]?\s*[=:]\s*["\x27]?[\w*.]|GONOSUMCHECK["\x27]?\s*[=:]\s*["\x27]?1\b|GONOSUMDB["\x27]?\s*[=:]\s*["\x27]?(?:\*|[^"\x27\s]{0,200}\b(?:github\.com|golang\.org|gopkg\.in|gitlab\.com)\b)|GOFLAGS["\x27]?\s*[=:]\s*["\x27]?[^"\x27\n]{0,100}-insecure\b)|\bgo\s+(?:get|install|mod\s+download)\b[^\n]{0,100}\s-insecure\b'
+    pattern: '(?:^\s*["\x27]?|\b(?:export|set|setenv|env|go\s+env\s+-w)\s+)(?:GOSUMDB["\x27]?\s*[=:]\s*["\x27]?off\b|GOINSECURE["\x27]?\s*[=:]\s*["\x27]?[\w*.]|GONOSUMCHECK["\x27]?\s*[=:]\s*["\x27]?1\b|GONOSUMDB["\x27]?\s*[=:]\s*["\x27]?(?:[^,\s"\x27]{1,200},){0,20}(?:\*|(?:github\.com|gitlab\.com|bitbucket\.org|golang\.org|gopkg\.in|go\.googlesource\.com)(?:/\*)?)(?=[,\s"\x27]|$)|GOFLAGS["\x27]?\s*[=:]\s*["\x27]?[^"\x27\n]{0,100}-insecure\b)|\bgo\s+(?:get|install|mod\s+download)\b[^\n]{0,100}\s-insecure\b'
     pathExclude: '{{NOT_IAC}}'
     message: Go downloads modules without checking them against the checksum database (or over insecure transport), so a tampered public module is accepted.
     message_zh: Go 下载模块时不对照校验和数据库检查（或使用不安全传输），被篡改的公共模块会被接受。

@@ -1297,13 +1297,6 @@
       "kind": "finding"
     },
     {
-      "file": "agents/SKILL-bad.md",
-      "line": 3,
-      "ruleId": "agent-disable-permissions",
-      "language": "markdown",
-      "kind": "finding"
-    },
-    {
       "file": "agents/SKILL.md",
       "line": 3,
       "ruleId": "agent-exfil-env",
@@ -1668,14 +1661,14 @@
       "kind": "finding"
     },
     {
-      "file": "agents/SKILL-bad.md",
+      "file": "agents/bad-skill/SKILL.md",
       "line": 5,
       "ruleId": "prompt-injection-exfil",
       "language": "markdown",
       "kind": "finding"
     },
     {
-      "file": "agents/SKILL-bad.md",
+      "file": "agents/bad-skill/SKILL.md",
       "line": 5,
       "ruleId": "agent-exfil-env",
       "language": "markdown",
@@ -1820,6 +1813,132 @@
       "ruleId": "dep-curl-pipe-shell",
       "language": "markdown",
       "kind": "hotspot"
+    },
+    {
+      "file": "agents/bad-skill/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/bad-skill/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-disable-permissions",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/codex/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/cursor/.cursor/hooks.json",
+      "line": 5,
+      "ruleId": "agent-hook-network-exec",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/hooks.json",
+      "line": 6,
+      "ruleId": "agent-hook-network-exec",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/hooks.json",
+      "line": 7,
+      "ruleId": "agent-hook-network-exec",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/hooks.json",
+      "line": 8,
+      "ruleId": "agent-hook-secret-exfil",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/opencode/opencode.json",
+      "line": 8,
+      "ruleId": "agent-mcp-unpinned-npx",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 3,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 4,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 5,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 6,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 7,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 8,
+      "ruleId": "prompt-injection-hidden-unicode",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 9,
+      "ruleId": "agent-exfil-env",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/windsurf/.windsurf/rules/team.md",
+      "line": 10,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/zed/.zed/settings.json",
+      "line": 4,
+      "ruleId": "agent-host-auto-approve",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/prepare/package.json",
+      "line": 5,
+      "ruleId": "dep-postinstall-download",
+      "language": "json",
+      "kind": "finding"
     }
   ],
   "opengrep": [

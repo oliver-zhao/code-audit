@@ -68,7 +68,7 @@ const RuleObjectSchema = z
      */
     codeOnly: z.boolean().optional(),
     /**
-     * YAML only: match only inside the value of one of these mapping keys.
+     * YAML or JSON only: match only inside the value of one of these mapping keys.
      * The file is parsed and the patterns see the value of each such key
      * (aliases resolved, `${{ }}` expressions in canonical form, `env` /
      * `matrix` indirection resolved one level); see `yamlValues.ts`. A file
@@ -103,10 +103,16 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
         path: ["patterns"],
       });
     }
-    if (rule.withinKeys && rule.languages.some((language) => language !== "yaml")) {
+    // JSON is parsed by the same YAML parser (JSON is YAML), so a rule may be
+    // [yaml] or [json]; a mix would need one pattern for two syntaxes.
+    if (
+      rule.withinKeys &&
+      !rule.languages.every((language) => language === "yaml") &&
+      !rule.languages.every((language) => language === "json")
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "withinKeys is only supported for rules whose languages are [yaml]",
+        message: "withinKeys is only supported for rules whose languages are [yaml] or [json]",
         path: ["withinKeys"],
       });
     }
