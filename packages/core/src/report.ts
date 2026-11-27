@@ -13,8 +13,7 @@ import {
 import type { CoverageReport } from "./coverage.js";
 import type { BaselineEntry } from "./baseline.js";
 import { localizeRule, type LoadedRule } from "./rules.js";
-import { compareVersions } from "./sca.js";
-import { comparePypiVersions } from "./pypi.js";
+import { compareVersions, versionComparator } from "./sca.js";
 import { countPathContexts } from "./pathContext.js";
 import { redactText } from "./redact.js";
 
@@ -729,9 +728,6 @@ function majorOf(version: string): number {
   return match?.[1] ? Number(match[1]) : Number.NaN;
 }
 
-function versionComparator(ecosystem: string | undefined): (a: string, b: string) => number {
-  return ecosystem === "PyPI" ? comparePypiVersions : compareVersions;
-}
 
 function maxVersion(
   versions: string[],

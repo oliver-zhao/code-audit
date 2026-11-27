@@ -19,8 +19,9 @@ import {
   validateAuditRoot,
 } from "./pathJail.js";
 import { parseTomlSubset, type TomlTable, type TomlValue } from "./toml.js";
+import { compileGlob } from "./glob.js";
 
-export type OsvEcosystem = "npm" | "PyPI" | "Go" | "Maven" | "NuGet";
+export type OsvEcosystem = "npm" | "PyPI" | "Go" | "Maven" | "NuGet" | "crates.io";
 
 /**
  * How a package is used by the project, when the lockfile or manifest makes
@@ -605,6 +606,11 @@ export interface ManifestDependencies {
   scopes: Map<string, DependencyScope>;
   /** Names of optional-dependency (extras) groups. */
   optionalGroups: Set<string>;
+  /**
+   * Cargo only: keys of the local crates whose own Cargo.toml was read, so
+   * their declared dependencies (with scope) are already in `names`.
+   */
+  localCrates?: Set<string>;
   warning?: string;
 }
 
@@ -1313,12 +1319,542 @@ export function parsePackagesLock(
   return { packages: pushUnique(packages), warnings };
 }
 
+// ---------------------------------------------------------------------------
+// Rust: Cargo.lock with the sibling Cargo.toml (and workspace members).
+
+/** Crate names compare case-insensitively with `-` and `_` treated as equal. */
+function cargoKey(name: string): string {
+  return name.toLowerCase().replace(/_/g, "-");
+}
+
+/** Index URLs of crates.io: the git index and the sparse index. */
+const CRATES_IO_SOURCES = new Set([
+  "registry+https://github.com/rust-lang/crates.io-index",
+  "sparse+https://index.crates.io/",
+]);
+
+type CargoSourceKind = "crates.io" | "local" | "git" | "other-registry";
+
+function cargoSourceKind(source: string | undefined): CargoSourceKind {
+  if (source === undefined) return "local";
+  if (CRATES_IO_SOURCES.has(source)) return "crates.io";
+  if (source.startsWith("git+")) return "git";
+  return "other-registry";
+}
+
+/** `name`, `name version` or `name version (source)` -> key of `name`. */
+function cargoDependencyKey(entry: string): string | undefined {
+  const name = /^\s*([A-Za-z0-9_-]+)/.exec(entry)?.[1];
+  return name ? cargoKey(name) : undefined;
+}
+
+interface CargoManifest {
+  manifest: ManifestDependencies;
+  /** `[package] name`, when the manifest is a crate (not a virtual workspace). */
+  crate?: string;
+  /** `[workspace] members` / `exclude` globs, relative to the manifest. */
+  members: string[];
+  exclude: string[];
+  /** Workspace dependency key -> real crate name (`package = "..."`). */
+  workspaceRenames: Map<string, string>;
+}
+
+function stringArray(value: TomlValue | undefined): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function readCargoManifest(
+  content: string,
+  file: string,
+  inheritedRenames: Map<string, string> = new Map(),
+): CargoManifest {
+  const parsed = parseTomlSubset(stripBom(content), file);
+  const empty: CargoManifest = {
+    manifest: emptyManifest(parsed.error),
+    members: [],
+    exclude: [],
+    workspaceRenames: new Map(),
+  };
+  if (parsed.error) return empty;
+
+  const result = emptyManifest();
+  const add = (name: string, scope: DependencyScope): void => {
+    const key = cargoKey(name);
+    result.names.add(key);
+    result.scopes.set(key, betterScope(result.scopes.get(key), scope));
+  };
+  const workspace = asTable(parsed.data.workspace);
+  const workspaceDeps = asTable(workspace?.dependencies);
+  const workspaceRenames = new Map(inheritedRenames);
+  if (workspaceDeps) {
+    for (const key of Object.keys(workspaceDeps)) {
+      const renamed = asString(asTable(workspaceDeps[key])?.package);
+      if (renamed) workspaceRenames.set(key, renamed);
+    }
+  }
+  // The crate a dependency key names: `package = "..."` renames it, and
+  // `{ workspace = true }` takes the rename from `[workspace.dependencies]`.
+  const crateName = (key: string, spec: TomlValue | undefined): string => {
+    const table = asTable(spec);
+    const renamed = asString(table?.package);
+    if (renamed) return renamed;
+    if (table?.workspace === true) return workspaceRenames.get(key) ?? key;
+    return key;
+  };
+  const addTable = (value: TomlValue | undefined, scope: DependencyScope): void => {
+    const table = asTable(value);
+    if (!table) return;
+    for (const key of Object.keys(table)) add(crateName(key, table[key]), scope);
+  };
+  // Cargo also accepts the legacy spellings with an underscore.
+  const addSections = (container: TomlTable | undefined): void => {
+    if (!container) return;
+    addTable(container.dependencies, "runtime");
+    addTable(container["build-dependencies"], "runtime");
+    addTable(container.build_dependencies, "runtime");
+    addTable(container["dev-dependencies"], "dev");
+    addTable(container.dev_dependencies, "dev");
+  };
+
+  addSections(parsed.data);
+  const target = asTable(parsed.data.target);
+  if (target) for (const cfg of Object.keys(target)) addSections(asTable(target[cfg]));
+  // Workspace dependencies are declared for the members; how a member uses
+  // one is not known here.
+  if (workspaceDeps) {
+    for (const key of Object.keys(workspaceDeps)) add(crateName(key, workspaceDeps[key]), "unknown");
+  }
+
+  return {
+    manifest: result,
+    crate: asString(asTable(parsed.data.package)?.name),
+    members: stringArray(workspace?.members),
+    exclude: stringArray(workspace?.exclude),
+    workspaceRenames,
+  };
+}
+
+/** Dependencies a single Cargo.toml declares, with their scope. */
+export function parseCargoManifestDependencies(
+  content: string,
+  file: string,
+): ManifestDependencies {
+  const parsed = readCargoManifest(content, file);
+  parsed.manifest.localCrates = new Set(parsed.crate ? [cargoKey(parsed.crate)] : []);
+  return parsed.manifest;
+}
+
+function mergeManifest(target: ManifestDependencies, source: ManifestDependencies): void {
+  for (const key of source.names) {
+    target.names.add(key);
+    const scope = source.scopes.get(key);
+    if (scope) target.scopes.set(key, betterScope(target.scopes.get(key), scope));
+  }
+}
+
+/** Upper bound on workspace member manifests read for one Cargo.lock. */
+const MAX_CARGO_MEMBERS = 1000;
+/** Upper bound on `members` / `exclude` patterns taken from one Cargo.toml. */
+const MAX_CARGO_MEMBER_PATTERNS = 1000;
+
+/** `./crates/x/` -> `crates/x`, the way Cargo joins it onto the workspace root. */
+function normalizeMemberPath(value: string): string {
+  let result = value.trim().replace(/\\/g, "/");
+  while (result.startsWith("./")) result = result.slice(2);
+  return result.replace(/\/+$/, "");
+}
+
+function isGlobPattern(value: string): boolean {
+  return /[*?[\]{}]/.test(value);
+}
+
+interface WorkspaceMembers {
+  /** True when a directory (relative to the workspace root) is a member. */
+  matches(dir: string): boolean;
+  /** Members written as plain paths (no glob characters). */
+  literal: string[];
+}
+
+/**
+ * Member matching as Cargo does it: `members` are globs, `exclude` entries
+ * are path prefixes. Patterns are compiled once and capped in number.
+ */
+function workspaceMembers(members: string[], exclude: string[]): WorkspaceMembers {
+  const include = members
+    .slice(0, MAX_CARGO_MEMBER_PATTERNS)
+    .map(normalizeMemberPath)
+    .filter((member) => member.length > 0 && !member.startsWith("../") && member !== "..");
+  const excluded = exclude
+    .slice(0, MAX_CARGO_MEMBER_PATTERNS)
+    .map(normalizeMemberPath)
+    .filter((member) => member.length > 0);
+  const compiled = include.map((pattern) => {
+    try {
+      return compileGlob(pattern);
+    } catch {
+      return () => false;
+    }
+  });
+  return {
+    matches: (dir) =>
+      !excluded.some((prefix) => dir === prefix || dir.startsWith(`${prefix}/`)) &&
+      compiled.some((match) => match(dir)),
+    literal: include.filter((member) => !isGlobPattern(member)),
+  };
+}
+
+/**
+ * Read the Cargo.toml next to a Cargo.lock through the path jail, plus the
+ * manifests of the workspace members it lists: members written as plain
+ * paths are read directly, glob members are matched against `manifestPaths`
+ * (the Cargo.toml files the inventory found). Returns undefined when there is
+ * no Cargo.toml.
+ */
+function readCargoManifests(
+  root: string,
+  lockfileRel: string,
+  manifestPaths: readonly string[],
+): ManifestDependencies | undefined {
+  const dir = dirOf(lockfileRel);
+  const rel = dir === "." ? "Cargo.toml" : `${dir}/Cargo.toml`;
+  const read = readJailedFile(root, rel);
+  if ("error" in read) {
+    if (read.error === "ENOENT" || read.error === "ENOTDIR") return undefined;
+    return emptyManifest(`${rel}: manifest was not read (${read.error})`);
+  }
+  const top = readCargoManifest(read.content, rel);
+  const combined = emptyManifest(top.manifest.warning);
+  combined.localCrates = new Set<string>();
+  mergeManifest(combined, top.manifest);
+  if (top.crate) combined.localCrates.add(cargoKey(top.crate));
+  if (top.members.length === 0) return combined;
+
+  const prefix = dir === "." ? "" : `${dir}/`;
+  const members = workspaceMembers(top.members, top.exclude);
+  const candidates = new Set<string>();
+  for (const member of members.literal) {
+    if (members.matches(member)) candidates.add(`${prefix}${member}/Cargo.toml`);
+  }
+  for (const manifestPath of manifestPaths) {
+    if (path.posix.basename(manifestPath) !== "Cargo.toml") continue;
+    if (!manifestPath.startsWith(prefix)) continue;
+    const memberDir = dirOf(manifestPath.slice(prefix.length));
+    if (memberDir === "." || memberDir.startsWith("../")) continue;
+    if (members.matches(memberDir)) candidates.add(manifestPath);
+  }
+
+  let count = 0;
+  for (const manifestPath of candidates) {
+    if (count >= MAX_CARGO_MEMBERS) {
+      combined.warning ??= `${rel}: more than ${MAX_CARGO_MEMBERS} workspace members; the rest were not read`;
+      break;
+    }
+    count += 1;
+    const member = readJailedFile(root, manifestPath);
+    if ("error" in member) {
+      if (member.error !== "ENOENT" && member.error !== "ENOTDIR") {
+        combined.warning ??= `${manifestPath}: manifest was not read (${member.error})`;
+      }
+      continue;
+    }
+    const parsed = readCargoManifest(member.content, manifestPath, top.workspaceRenames);
+    if (parsed.manifest.warning) {
+      combined.warning ??= parsed.manifest.warning;
+      continue;
+    }
+    mergeManifest(combined, parsed.manifest);
+    if (parsed.crate) combined.localCrates.add(cargoKey(parsed.crate));
+  }
+  return combined;
+}
+
+interface CargoWorkspaceInfo {
+  members: WorkspaceMembers;
+  /** Keys of the local crates the workspace Cargo.lock lists. */
+  localCrates: Set<string>;
+}
+
+/** Parsed workspace information per directory, shared by one caller. */
+type CargoWorkspaceCache = Map<string, CargoWorkspaceInfo | undefined>;
+
+function cargoWorkspaceInfo(
+  root: string,
+  dir: string,
+  cache: CargoWorkspaceCache,
+): CargoWorkspaceInfo | undefined {
+  if (cache.has(dir)) return cache.get(dir);
+  const prefix = dir === "." ? "" : `${dir}/`;
+  let info: CargoWorkspaceInfo | undefined;
+  const manifest = readJailedFile(root, `${prefix}Cargo.toml`);
+  const lock = readJailedFile(root, `${prefix}Cargo.lock`);
+  if (!("error" in manifest) || !("error" in lock)) {
+    const top = "error" in manifest ? undefined : readCargoManifest(manifest.content, `${prefix}Cargo.toml`);
+    const localCrates = new Set<string>();
+    if (!("error" in lock)) {
+      const parsed = parseTomlSubset(stripBom(lock.content), `${prefix}Cargo.lock`);
+      const packages = parsed.error ? [] : parsed.data.package;
+      if (Array.isArray(packages)) {
+        for (const item of packages) {
+          const table = asTable(item);
+          const name = asString(table?.name);
+          if (table && name && table.source === undefined) localCrates.add(cargoKey(name));
+        }
+      }
+    }
+    info = { members: workspaceMembers(top?.members ?? [], top?.exclude ?? []), localCrates };
+  }
+  cache.set(dir, info);
+  return info;
+}
+
+/**
+ * True when the Cargo.toml at `manifestRel` belongs to the workspace of the
+ * nearest enclosing directory that has a Cargo.lock, so it shares that
+ * lockfile: either `[workspace] members` lists it, or the lockfile records
+ * its crate as a local package (Cargo also makes path dependencies inside
+ * the workspace members).
+ */
+function isCargoWorkspaceMember(
+  root: string,
+  manifestRel: string,
+  byDir: Map<string, Set<string>>,
+  cache: CargoWorkspaceCache,
+): boolean {
+  const dir = dirOf(manifestRel);
+  let current = dir;
+  while (current !== "." && current !== "" && current !== "/") {
+    current = path.posix.dirname(current);
+    const files = [...(byDir.get(current) ?? [])].map((rel) => path.posix.basename(rel));
+    if (!files.includes("Cargo.lock")) continue;
+    const info = cargoWorkspaceInfo(root, current, cache);
+    if (!info) return false;
+    const memberDir = current === "." ? dir : dir.slice(current.length + 1);
+    if (info.members.matches(memberDir)) return true;
+    const own = readJailedFile(root, manifestRel);
+    if ("error" in own) return false;
+    const crate = readCargoManifest(own.content, manifestRel).crate;
+    return crate !== undefined && info.localCrates.has(cargoKey(crate));
+  }
+  return false;
+}
+
+const NO_CARGO_MANIFEST_WARNING =
+  "no Cargo.toml found; all dependencies are treated as direct (unresolved transitive dependencies)";
+
+/**
+ * Line-based scan used only when the TOML reader rejects a Cargo.lock: the
+ * `name`, `version` and `source` lines of each `[[package]]` block.
+ */
+function scanCargoBlocks(content: string): Array<{
+  name: string;
+  version?: string;
+  source?: string;
+  line: number;
+}> {
+  const blocks: Array<{ name?: string; version?: string; source?: string; line: number }> = [];
+  let current: (typeof blocks)[number] | undefined;
+  const lines = splitLines(stripBom(content));
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = (lines[index] ?? "").trim();
+    if (text.startsWith("[")) {
+      current = text.startsWith("[[package]]") ? { line: index + 1 } : undefined;
+      if (current) blocks.push(current);
+      continue;
+    }
+    if (!current || text.length > 4096) continue;
+    const pair = /^(name|version|source)\s*=\s*(?:"([^"\\]*)"|'([^']*)')/.exec(text);
+    if (!pair) continue;
+    const key = pair[1] as "name" | "version" | "source";
+    current[key] ??= pair[2] ?? pair[3] ?? "";
+  }
+  return blocks.filter(
+    (block): block is { name: string; version?: string; source?: string; line: number } =>
+      typeof block.name === "string" && block.name.length > 0,
+  );
+}
+
+/**
+ * Parse a Cargo.lock. crates.io packages are returned with ecosystem
+ * `crates.io`; local workspace and path crates are skipped; git and
+ * alternative-registry crates cannot be checked against OSV and are counted in
+ * one warning each. With the sibling manifest, a crate is direct when the
+ * manifest names it, and scopes propagate through the lockfile's dependency
+ * lists (runtime first, so nothing reachable at run time is labelled dev).
+ */
+export function parseCargoLock(
+  content: string,
+  file: string,
+  direct?: DirectInfo,
+): ParsedDependencies {
+  const warnings: string[] = [];
+  const manifest = manifestOf(direct);
+  const parsed = parseTomlSubset(stripBom(content), file);
+
+  interface Entry {
+    name: string;
+    key: string;
+    version?: string;
+    line: number;
+    kind: CargoSourceKind;
+    dependencies: string[];
+  }
+  const entries: Entry[] = [];
+  if (parsed.error) {
+    for (const block of scanCargoBlocks(content)) {
+      entries.push({
+        name: block.name,
+        key: cargoKey(block.name),
+        version: block.version,
+        line: block.line,
+        kind: cargoSourceKind(block.source),
+        dependencies: [],
+      });
+    }
+    warnings.push(
+      `${parsed.error}; used a line-based fallback (${entries.length} packages, dependency scope unknown)`,
+    );
+  } else {
+    const raw = parsed.data.package;
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        const table = asTable(item);
+        const name = asString(table?.name);
+        if (!table || !name) continue;
+        entries.push({
+          name,
+          key: cargoKey(name),
+          version: asString(table.version),
+          line: parsed.lineOf(table) ?? 1,
+          kind: cargoSourceKind(asString(table.source)),
+          dependencies: stringArray(table.dependencies),
+        });
+      }
+    }
+  }
+
+  // Seeds: what the manifests declare. A local (path) crate is part of the
+  // project, so it is never a direct dependency itself, but what it depends
+  // on is still reached through it.
+  const seeds = new Map<string, DependencyScope>();
+  if (manifest) {
+    for (const key of manifest.names) seeds.set(key, manifest.scopes.get(key) ?? "unknown");
+  }
+  const directKeys = new Set(seeds.keys());
+  const manifestKnown = seeds.size > 0;
+  for (const entry of entries) if (entry.kind === "local") directKeys.delete(entry.key);
+  // A local crate whose Cargo.toml was read is covered by its manifest seeds;
+  // its lockfile list also holds its dev-dependencies, so it is not followed.
+  // A local crate whose manifest was not read (a path dependency outside the
+  // workspace, an unmatched member) contributes its lockfile list as runtime:
+  // without the manifest nothing it uses may be labelled dev.
+  const readCrates = manifest?.localCrates ?? new Set<string>();
+  const followed = (entry: Entry): boolean =>
+    entry.kind !== "local" || !readCrates.has(entry.key);
+  if (manifest) {
+    for (const entry of entries) {
+      if (entry.kind !== "local" || readCrates.has(entry.key)) continue;
+      for (const dependency of entry.dependencies) {
+        const key = cargoDependencyKey(dependency);
+        if (key) seeds.set(key, betterScope(seeds.get(key), "runtime"));
+      }
+    }
+  }
+
+  const byKey = new Map<string, Entry[]>();
+  for (const entry of entries) {
+    const list = byKey.get(entry.key) ?? [];
+    list.push(entry);
+    byKey.set(entry.key, list);
+  }
+  const reached = new Map<string, DependencyScope>();
+  for (const scope of ["runtime", "dev"] as const) {
+    const queue: string[] = [];
+    for (const [key, seedScope] of seeds) if (seedScope === scope) queue.push(key);
+    while (queue.length > 0) {
+      const key = queue.pop() as string;
+      if (reached.has(key)) continue;
+      reached.set(key, scope);
+      for (const entry of byKey.get(key) ?? []) {
+        if (!followed(entry)) continue;
+        for (const dependency of entry.dependencies) {
+          const next = cargoDependencyKey(dependency);
+          if (next && !reached.has(next)) queue.push(next);
+        }
+      }
+    }
+  }
+
+  const packages: ScaPackage[] = [];
+  let git = 0;
+  let otherRegistry = 0;
+  let noVersion = 0;
+  for (const entry of entries) {
+    if (entry.kind === "local") continue;
+    if (entry.kind === "git") {
+      git += 1;
+      continue;
+    }
+    if (entry.kind === "other-registry") {
+      otherRegistry += 1;
+      continue;
+    }
+    if (!entry.version) {
+      noVersion += 1;
+      continue;
+    }
+    // Without the dependency graph (line-based fallback) a crate declared as
+    // a dev-dependency may still be reached at run time: never label it dev.
+    let scope = reached.get(entry.key) ?? seeds.get(entry.key) ?? "unknown";
+    if (parsed.error && scope === "dev") scope = "unknown";
+    const pkg: ScaPackage = {
+      name: entry.name,
+      version: entry.version,
+      ecosystem: "crates.io",
+      file,
+      line: entry.line,
+      manager: "cargo",
+      direct: manifestKnown ? directKeys.has(entry.key) : true,
+      scope,
+    };
+    if (scope === "dev") pkg.dev = true;
+    packages.push(pkg);
+  }
+
+  if (git > 0) {
+    warnings.push(
+      `${file}: ${git} crate(s) from git repositories cannot be checked against OSV`,
+    );
+  }
+  if (otherRegistry > 0) {
+    warnings.push(
+      `${file}: ${otherRegistry} crate(s) from registries other than crates.io were not checked against OSV`,
+    );
+  }
+  if (noVersion > 0) {
+    warnings.push(`${file}: ${noVersion} crates.io entries without a version were skipped`);
+  }
+  if (packages.length > 0 && !manifestKnown) {
+    warnings.push(
+      manifest
+        ? `${file}: no dependencies could be read from Cargo.toml; all dependencies are treated as direct`
+        : `${file}: ${NO_CARGO_MANIFEST_WARNING}`,
+    );
+  }
+  if (entries.length === 0) {
+    warnings.push(`${file}: no parseable cargo dependencies found`);
+  }
+  return { packages: pushUnique(packages), warnings };
+}
+
 export interface ParseLockfileOptions {
   /** Audit root, used to resolve `-r` includes in requirements files. */
   root?: string;
   /**
-   * Dependencies declared by the sibling manifest (pyproject.toml or
-   * Pipfile), if present: plain direct names or full manifest information.
+   * Dependencies declared by the sibling manifest (pyproject.toml, Pipfile
+   * or Cargo.toml), if present: plain direct names or full manifest
+   * information.
    */
   directNames?: DirectInfo;
   /**
@@ -1361,6 +1897,8 @@ export function parseLockfile(
       return parsePomXml(content, relPath);
     case "packages.lock.json":
       return parsePackagesLock(content, relPath);
+    case "Cargo.lock":
+      return parseCargoLock(content, relPath, options.directNames);
     case "go.sum":
     case "yarn.lock":
       return { packages: [], warnings: [] };
@@ -1395,12 +1933,15 @@ function hasRequiredLockfile(
   base: string,
   present: Set<string>,
   nested?: Set<string>,
+  workspaceMember?: () => boolean,
 ): boolean {
   const names = new Set(
     [...present].map((relPath) => path.posix.basename(relPath)),
   );
   const required = EXPECTED_LOCKFILES[base];
   if (required?.some((candidate) => names.has(candidate))) return true;
+  // A workspace member's Cargo.toml shares the Cargo.lock of its workspace.
+  if (base === "Cargo.toml" && workspaceMember?.()) return true;
   if (base === "pyproject.toml") {
     if ([...names].some((name) => /^pylock\..+\.toml$/.test(name))) return true;
     if ([...present].some(isRequirementsLockfilePath)) return true;
@@ -1415,6 +1956,7 @@ function requirementsDirOf(dir: string): string {
 }
 
 function manifestHygieneWarnings(inventory: InventoryResult): string[] {
+  const cargoCache: CargoWorkspaceCache = new Map();
   const warnings: string[] = [];
   const byDir = new Map<string, Set<string>>();
   for (const manifest of inventory.manifests) {
@@ -1429,7 +1971,14 @@ function manifestHygieneWarnings(inventory: InventoryResult): string[] {
     const base = path.basename(manifest.relPath);
     const dir = dirOf(manifest.relPath);
     const present = byDir.get(dir) ?? new Set<string>();
-    if (!hasRequiredLockfile(base, present, byDir.get(requirementsDirOf(dir)))) {
+    if (
+      !hasRequiredLockfile(
+        base,
+        present,
+        byDir.get(requirementsDirOf(dir)),
+        () => isCargoWorkspaceMember(inventory.root, manifest.relPath, byDir, cargoCache),
+      )
+    ) {
       warnings.push(
         `${manifest.relPath}: no matching lockfile found; direct dependencies only (unresolved transitive dependencies)`,
       );
@@ -1464,7 +2013,9 @@ function dependencyDeclarationLine(absPath: string, base: string): number {
       ? [/"dependencies"\s*:/, /"devDependencies"\s*:/]
       : base === "pyproject.toml"
         ? [/^\s*dependencies\s*=/, /\[tool\.poetry\.dependencies\]/, /\[project\]/]
-        : [];
+        : base === "Cargo.toml"
+          ? [/^\s*\[(?:workspace\.)?dependencies\]/]
+          : [];
   const lines = splitLines(content);
   for (let index = 0; index < lines.length; index += 1) {
     if (patterns.some((pattern) => pattern.test(lines[index] ?? ""))) {
@@ -1482,6 +2033,7 @@ function dependencyDeclarationLine(absPath: string, base: string): number {
 export function manifestLockfileIssues(
   inventory: InventoryResult,
 ): ManifestLockfileIssue[] {
+  const cargoCache: CargoWorkspaceCache = new Map();
   const byDir = new Map<string, Set<string>>();
   for (const manifest of inventory.manifests) {
     const dir = dirOf(manifest.relPath);
@@ -1498,7 +2050,12 @@ export function manifestLockfileIssues(
     const present = byDir.get(dir) ?? new Set<string>();
     const required = EXPECTED_LOCKFILES[base];
     const missing = required
-      ? !hasRequiredLockfile(base, present, byDir.get(requirementsDirOf(dir)))
+      ? !hasRequiredLockfile(
+          base,
+          present,
+          byDir.get(requirementsDirOf(dir)),
+          () => isCargoWorkspaceMember(inventory.root, manifest.relPath, byDir, cargoCache),
+        )
       : base.endsWith(".csproj") &&
         ![...present].some((relPath) => path.posix.basename(relPath) === "packages.lock.json");
     if (!missing) continue;
@@ -1642,11 +2199,64 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** Version comparator for an ecosystem: PEP 440 for PyPI, generic otherwise. */
+/**
+ * Compare Semantic Versioning 2.0 versions: build metadata is ignored and a
+ * pre-release sorts before its release. Falls back to `compareVersions` when
+ * either side is not `MAJOR.MINOR.PATCH`.
+ */
+export function compareSemver(a: string, b: string): number {
+  const split = (value: string): { core: number[]; pre: string[] } | undefined => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(
+      value.trim(),
+    );
+    if (!match) return undefined;
+    return {
+      core: [Number(match[1]), Number(match[2]), Number(match[3])],
+      pre: match[4] ? match[4].split(".") : [],
+    };
+  };
+  const left = split(a);
+  const right = split(b);
+  if (!left || !right) return compareVersions(a, b);
+  for (let index = 0; index < 3; index += 1) {
+    const l = left.core[index] as number;
+    const r = right.core[index] as number;
+    if (l !== r) return l < r ? -1 : 1;
+  }
+  if (left.pre.length === 0 || right.pre.length === 0) {
+    if (left.pre.length === right.pre.length) return 0;
+    return left.pre.length === 0 ? 1 : -1;
+  }
+  const length = Math.max(left.pre.length, right.pre.length);
+  for (let index = 0; index < length; index += 1) {
+    const l = left.pre[index];
+    const r = right.pre[index];
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    const ln = /^\d+$/.test(l);
+    const rn = /^\d+$/.test(r);
+    if (ln && rn) {
+      const diff = Number(l) - Number(r);
+      if (diff !== 0) return diff < 0 ? -1 : 1;
+      continue;
+    }
+    if (ln !== rn) return ln ? -1 : 1;
+    if (l !== r) return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Version comparator for an ecosystem: PEP 440 for PyPI, SemVer for
+ * crates.io, generic otherwise.
+ */
 export function versionComparator(
   ecosystem: string | undefined,
 ): (a: string, b: string) => number {
-  return ecosystem?.toLowerCase() === "pypi" ? comparePypiVersions : compareVersions;
+  const eco = ecosystem?.toLowerCase();
+  if (eco === "pypi") return comparePypiVersions;
+  if (eco === "crates.io") return compareSemver;
+  return compareVersions;
 }
 
 /**
@@ -1780,15 +2390,19 @@ function truncate(value: string, max = 300): string {
 }
 
 /**
- * Read the manifest next to a Python lockfile (pyproject.toml, or Pipfile for
- * Pipfile.lock) through the path jail. Returns undefined when there is no
- * sibling manifest so the caller keeps every package marked direct.
+ * Read the manifest next to a lockfile through the path jail: pyproject.toml
+ * for the Python TOML lockfiles, Pipfile for Pipfile.lock, Cargo.toml (and the
+ * workspace members among `manifestPaths`) for Cargo.lock. Returns undefined
+ * when there is no sibling manifest so the caller keeps every package marked
+ * direct.
  */
 export function readSiblingManifest(
   root: string,
   lockfileRel: string,
+  manifestPaths: readonly string[] = [],
 ): ManifestDependencies | undefined {
   const base = path.posix.basename(lockfileRel);
+  if (base === "Cargo.lock") return readCargoManifests(root, lockfileRel, manifestPaths);
   const manifestName = base === "Pipfile.lock" ? "Pipfile" : "pyproject.toml";
   const isTomlLock =
     base === "poetry.lock" ||
@@ -2069,6 +2683,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
   const packages: ScaPackage[] = [];
   const skipLockfiles = new Set(options.skipLockfiles ?? []);
   const visitedRequirements = new Set<string>();
+  const manifestPaths = options.inventory.manifests.map((manifest) => manifest.relPath);
   const seenWarnings = new Set<string>(warnings);
   const perFileCount = new Map<string, number>();
   const overCap = new Map<string, number>();
@@ -2092,7 +2707,7 @@ export async function runSca(options: ScaOptions): Promise<ScaResult> {
     // exception while parsing it becomes a warning and the next file is read.
     let parsed: ParsedDependencies;
     try {
-      const manifest = readSiblingManifest(options.root, lockfile.relPath);
+      const manifest = readSiblingManifest(options.root, lockfile.relPath, manifestPaths);
       if (manifest?.warning && !seenWarnings.has(manifest.warning)) {
         seenWarnings.add(manifest.warning);
         warnings.push(manifest.warning);

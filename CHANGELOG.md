@@ -7,6 +7,20 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Rust dependencies:** `Cargo.lock` is checked against OSV.dev (ecosystem
+  `crates.io`). The sibling `Cargo.toml` and the workspace members it lists
+  mark crates as direct and give their scope (`[dependencies]` and
+  `[build-dependencies]` runtime, `[dev-dependencies]` dev, also under
+  `[target.'cfg(...)']`, `[workspace.dependencies]`, renamed with
+  `package = "..."` and `workspace = true`); the scope of transitive crates
+  follows the lockfile's dependency lists. Local crates are skipped; crates
+  from git repositories or other registries are counted in a warning. A
+  workspace member's `Cargo.toml` no longer reports a missing lockfile when
+  the workspace has one. Fixed versions of crates.io advisories are ordered by
+  SemVer.
+
 ## [0.2.0] - 2026-11-27
 
 First public release. Version 0.1.0 was used by development builds only and

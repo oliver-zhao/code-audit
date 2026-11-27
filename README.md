@@ -49,6 +49,7 @@ the rule counts of your build.
 | **Java** | `.java` | 10 | `pom.xml` (direct dependencies with literal versions) |
 | **Go** | `.go` | 10 | `go.mod` |
 | **C#** | `.cs` | 10 | `packages.lock.json` |
+| **Rust** | none (no `.rs` rules yet) | 0 | `Cargo.lock` (with `Cargo.toml` and workspace members for direct/dev scope) |
 | **C / C++** | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | 9 | none |
 | **Dockerfile / Compose** | `Dockerfile*`, compose files | 6 | |
 | **Kubernetes manifests** | `.yml`, `.yaml` | 7 | |
@@ -417,7 +418,7 @@ credential and configuration directories (`~/.ssh`, `~/.aws`, `~/.config`,
 |---|---|---|
 | Built-in rules | Node only | 156 rules (113 findings, 43 hotspots); `code-audit doctor` prints the counts of your build. See [docs/rules.md](docs/rules.md). |
 | Built-in secret detection | Node only | Private keys, provider tokens (AWS, GitHub, Slack, ...), credentials in URLs, password and key assignments, and credential files (`.netrc`, `.pgpass`, `.npmrc`, `.pypirc` / `pip.conf`, Docker `auths`, kubeconfig). Values are masked in every output. |
-| Dependency advisories | Node only, network | Parses `package-lock.json`, `pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `go.mod`, `pom.xml` (direct dependencies with literal versions), `packages.lock.json` and queries OSV.dev. Only package names and versions are sent. `--offline` skips the queries and the report says so. |
+| Dependency advisories | Node only, network | Parses `package-lock.json`, `pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `go.mod`, `pom.xml` (direct dependencies with literal versions), `packages.lock.json`, `Cargo.lock` and queries OSV.dev. Only package names and versions are sent. `--offline` skips the queries and the report says so. |
 | Opengrep (optional) | `opengrep` on `PATH` | Runs the 20 bundled Opengrep-syntax rules, including 8 Python taint rules that follow request data to a sink inside one file. Executed for real with Opengrep 1.33.1. |
 | Semgrep (optional) | `semgrep` on `PATH` | Fallback for the same rules when Opengrep is not installed. **Never executed in our testing.** |
 | OSV-Scanner (optional) | `osv-scanner` on `PATH` | A second dependency scan with its own lockfile parsers; results are merged with the built-in ones. Executed for real with 2.7.1. |
@@ -649,8 +650,9 @@ The scan prints the reason, for example
   conditions, cryptographic design, anything that needs to run the code.
 - Dependency results depend on a lockfile or pinned versions; unpinned
   entries are counted in a warning. `pom.xml` is read for direct dependencies
-  with literal versions only. `yarn.lock`, `go.sum`, `Cargo.lock` and
-  `composer.lock` are not parsed by the built-in engine.
+  with literal versions only. `yarn.lock`, `go.sum` and `composer.lock` are
+  not parsed by the built-in engine. Crates from git repositories or from
+  registries other than crates.io are counted in a warning, not checked.
 - Semgrep is supported as a fallback for Opengrep but has never been executed
   in our testing.
 - Tests pass on macOS (arm64) and Linux (x86_64). **Windows is untested.**

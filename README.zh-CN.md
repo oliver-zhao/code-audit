@@ -28,6 +28,7 @@
 | **Java** | `.java` | 10 | `pom.xml`（仅直接依赖且版本号为字面值） |
 | **Go** | `.go` | 10 | `go.mod` |
 | **C#** | `.cs` | 10 | `packages.lock.json` |
+| **Rust** | 无（暂无 `.rs` 规则） | 0 | `Cargo.lock`（结合 `Cargo.toml` 和 workspace 成员区分直接依赖与开发依赖） |
 | **C / C++** | `.c`、`.h`、`.cc`、`.cpp`、`.cxx`、`.hpp`、`.hh`、`.hxx` | 9 | 无 |
 | **Dockerfile / Compose** | `Dockerfile*`、compose 文件 | 6 | |
 | **Kubernetes 清单** | `.yml`、`.yaml` | 7 | |
@@ -265,7 +266,7 @@ code-audit scan fixtures/clean      --offline --no-external --out /tmp/ca-clean 
 
 - 内置规则一次只匹配一条语句，不跨语句、跨文件跟踪数据。Opengrep 数据流规则只在单个文件内跟踪，并且不经过类方法。
 - 不覆盖：授权与业务逻辑、模板里的 XSS、竞态条件、密码学设计，以及任何需要运行代码才能发现的问题。
-- 依赖结果取决于 lockfile 或固定的版本号。`yarn.lock`、`go.sum`、`Cargo.lock`、`composer.lock` 内置引擎不解析。
+- 依赖结果取决于 lockfile 或固定的版本号。`yarn.lock`、`go.sum`、`composer.lock` 内置引擎不解析。来自 git 仓库或非 crates.io 仓库的 crate 只在警告中计数，不做检查。
 - Semgrep 作为 Opengrep 的替代被支持，但从未在测试中实际运行过。
 - Windows 没有测试过。
 
