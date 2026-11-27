@@ -219,7 +219,7 @@ rules:
     pathExclude: '{{GOTEST}}'
     # Only paths that are concatenated at the call; a bare variable or a
     # literal is not reported (too common to be useful).
-    pattern: '(?:\bos\.(?:Open|OpenFile|ReadFile|Create)|\bioutil\.ReadFile|\bhttp\.ServeFile\(\s*\w+\s*,\s*\w+\s*,)\(?\s*(?:"[^"\n]{0,300}"\s*\+|[\w.]+\s*\+\s*(?!"[^"\n]{0,100}"\s*[,)]))'
+    pattern: '(?:\bos\.(?:Open|OpenFile|ReadFile|Create)|\bioutil\.ReadFile|\bhttp\.ServeFile\(\s*\w+\s*,\s*\w+\s*,)\(?\s*(?:"[^"\n]{0,300}"\s*\+|[\w.]{1,120}\s*\+\s*(?!"[^"\n]{0,100}"\s*[,)]))'
     group: go-path
     message: The file path is concatenated at run time; confirm it stays inside the allowed root after cleaning.
     message_zh: 文件路径在运行时拼接；需确认清理后仍位于允许根目录内。

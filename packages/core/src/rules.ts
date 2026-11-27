@@ -2121,13 +2121,22 @@ export function scanRules(
     // those YAML keys, after the line loop. When the file cannot be parsed
     // the rules fail open: they are matched against every line instead.
     const keyValues = new Map<string, YamlKeyValue[] | undefined>();
+    // Whether the document itself could not be parsed (syntax, size, alias
+    // expansion): the same for every key set, so a hostile file is parsed
+    // once, not once per rule, and cannot spend the file's time budget.
+    let unparsable = false;
     const keyValuesOf = (keys: readonly string[]): YamlKeyValue[] | undefined => {
       const cacheKey = keys.join("\u0000");
       if (keyValues.has(cacheKey)) return keyValues.get(cacheKey);
+      if (unparsable) {
+        keyValues.set(cacheKey, undefined);
+        return undefined;
+      }
       const parsed = yamlKeyValues(content, keys);
       if (!parsed.ok) {
+        unparsable = true;
         warnings.push(
-          `${file.relPath}: ${parsed.reason}; rules limited to the value of ${keys.map((key) => `${key}:`).join(" / ")} were matched against every line of the file instead`,
+          `${file.relPath}: ${parsed.reason}; rules limited to the value of a YAML key were matched against every line of the file instead`,
         );
       }
       const result = parsed.ok ? parsed.values : undefined;

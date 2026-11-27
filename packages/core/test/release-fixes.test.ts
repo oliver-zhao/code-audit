@@ -73,3 +73,25 @@ describe("redaction gaps from the final engine re-check", () => {
     expect(out).not.toContain("xjPqkY3Jk1d0wR8Zp");
   });
 });
+
+describe("an unparsable workflow is parsed once", () => {
+  it("keeps the findings of a workflow with an alias bomb, well within the file budget", async () => {
+    const { scanRules, loadRules } = await import("../src/rules.js");
+    const { REPO_ROOT } = await import("./helpers.js");
+    const ruleSet = loadRules(path.join(REPO_ROOT, "rules"));
+    const bomb = ["a0: &a0 { run: x }"];
+    for (let level = 1; level <= 9; level += 1) {
+      bomb.push(`a${level}: &a${level} [${Array(9).fill(`*a${level - 1}`).join(", ")}]`);
+    }
+    bomb.push("on: issues", "jobs:", "  a:", "    steps:", "      - run: echo ${{ github.event.issue.title }}", "      - with: *a9");
+    const root = path.join(temp, "alias-bomb");
+    writeFile(root, ".github/workflows/w.yml", `${bomb.join("\n")}\n`);
+    const started = Date.now();
+    const result = scanRules(inventory(root).files, ruleSet, { inlineIgnore: false });
+    const elapsed = Date.now() - started;
+    expect(result.hits.some((hit) => hit.rule.group === "gha-expression-injection")).toBe(true);
+    // One parse attempt (~0.3 s on a laptop), not one per withinKeys rule.
+    expect(elapsed).toBeLessThan(2500);
+    expect(result.warnings.filter((w) => w.includes("alias expansion")).length).toBe(1);
+  });
+});
