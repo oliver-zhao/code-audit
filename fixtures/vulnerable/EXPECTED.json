@@ -1269,6 +1269,713 @@
       "kind": "finding"
     },
     {
+      "file": "iac/terraform/aws.tf",
+      "line": 90,
+      "ruleId": "tf-iam-service-wildcard",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 22,
+      "ruleId": "tf-db-ssl-not-required",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 33,
+      "ruleId": "tf-gke-logging-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/ci.yml",
+      "line": 1,
+      "ruleId": "gha-missing-permissions",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/ci.yml",
+      "line": 6,
+      "ruleId": "gha-checkout-persist-credentials",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 6,
+      "ruleId": "gha-permissions-write-all",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 8,
+      "ruleId": "gha-unsecure-commands",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 13,
+      "ruleId": "gha-workflow-run-artifact",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 16,
+      "ruleId": "gha-set-env-command",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 17,
+      "ruleId": "gha-curl-pipe-shell",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 19,
+      "ruleId": "gha-tojson-secrets",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 23,
+      "ruleId": "gha-secrets-inherit",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 2,
+      "ruleId": "gha-missing-permissions",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 3,
+      "ruleId": "gha-pull-request-target",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 7,
+      "ruleId": "gha-self-hosted-pull-request",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 9,
+      "ruleId": "gha-checkout-persist-credentials",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 11,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 13,
+      "ruleId": "gha-github-env-injection",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 16,
+      "ruleId": "gha-github-env-untrusted-var",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 17,
+      "ruleId": "gha-unpinned-action",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 1,
+      "ruleId": "dockerfile-untagged-base-image",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 2,
+      "ruleId": "dockerfile-add-remote-url",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 3,
+      "ruleId": "dockerfile-secret-env",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 4,
+      "ruleId": "dockerfile-secret-env",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 5,
+      "ruleId": "dockerfile-chmod-777",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 6,
+      "ruleId": "dockerfile-sudo",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 7,
+      "ruleId": "dockerfile-sudo",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 8,
+      "ruleId": "dockerfile-expose-ssh",
+      "language": "dockerfile",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 9,
+      "ruleId": "dockerfile-download-tls-disabled",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 10,
+      "ruleId": "dockerfile-download-tls-disabled",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 11,
+      "ruleId": "dockerfile-package-tls-disabled",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 12,
+      "ruleId": "dockerfile-package-tls-disabled",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 13,
+      "ruleId": "dockerfile-unsigned-packages",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 14,
+      "ruleId": "dockerfile-unsigned-packages",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 15,
+      "ruleId": "dockerfile-unsigned-packages",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/Dockerfile.insecure",
+      "line": 16,
+      "ruleId": "dockerfile-curl-sh",
+      "language": "dockerfile",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 4,
+      "ruleId": "compose-host-namespace",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 5,
+      "ruleId": "compose-host-namespace",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 7,
+      "ruleId": "compose-cap-add-critical",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 8,
+      "ruleId": "compose-cap-add-elevated",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 12,
+      "ruleId": "compose-security-opt-unconfined",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 13,
+      "ruleId": "compose-security-opt-unconfined",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 15,
+      "ruleId": "compose-host-root-mount",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 20,
+      "ruleId": "compose-db-port-public",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 24,
+      "ruleId": "compose-env-literal-secret",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 32,
+      "ruleId": "compose-env-literal-secret",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/exposure.yml",
+      "line": 7,
+      "ruleId": "k8s-secret-literal-data",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/exposure.yml",
+      "line": 14,
+      "ruleId": "k8s-service-admin-port-exposed",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/exposure.yml",
+      "line": 20,
+      "ruleId": "k8s-ingress-no-tls",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/pod.yml",
+      "line": 7,
+      "ruleId": "k8s-host-network",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/pod.yml",
+      "line": 8,
+      "ruleId": "k8s-capabilities-not-dropped",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/pod.yml",
+      "line": 8,
+      "ruleId": "k8s-missing-resource-limits",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 7,
+      "ruleId": "k8s-rbac-secrets-access",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 11,
+      "ruleId": "k8s-rbac-wildcard",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 12,
+      "ruleId": "k8s-rbac-wildcard",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 15,
+      "ruleId": "k8s-rbac-escalation-verbs",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 24,
+      "ruleId": "k8s-rbac-cluster-admin-binding",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 27,
+      "ruleId": "k8s-rbac-anonymous-subject",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 14,
+      "ruleId": "k8s-host-network",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 15,
+      "ruleId": "k8s-automount-sa-token",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 20,
+      "ruleId": "k8s-unsafe-sysctl",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 22,
+      "ruleId": "k8s-capabilities-not-dropped",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 22,
+      "ruleId": "k8s-missing-resource-limits",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 26,
+      "ruleId": "k8s-run-as-root",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 27,
+      "ruleId": "k8s-readonly-rootfs-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 28,
+      "ruleId": "k8s-proc-mount-unmasked",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 30,
+      "ruleId": "k8s-seccomp-unconfined",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 32,
+      "ruleId": "k8s-cap-add-critical",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 32,
+      "ruleId": "k8s-cap-add-elevated",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 43,
+      "ruleId": "k8s-hostpath-sensitive-dir",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 3,
+      "ruleId": "tf-sg-admin-port-open",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 6,
+      "ruleId": "tf-sg-open-ssh",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 12,
+      "ruleId": "tf-s3-public-access-block-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 18,
+      "ruleId": "tf-rds-publicly-accessible",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 19,
+      "ruleId": "tf-unencrypted-storage",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 24,
+      "ruleId": "tf-transit-encryption-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 29,
+      "ruleId": "tf-iam-passrole-wildcard",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 36,
+      "ruleId": "tf-iam-admin-policy-attached",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 39,
+      "ruleId": "tf-kms-rotation-not-enabled",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 41,
+      "ruleId": "tf-kms-rotation-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 46,
+      "ruleId": "tf-cloudtrail-logging-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 52,
+      "ruleId": "tf-lb-http-listener",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 59,
+      "ruleId": "tf-lb-outdated-ssl-policy",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 64,
+      "ruleId": "tf-cloudfront-allow-http",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 67,
+      "ruleId": "tf-cloudfront-outdated-tls",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 73,
+      "ruleId": "tf-ec2-imdsv1",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 81,
+      "ruleId": "tf-secret-literal",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 86,
+      "ruleId": "tf-secret-variable-default",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 3,
+      "ruleId": "tf-azure-storage-public-access",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 4,
+      "ruleId": "tf-azure-https-only-disabled",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 5,
+      "ruleId": "tf-outdated-tls-version",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 6,
+      "ruleId": "tf-azure-public-network-access",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 9,
+      "ruleId": "tf-azure-network-default-allow",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/azure.tf",
+      "line": 17,
+      "ruleId": "tf-azure-sql-firewall-all",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 4,
+      "ruleId": "tf-gcp-public-member",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 10,
+      "ruleId": "tf-gcp-public-bucket-acl",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 15,
+      "ruleId": "tf-gcp-legacy-abac",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 18,
+      "ruleId": "tf-gcp-authorized-network-open",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 26,
+      "ruleId": "tf-db-ssl-not-required",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/main.tf",
+      "line": 4,
+      "ruleId": "tf-sg-admin-port-open",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/terraform/main.tf",
+      "line": 25,
+      "ruleId": "tf-hardcoded-credentials",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
       "file": "agents/mcp-supply.json",
       "line": 5,
       "ruleId": "agent-mcp-remote-script",

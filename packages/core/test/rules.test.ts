@@ -1071,13 +1071,18 @@ describe("evidence of credential rules", () => {
       .sort();
     expect(flagged).toEqual([
       "agent-mcp-inline-secret",
+      "compose-env-literal-secret",
       "dep-http-install",
       "dep-pip-trusted-host",
+      "dockerfile-secret-env",
       "k8s-secret-in-env",
+      "k8s-secret-literal-data",
       "py-hardcoded-secret",
       "py-secret-key-literal",
       "py-static-iv",
       "tf-hardcoded-credentials",
+      "tf-secret-literal",
+      "tf-secret-variable-default",
     ]);
   });
 

@@ -83,7 +83,9 @@ describe("gha-script-injection", () => {
     writeFile(root, ".github/workflows/w.yml", `${lines.join("\n")}\n`);
     const result = scanRules(inventory(root).files, ruleSet, { inlineIgnore: false });
     return result.hits
-      .filter((hit) => hit.rule.id.startsWith("gha-") && hit.rule.id !== "gha-pull-request-target")
+      // The expression-injection rules only; the other gha-* rules (permissions,
+      // pinning, ...) have their own tests in rules-iac.test.ts.
+      .filter((hit) => hit.rule.group === "gha-expression-injection")
       .map((hit) => `${hit.line} ${hit.rule.id} ${hit.rule.kind} ${hit.rule.severity}/${hit.rule.confidence}`)
       .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
   };

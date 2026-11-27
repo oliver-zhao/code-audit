@@ -1,0 +1,18 @@
+FROM registry.example.com/team/base AS runtime
+ADD https://example.invalid/tool.tar.gz /opt/tool.tar.gz
+ENV DB_PASSWORD=Pr0dPassw0rd2024
+ARG NPM_TOKEN=npm_fakefakefakefake1234
+RUN chmod -R 777 /srv/app
+RUN sudo apt-get install -y build-essential
+RUN echo "app ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+EXPOSE 8080 22
+RUN curl -fsSLk https://example.invalid/setup.tgz -o /tmp/setup.tgz
+RUN wget --no-check-certificate https://example.invalid/data.bin
+RUN npm config set strict-ssl false
+RUN git config --global http.sslVerify false
+RUN apk add --allow-untrusted /tmp/custom.apk
+RUN apt-get install -y --allow-unauthenticated libfoo
+RUN yum install -y --nogpgcheck tool
+RUN wget -qO- https://example.invalid/install.sh | bash
+USER app
+CMD ["/opt/tool/run"]

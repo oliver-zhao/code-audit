@@ -1,4 +1,15 @@
 version: 1
+# Built-in Docker Compose rules. Written for code-audit (Apache-2.0); topics
+# from the CIS Docker Benchmark (section 5, container runtime), patterns are
+# original.
+#
+# Line rules start at the key (`^\s*key:`), so a commented-out line never
+# matches. Rules about list values (cap_add, ports) use withinKeys: the file is
+# parsed and only the values under that key are matched, so `cap_drop: [ALL]`
+# or `expose:` cannot be mistaken for them.
+definitions:
+  COMPOSE: '(?:^|/)(?:docker-)?compose(?:[.-][\w.-]*)?\.ya?ml$'
+  SECRET_NAME: '\w{0,60}?(?:PASSWORD|PASSWD|SECRET(?:_KEY(?:_BASE)?)?|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|_PASS|_PWD)'
 rules:
   - id: compose-privileged
     title: docker-compose runs a privileged container
@@ -7,10 +18,9 @@ rules:
     confidence: high
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: privileged\s*:\s*true
-    pathInclude: (?:^|/)(?:docker-)?compose\.ya?ml$
+    languages: [yaml]
+    pattern: '^\s*privileged\s*:\s*["\x27]?true\b'
+    pathInclude: '{{COMPOSE}}'
     message: A privileged container has almost all host capabilities, so container escape has severe impact.
     message_zh: privileged 容器几乎拥有宿主机全部能力，容器逃逸影响极大。
     remediation: Remove privileged and add only the minimum required capabilities.
@@ -25,10 +35,10 @@ rules:
     confidence: high
     cwe: CWE-250
     owasp: A05:2021
-    languages:
-      - yaml
-    pattern: /var/run/docker\.sock
-    pathInclude: (?:^|/)(?:docker-)?compose\.ya?ml$
+    languages: [yaml]
+    pattern: '(?:/var)?/run/docker\.sock\b'
+    notPattern: '^\s*#'
+    pathInclude: '{{COMPOSE}}'
     message: Mounting docker.sock gives the container control equivalent to host root.
     message_zh: 挂载 docker.sock 等价于把宿主机 root 控制权交给容器。
     remediation: Do not mount docker.sock; use a restricted remote API, BuildKit, or a dedicated proxy.
@@ -36,3 +46,108 @@ rules:
     references:
       - CWE-250
       - OWASP A05:2021
+  - id: compose-host-namespace
+    title: docker-compose shares a host namespace
+    title_zh: docker-compose 共享宿主机命名空间
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*(?:network_mode|pid|ipc|userns_mode|uts|cgroup)\s*:\s*["\x27]?host["\x27]?\s*(?:#.*)?$'
+    pathInclude: '{{COMPOSE}}'
+    message: The container shares the host network, PID, IPC, UTS or user namespace, so it can see host processes and traffic and reach services bound to localhost.
+    message_zh: 容器共享宿主机的网络、PID、IPC、UTS 或用户命名空间，可以看到宿主机进程与流量，并访问仅绑定 localhost 的服务。
+    remediation: Remove the host mode and publish only the ports that are needed.
+    remediation_zh: 删除 host 模式，只发布需要的端口。
+  - id: compose-cap-add-critical
+    title: docker-compose adds a root-equivalent capability
+    title_zh: docker-compose 添加了等同 root 的 capability
+    severity: high
+    confidence: high
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [cap_add]
+    pattern: '^\s*(?:CAP_)?(?:ALL|SYS_ADMIN|SYS_MODULE|SYS_RAWIO|DAC_READ_SEARCH|BPF)\s*$'
+    pathInclude: '{{COMPOSE}}'
+    message: ALL, SYS_ADMIN, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH and BPF each allow a container to escape to the host or read host files.
+    message_zh: ALL、SYS_ADMIN、SYS_MODULE、SYS_RAWIO、DAC_READ_SEARCH 和 BPF 中任意一个都能让容器逃逸到宿主机或读取宿主机文件。
+    remediation: Remove the capability; run the privileged task on the host or in a dedicated, isolated job.
+    remediation_zh: 删除该 capability；在宿主机或专用隔离任务中执行需要特权的操作。
+  - id: compose-cap-add-elevated
+    title: docker-compose adds a sensitive capability
+    title_zh: docker-compose 添加了敏感 capability
+    severity: medium
+    confidence: medium
+    cwe: CWE-250
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [cap_add]
+    pattern: '^\s*(?:CAP_)?(?:NET_ADMIN|SYS_PTRACE|SYS_BOOT|SYS_TIME|PERFMON|MAC_ADMIN|MAC_OVERRIDE|SYSLOG)\s*$'
+    pathInclude: '{{COMPOSE}}'
+    message: The capability lets the container reconfigure host networking, trace other processes, or change kernel-wide state.
+    message_zh: 该 capability 允许容器重新配置网络、跟踪其他进程或修改内核全局状态。
+    remediation: Remove the capability unless the service needs it, and document why when it does.
+    remediation_zh: 除非服务确实需要，否则删除该 capability；如需保留请记录原因。
+  - id: compose-security-opt-unconfined
+    title: docker-compose disables seccomp, AppArmor or SELinux
+    title_zh: docker-compose 关闭了 seccomp、AppArmor 或 SELinux
+    severity: high
+    confidence: high
+    cwe: CWE-693
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '\b(?:seccomp|apparmor|systempaths)\s*[:=]\s*["\x27]?unconfined\b|\blabel\s*[:=]\s*["\x27]?disable\b'
+    notPattern: '^\s*#'
+    pathInclude: '{{COMPOSE}}'
+    message: The kernel security profile of the container is turned off, which removes a main barrier against container escape.
+    message_zh: 容器的内核安全配置被关闭，失去了防止容器逃逸的重要屏障。
+    remediation: Remove the unconfined option, or provide a custom profile that allows only what the service needs.
+    remediation_zh: 删除 unconfined 选项，或提供仅允许所需操作的自定义配置。
+  - id: compose-host-root-mount
+    title: docker-compose mounts a sensitive host directory
+    title_zh: docker-compose 挂载了宿主机敏感目录
+    severity: high
+    confidence: medium
+    cwe: CWE-552
+    owasp: A05:2021
+    languages: [yaml]
+    pattern: '^\s*-\s*["\x27]?/(?:etc|root|boot|var/lib/docker|var/lib/kubelet)?/?:/|^\s*source\s*:\s*["\x27]?/(?:etc|root|boot|var/lib/docker|var/lib/kubelet)?/?["\x27]?\s*$'
+    pathInclude: '{{COMPOSE}}'
+    message: The host root file system or /etc, /root, /boot or the Docker data directory is mounted into the container, exposing host credentials and configuration.
+    message_zh: 宿主机根文件系统或 /etc、/root、/boot、Docker 数据目录被挂载进容器，暴露宿主机凭据与配置。
+    remediation: Mount only the specific files the service needs, read-only.
+    remediation_zh: 只以只读方式挂载服务所需的具体文件。
+  - id: compose-db-port-public
+    title: docker-compose publishes a database port on all interfaces
+    title_zh: docker-compose 在所有网卡上发布数据库端口
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-668
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [ports]
+    pattern: '^\s*(?:0\.0\.0\.0:)?(?:\d{1,5}(?:-\d{1,5})?:)?(?:3306|5432|6379|6380|27017|27018|9200|9300|11211|5984|9042|1433|1521|2379|7474|7687|8086|9092|2181|26379|8529|28015)(?:/tcp)?\s*$'
+    pathInclude: '{{COMPOSE}}'
+    message: A database or cache port is published without a host address, so Docker opens it on every interface (and bypasses host firewall rules such as ufw).
+    message_zh: 数据库或缓存端口未指定宿主机地址，Docker 会在所有网卡上开放它（并绕过 ufw 等主机防火墙规则）。
+    remediation: Bind to 127.0.0.1 ("127.0.0.1:5432:5432") or do not publish the port and use the compose network.
+    remediation_zh: 绑定到 127.0.0.1（"127.0.0.1:5432:5432"），或不发布端口而使用 compose 内部网络。
+  - id: compose-env-literal-secret
+    title: docker-compose sets a literal password or token
+    title_zh: docker-compose 中设置了明文密码或令牌
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [yaml]
+    pattern: '^\s*(?:-\s*)?["\x27]?{{SECRET_NAME}}["\x27]?\s*[:=]\s*["\x27]?(?<secret>(?!(?:true|false|yes|no|none|null|0|1)["\x27]?\s*$)[^\s"\x27$#{\[/.~][^\s"\x27]{3,200})'
+    notPattern: '_FILE["\x27]?\s*[:=]|\b(?:changeme|change_me|placeholder|dummy|example|redacted)\b|<[^<>]{0,60}>|x{4,}|\*{3,}'
+    redactEvidence: true
+    pathInclude: '{{COMPOSE}}'
+    message: A password or token is written into the compose file, so everyone with access to the repository has it.
+    message_zh: 密码或令牌直接写在 compose 文件中，任何能访问仓库的人都能获得。
+    remediation: Use variable substitution from an untracked .env file (${DB_PASSWORD}) or Docker secrets (*_FILE variables).
+    remediation_zh: 使用未纳入版本控制的 .env 文件做变量替换（${DB_PASSWORD}），或使用 Docker secrets（*_FILE 变量）。

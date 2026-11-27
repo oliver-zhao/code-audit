@@ -6,6 +6,11 @@ definitions:
   # Event fields whose text an outside contributor chooses (GitHub's list of
   # untrusted input, plus discussions).
   UNTRUSTED_FIELD: (?:github\.head_ref\b|github\.event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.(?:ref|label)|head\.repo\.default_branch)|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|author\.(?:name|email))|commits(?:\.\*|\[[^\]\n]{0,20}\])?\.(?:message|author\.(?:name|email))|pages(?:\.\*|\[[^\]\n]{0,20}\])?\.page_name|workflow_run\.(?:head_branch|head_commit\.message|display_title|pull_requests(?:\.\*|\[[^\]\n]{0,20}\])?\.head\.ref))\b)
+  WORKFLOW: '(?:^|/)\.github/workflows/[^/]+\.ya?ml$'
+  # Triggers whose workflow runs with a write token and secrets although the
+  # change comes from an outside contributor.
+  PRIVILEGED_TRIGGER: '\b(?:pull_request_target|workflow_run|issue_comment)\b'
+  PIPE_TO_SHELL: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+){0,3})?(?:(?:ba|z|da|k|a)?sh|python[23]?(?!\s+-c\b))\b(?![.\w-])|\b(?:ba|z)?sh\s+(?:-c\s+)?["\x27]?(?:<\(|\$\()\s*(?:curl|wget)\b'
 rules:
   - id: gha-pull-request-target
     title: GitHub Actions uses pull_request_target with checkout
@@ -16,8 +21,11 @@ rules:
     owasp: A08:2021
     languages:
       - yaml
-    pattern: pull_request_target
-    pathInclude: (?:^|/)\.github/workflows/[^/]+\.ya?ml$
+    # The trigger itself (`on: pull_request_target`, `on: [push,
+    # pull_request_target]`, a `pull_request_target:` key or list item), not
+    # a mention in an `if:` condition or a comment.
+    pattern: '^(?:["\x27]?on["\x27]?\s*:[^#\n]{0,200}?|\s+(?:-\s*)?)["\x27]?pull_request_target["\x27]?\s*(?::|,|\]|#|$)'
+    pathInclude: '{{WORKFLOW}}'
     filePattern: uses:\s*actions/checkout
     message: pull_request_target runs in the base repository context; checking out untrusted PR code can leak secrets.
     message_zh: pull_request_target 在基仓库上下文运行，结合 checkout 不可信 PR 代码可导致密钥泄露。
@@ -124,3 +132,239 @@ rules:
     references:
       - CWE-94
       - OWASP A03:2021
+  # Writing an attacker-chosen value into $GITHUB_ENV / $GITHUB_PATH /
+  # $GITHUB_OUTPUT: besides the script injection itself, a newline in the
+  # value defines further variables (LD_PRELOAD, NODE_OPTIONS, BASH_ENV) for
+  # every later step. Same group as the script-injection rules; this one wins.
+  - id: gha-github-env-injection
+    title: GitHub Actions writes an untrusted event field to GITHUB_ENV
+    title_zh: GitHub Actions 将不可信事件字段写入 GITHUB_ENV
+    severity: critical
+    confidence: high
+    cwe: CWE-94
+    owasp: A03:2021
+    group: gha-expression-injection
+    languages: [yaml]
+    pattern: '{{EXPR_OPEN}}{{UNTRUSTED_FIELD}}[^\n]{0,300}?>>\s*["\x27]?\$\{?GITHUB_(?:ENV|PATH|OUTPUT)\b'
+    withinKeys: [run]
+    pathInclude: '{{WORKFLOW}}'
+    message: A value that an outside contributor chooses is written to GITHUB_ENV, GITHUB_PATH or GITHUB_OUTPUT; a newline in it sets environment variables or outputs for every later step, which leads to code execution with the job's secrets.
+    message_zh: 外部贡献者可控的值被写入 GITHUB_ENV、GITHUB_PATH 或 GITHUB_OUTPUT；值中的换行可为后续每个步骤设置环境变量或输出，进而以作业的密钥执行代码。
+    remediation: Do not write untrusted text to these files; if needed, validate it against a strict pattern and use a random heredoc delimiter.
+    remediation_zh: 不要把不可信文本写入这些文件；确有需要时先用严格模式校验，并使用随机的 heredoc 分隔符。
+  - id: gha-github-env-untrusted-var
+    title: GitHub Actions writes a shell variable to GITHUB_ENV in a workflow that reads untrusted fields
+    title_zh: 读取不可信字段的 GitHub Actions 工作流把 shell 变量写入 GITHUB_ENV
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [yaml]
+    pattern: '\$\{?[A-Za-z_]\w{0,60}\}?[^\n]{0,200}?>>\s*["\x27]?\$\{?GITHUB_(?:ENV|PATH)\b'
+    withinKeys: [run]
+    # Gate: the workflow puts an untrusted field into an env entry.
+    filePattern: '^\s*["\x27]?[A-Za-z_][\w-]{0,60}["\x27]?\s*:\s*["\x27]?\$\{\{\s*{{UNTRUSTED_FIELD}}'
+    pathInclude: '{{WORKFLOW}}'
+    message: A shell variable is appended to GITHUB_ENV or GITHUB_PATH, and the workflow reads fields an outside contributor controls. If the variable carries one of them, a newline in it defines new variables for later steps.
+    message_zh: shell 变量被追加到 GITHUB_ENV 或 GITHUB_PATH，且该工作流读取了外部贡献者可控的字段。若变量来自这些字段，其中的换行可为后续步骤定义新变量。
+    remediation: Do not pass untrusted text to GITHUB_ENV; validate it first or keep it in a step-local env variable.
+    remediation_zh: 不要把不可信文本传给 GITHUB_ENV；先校验，或仅作为步骤内的 env 变量使用。
+  - id: gha-untrusted-checkout
+    title: Privileged GitHub Actions workflow checks out pull request code
+    title_zh: 特权 GitHub Actions 工作流检出了 PR 代码
+    severity: critical
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [yaml]
+    # `ref:` / `repository:` of a checkout step (or any action) pointing at
+    # the contributor's head commit, branch or fork, in a workflow started by
+    # pull_request_target, workflow_run or issue_comment, which run with the
+    # base repository's secrets and a write token.
+    withinKeys: [ref, repository]
+    pattern: '\$\{\{[^}\n]{0,200}?(?:github\.event\.pull_request\.head\.(?:sha|ref|repo\.full_name)|github\.head_ref|github\.event\.workflow_run\.(?:head_sha|head_branch|head_repository\.full_name))\b(?!\s*[=!]=)|refs/pull/\$\{\{'
+    filePattern: '{{PRIVILEGED_TRIGGER}}'
+    pathInclude: '{{WORKFLOW}}'
+    message: The workflow runs with the base repository's secrets and a write token but checks out the contributor's code; any build script, test or package hook in that code then runs with those privileges ("pwn request").
+    message_zh: 该工作流以基仓库的密钥和写权限令牌运行，却检出了贡献者的代码；其中任何构建脚本、测试或包钩子都会以这些权限执行（"pwn request"）。
+    remediation: Build and test PR code in a pull_request workflow without secrets; pass results to the privileged workflow as artifacts and treat them as data.
+    remediation_zh: 在没有密钥的 pull_request 工作流中构建和测试 PR 代码；把结果作为 artifact 传给特权工作流并仅当作数据处理。
+    references:
+      - https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
+  - id: gha-checkout-persist-credentials
+    title: Checkout keeps the token on disk in a privileged workflow
+    title_zh: 特权工作流中 checkout 将令牌保留在磁盘上
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-522
+    owasp: A07:2021
+    languages: [yaml]
+    withinKeys: [uses]
+    pattern: '^\s*actions/checkout@'
+    filePattern: '{{PRIVILEGED_TRIGGER}}'
+    fileAbsentPattern: 'persist-credentials\s*:\s*["\x27]?false\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: actions/checkout writes the GITHUB_TOKEN into .git/config by default; in a workflow started by pull_request_target, workflow_run or issue_comment, any later step that runs contributor code can read it.
+    message_zh: actions/checkout 默认把 GITHUB_TOKEN 写入 .git/config；在由 pull_request_target、workflow_run 或 issue_comment 触发的工作流中，后续运行贡献者代码的任何步骤都能读取它。
+    remediation: Add with persist-credentials false to the checkout step.
+    remediation_zh: 为 checkout 步骤添加 persist-credentials 并设为 false。
+  - id: gha-unpinned-action
+    title: GitHub Actions uses a third-party action without a commit SHA
+    title_zh: GitHub Actions 使用未固定到提交 SHA 的第三方 action
+    severity: medium
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [yaml]
+    # actions/* and github/* are maintained by GitHub; local (./) and
+    # docker:// references are not tags.
+    withinKeys: [uses]
+    pattern: '^\s*(?!(?:actions|github)/)[\w.-]+/[\w./-]+@(?![0-9a-f]{40}\s*$)\S+\s*$'
+    pathInclude: '{{WORKFLOW}}'
+    message: A tag or branch of a third-party action can be moved to different code at any time; whoever controls that repository then runs code with this job's token and secrets.
+    message_zh: 第三方 action 的标签或分支随时可能指向其他代码；控制该仓库的人即可以本作业的令牌和密钥运行代码。
+    remediation: Pin the action to a full 40-character commit SHA (keep the version in a comment) and update it with Dependabot or Renovate.
+    remediation_zh: 将 action 固定到完整的 40 位提交 SHA（在注释中保留版本号），并用 Dependabot 或 Renovate 更新。
+    references:
+      - https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions
+  - id: gha-permissions-write-all
+    title: GitHub Actions grants write-all permissions
+    title_zh: GitHub Actions 授予 write-all 权限
+    severity: medium
+    confidence: high
+    cwe: CWE-250
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '^\s*permissions\s*:\s*["\x27]?write-all\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: The GITHUB_TOKEN gets write access to every scope (contents, packages, actions, ...), so any compromised step can push code or publish releases.
+    message_zh: GITHUB_TOKEN 获得所有范围（contents、packages、actions 等）的写权限，任何被攻破的步骤都能推送代码或发布版本。
+    remediation: Set permissions to the minimum, for example contents read, and grant write scopes per job.
+    remediation_zh: 将 permissions 设为最小值（例如 contents 设为 read），按作业单独授予写权限。
+  - id: gha-missing-permissions
+    title: Privileged GitHub Actions workflow does not restrict token permissions
+    title_zh: 特权 GitHub Actions 工作流未限制令牌权限
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-250
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '^["\x27]?on["\x27]?\s*:'
+    filePattern: '\b(?:pull_request_target|workflow_run|issue_comment|issues|discussion|discussion_comment|pull_request_review_comment)\b'
+    fileAbsentPattern: '^\s*permissions\s*:'
+    pathInclude: '{{WORKFLOW}}'
+    message: The workflow reacts to events that outside users trigger and sets no permissions, so its token has the repository default, which may be read-write.
+    message_zh: 该工作流响应外部用户可触发的事件且未设置 permissions，令牌使用仓库默认权限，可能是读写权限。
+    remediation: Add a top-level permissions block (for example contents read) and grant more per job where needed.
+    remediation_zh: 添加顶层 permissions（例如 contents 设为 read），需要时再按作业授予更多权限。
+  - id: gha-secrets-inherit
+    title: GitHub Actions passes all secrets to a reusable workflow
+    title_zh: GitHub Actions 把全部密钥传给可复用工作流
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-200
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '^\s*secrets\s*:\s*["\x27]?inherit\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: secrets inherit hands every secret of the repository to the called workflow, not only those it needs.
+    message_zh: secrets 设为 inherit 会把仓库的全部密钥交给被调用的工作流，而不仅是其所需的密钥。
+    remediation: Pass the secrets the called workflow declares, one by one.
+    remediation_zh: 逐个传递被调用工作流声明的密钥。
+  - id: gha-self-hosted-pull-request
+    title: Self-hosted runner in a workflow triggered by pull requests
+    title_zh: 由 PR 触发的工作流使用自托管 runner
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-269
+    owasp: A05:2021
+    languages: [yaml]
+    withinKeys: [runs-on]
+    pattern: '\bself-hosted\b'
+    filePattern: '\bpull_request(?:_target)?\b(?!\.)'
+    pathInclude: '{{WORKFLOW}}'
+    message: Pull requests from forks can run code on a self-hosted runner, which usually persists between jobs and sits inside the network. Check that the repository is private or that fork runs need approval.
+    message_zh: 来自 fork 的 PR 可以在自托管 runner 上运行代码，而 runner 通常在作业之间持久存在并位于内网。请确认仓库为私有或 fork 运行需要审批。
+    remediation: Use GitHub-hosted or ephemeral, isolated runners for pull requests, and require approval for outside contributors.
+    remediation_zh: PR 使用 GitHub 托管或一次性隔离 runner，并要求外部贡献者的运行经过审批。
+  - id: gha-unsecure-commands
+    title: GitHub Actions re-enables the insecure set-env and add-path commands
+    title_zh: GitHub Actions 重新启用了不安全的 set-env 与 add-path 命令
+    severity: high
+    confidence: high
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [yaml]
+    pattern: '\bACTIONS_ALLOW_UNSECURE_COMMANDS["\x27]?\s*[:=]\s*["\x27]?true\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: With ACTIONS_ALLOW_UNSECURE_COMMANDS any text printed to the log (a test name, a file content) can set environment variables and PATH for later steps.
+    message_zh: 启用 ACTIONS_ALLOW_UNSECURE_COMMANDS 后，任何打印到日志的文本（测试名、文件内容）都能为后续步骤设置环境变量和 PATH。
+    remediation: Remove the variable and use the GITHUB_ENV and GITHUB_PATH files.
+    remediation_zh: 删除该变量，改用 GITHUB_ENV 和 GITHUB_PATH 文件。
+  - id: gha-set-env-command
+    title: GitHub Actions uses the deprecated set-env or add-path command
+    title_zh: GitHub Actions 使用了已弃用的 set-env 或 add-path 命令
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [yaml]
+    withinKeys: [run, script]
+    pattern: '::(?:set-env|add-path)\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: The set-env and add-path workflow commands are disabled because log output can trigger them; the step only works when unsecure commands are re-enabled.
+    message_zh: set-env 与 add-path 命令因可被日志输出触发而被禁用；该步骤只有在重新启用不安全命令时才生效。
+    remediation: Append to the GITHUB_ENV and GITHUB_PATH files instead.
+    remediation_zh: 改为追加写入 GITHUB_ENV 和 GITHUB_PATH 文件。
+  - id: gha-curl-pipe-shell
+    title: GitHub Actions pipes a download into a shell
+    title_zh: GitHub Actions 将下载内容直接交给 shell 执行
+    severity: medium
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [yaml]
+    withinKeys: [run]
+    pattern: '{{PIPE_TO_SHELL}}'
+    pathInclude: '{{WORKFLOW}}'
+    message: A script downloaded in the job is executed without verification, with the job's token and secrets available to it.
+    message_zh: 作业中下载的脚本未经校验即被执行，且能访问作业的令牌和密钥。
+    remediation: Download a pinned version, verify its checksum, then run it; or use a pinned action.
+    remediation_zh: 下载固定版本并校验哈希后再执行，或使用固定版本的 action。
+  - id: gha-tojson-secrets
+    title: GitHub Actions exposes the whole secrets context
+    title_zh: GitHub Actions 暴露了整个 secrets 上下文
+    severity: high
+    confidence: medium
+    cwe: CWE-200
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\btojson\s*\(\s*secrets\s*\)'
+    pathInclude: '{{WORKFLOW}}'
+    message: toJSON(secrets) gives one step every secret of the repository, so a compromise of that step leaks all of them.
+    message_zh: toJSON(secrets) 让单个步骤获得仓库的全部密钥，该步骤一旦被攻破即全部泄露。
+    remediation: Pass only the secrets the step needs, each by name.
+    remediation_zh: 只按名称传递步骤所需的密钥。
+  - id: gha-workflow-run-artifact
+    title: workflow_run workflow downloads artifacts of another run
+    title_zh: workflow_run 工作流下载另一次运行的 artifact
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [yaml]
+    withinKeys: [uses]
+    pattern: '^\s*(?:actions/download-artifact|dawidd6/action-download-artifact)@'
+    filePattern: '\bworkflow_run\b'
+    pathInclude: '{{WORKFLOW}}'
+    message: Artifacts of the triggering run can come from a fork's pull request. Check that this privileged workflow treats them as data and never executes, sources or extracts them over its workspace.
+    message_zh: 触发运行的 artifact 可能来自 fork 的 PR。请确认该特权工作流只把它们当作数据，绝不执行、source 或解压覆盖其工作区。
+    remediation: Download into a separate directory, validate the content strictly, and never run scripts or binaries from it.
+    remediation_zh: 下载到单独目录并严格校验内容，绝不运行其中的脚本或程序。
