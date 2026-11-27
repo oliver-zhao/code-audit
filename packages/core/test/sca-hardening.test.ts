@@ -386,7 +386,9 @@ describe("secret detection in dependency files", () => {
     expect(result.coverage.stats.partialFiles).toBe(2);
     expect(result.coverage.stats.skippedFiles).toBe(0);
     const engines = new Map(result.coverage.scannedFiles.map((file) => [file.path, file.engines]));
-    expect(engines.get("requirements.txt")).toEqual(["sca", "builtin-secrets"]);
+    // requirements.txt has language "requirements": the dependency-hygiene
+    // rules (--trusted-host, --index-url http://) read it.
+    expect(engines.get("requirements.txt")).toEqual(["sca", "builtin-secrets", "builtin-rules"]);
     expect(engines.get("uv.lock")).toEqual(["sca", "builtin-secrets:high-confidence"]);
     expect(engines.get("app.py")).toEqual(["builtin-secrets", "builtin-rules"]);
     const report = fs

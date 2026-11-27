@@ -152,6 +152,10 @@ class Parser {
   private literal(char: string): { kind: "char"; char: string } | { kind: "other" } {
     const code = char.charCodeAt(0);
     if (code > 127) return { kind: "other" };
+    // White space ends a literal: the rule engine blanks comments and joins
+    // the lines of a statement, so text the pattern sees may hold white
+    // space where the file has other characters (see `scanRules`).
+    if (/\s/.test(char)) return { kind: "other" };
     return { kind: "char", char: this.ignoreCase ? char.toLowerCase() : char };
   }
 
@@ -305,6 +309,77 @@ export function passesPrefilter(prefilter: LiteralPrefilter, text: string, lower
   const haystack = prefilter.lowerCase ? lower : text;
   for (const literal of prefilter.literals) {
     if (haystack.includes(literal)) return true;
+  }
+  return false;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/**
+ * Finds which literals of many prefilters occur in a text, in one pass per
+ * case mode instead of one `includes` per literal and rule.
+ */
+export class LiteralScanner {
+  private readonly exact?: RegExp;
+  private readonly folded?: RegExp;
+  /** For each literal, the literals of the same mode that are its prefixes. */
+  private readonly prefixes = new Map<string, string[]>();
+
+  constructor(prefilters: Iterable<LiteralPrefilter>) {
+    const exact = new Set<string>();
+    const folded = new Set<string>();
+    for (const prefilter of prefilters) {
+      for (const literal of prefilter.literals) (prefilter.lowerCase ? folded : exact).add(literal);
+    }
+    this.exact = this.build(exact, "", "\u0000");
+    this.folded = this.build(folded, "i", "\u0001");
+  }
+
+  private build(literals: Set<string>, flags: string, mode: string): RegExp | undefined {
+    if (literals.size === 0) return undefined;
+    // Longest first: at one position the alternation then takes the longest
+    // literal that occurs there, and every other literal that occurs there is
+    // a prefix of it.
+    const sorted = [...literals].sort((left, right) => right.length - left.length || (left < right ? -1 : 1));
+    for (const literal of sorted) {
+      this.prefixes.set(
+        mode + literal,
+        sorted.filter((other) => other.length <= literal.length && literal.startsWith(other)),
+      );
+    }
+    return new RegExp(`(?=(${sorted.map(escapeRegExp).join("|")}))`, `g${flags}`);
+  }
+
+  /** The literals that occur in `text`, keyed by mode: "\u0000" exact, "\u0001" lower case. */
+  scan(text: string): Set<string> {
+    const found = new Set<string>();
+    for (const [pattern, mode, lower] of [
+      [this.exact, "\u0000", false],
+      [this.folded, "\u0001", true],
+    ] as const) {
+      if (!pattern) continue;
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(text)) !== null) {
+        const literal = lower ? (match[1] as string).toLowerCase() : (match[1] as string);
+        const key = mode + literal;
+        if (!found.has(key)) {
+          for (const prefix of this.prefixes.get(key) ?? [literal]) found.add(mode + prefix);
+        }
+        pattern.lastIndex = match.index + 1;
+      }
+    }
+    return found;
+  }
+}
+
+/** True when one of the prefilter's literals is in `found` (from `LiteralScanner.scan`). */
+export function passesFound(prefilter: LiteralPrefilter, found: Set<string>): boolean {
+  const mode = prefilter.lowerCase ? "\u0001" : "\u0000";
+  for (const literal of prefilter.literals) {
+    if (found.has(mode + literal)) return true;
   }
   return false;
 }

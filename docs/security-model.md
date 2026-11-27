@@ -143,6 +143,17 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
     `config.json`, `token:` / `client-key-data:` in a kubeconfig.
   `.netrc`, `.pgpass`, `.npmrc`, `.pypirc` / `pip.conf`, Docker `auths` and
   kubeconfig credentials are also reported as findings.
+  Deliberately left readable, because they are not secrets: setting words
+  (`http_tokens = "optional"`, `secrets: inherit`), JOSE and hash algorithm
+  names (`"HS256"`, `sha256`), dotted class paths with lower-case packages
+  (`django.contrib.auth.hashers.PBKDF2PasswordHasher`), a flag that follows a
+  secret-like flag (`--allow-unauthenticated --region`), and inside a
+  settings section named only weakly like a secret (`"AuthServer": {`,
+  `jwt:`) the values of keys that are not secret-like (`"Authority"`,
+  `"ClientId"`). A PEM private-key block is masked up to its END marker, or
+  up to the first line that cannot be key material (so a BEGIN marker in a
+  string literal of code does not mask the rest of the file), at most 400
+  lines.
 - **Nothing in the repository lowers the result silently.** Every mechanism
   in the table below is counted and printed as a `WARNING`, and `--untrusted`
   turns all of them off.
@@ -238,7 +249,7 @@ the audited repository, is reported, and can be switched off:
 | Secret values that look like placeholders | Confidence low | Same `WARNING`, `placeholder-looking secret value N` | `--include-placeholders` |
 | `.code-audit-baseline.json` in the repository (or a `--baseline` path inside it) | Findings marked existing do not count | `WARNING: baseline loaded from the audited repository: N finding(s) treated as existing (M at severity ≥ <fail-on> ...)` | `--no-baseline`, `--fail-on-existing` |
 | `.code-audit-ignore` in the repository | Matching findings suppressed | `WARNING: ignore file from the audited repository suppressed N finding(s) (M at severity ≥ <fail-on>)`; "Suppressed findings" section | `--no-ignore-file` |
-| Inline `code-audit:ignore` comments | Matching candidates suppressed | `WARNING: inline code-audit:ignore comments ... suppressed N finding(s) (M at ...)`; "Suppressed findings" section | `--no-inline-ignore` |
+| Inline `code-audit:ignore` comments (on any line of the matched statement, or on a line of their own before it; a suppressed group winner suppresses that expression's result, see [rules.md](rules.md#how-matching-works)) | Matching candidates suppressed | `WARNING: inline code-audit:ignore comments ... suppressed N finding(s) (M at ...)`; "Suppressed findings" section | `--no-inline-ignore` |
 | Directories named `build`, `dist`, `vendor`, `bin`, `target`, `coverage`, `node_modules`, ... at any depth | Not read (performance) | `WARNING: N source file(s) in default-excluded directories were not read (vendor/ 2, build/ 1)`; "Skipped files" table | `--untrusted` |
 | A directory that looks like a code-audit run directory (`run.json` naming the tool next to `findings.json`) outside `.audit/` | The tool's output file names in it are not matched against rules; **every secret detector still runs on them** | `WARNING: N file(s) in the audited repository look like code-audit output ...`; `code-audit output` rows in `coverage.json` | `--untrusted` |
 | Files at the adapter paths of `code-audit install` | Skipped **only** when byte-identical (after newline normalisation) to the file this version ships; `.code-audit/installed.json` is never consulted | `code-audit adapter file` rows in `coverage.json` | `--untrusted` |

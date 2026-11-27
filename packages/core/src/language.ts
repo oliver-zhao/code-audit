@@ -19,6 +19,7 @@ export type Language =
   | "properties"
   | "shell"
   | "template"
+  | "requirements"
   | "unknown";
 
 export const SOURCE_LANGUAGES: readonly Language[] = [
@@ -52,6 +53,7 @@ export const CONFIG_LANGUAGES: readonly Language[] = [
   "toml",
   "ini",
   "properties",
+  "requirements",
 ];
 
 const EXTENSION_LANGUAGE: Record<string, Language> = {
@@ -136,6 +138,10 @@ const BASENAME_LANGUAGE: Record<string, Language> = {
   ".pip.conf": "ini",
 };
 
+/** pip requirement and constraint files: requirements*.txt, requirements/*.txt, *.in. */
+const REQUIREMENTS_FILE =
+  /(?:^|\/)(?:(?:requirements|constraints)[\w.-]{0,80}\.(?:txt|in)|requirements\/[\w.-]{1,80}\.(?:txt|in))$/i;
+
 export function detectLanguage(filePath: string): Language {
   const base = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
   if (
@@ -147,6 +153,7 @@ export function detectLanguage(filePath: string): Language {
   }
   const byName = BASENAME_LANGUAGE[base];
   if (byName) return byName;
+  if (REQUIREMENTS_FILE.test(filePath.split("\\").join("/"))) return "requirements";
   const ext = base.includes(".") ? `.${base.split(".").pop()}` : "";
   return EXTENSION_LANGUAGE[ext] ?? "unknown";
 }
@@ -173,6 +180,7 @@ export function languageDisplayName(language: Language | string): string {
     properties: "Java properties",
     shell: "Shell",
     template: "HTML/template",
+    requirements: "pip requirements",
     unknown: "unknown",
   };
   return names[language] ?? language;

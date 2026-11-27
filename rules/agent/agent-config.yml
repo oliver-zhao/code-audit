@@ -9,9 +9,9 @@ version: 1
 # - Permission lists are matched structurally (withinKeys: [allow]) so an
 #   entry under "deny" or "ask" is never read as a grant. Other JSON and all
 #   Markdown are matched one physical line at a time.
-# - INSTR already names .cursorrules, .windsurfrules, .rules and Cursor .mdc
-#   rules; they are matched once the inventory gives them a language.
-#   TOML (.codex/config.toml) and .npmrc are not matched.
+# - .cursorrules, .windsurfrules, .clinerules and .rules are language
+#   markdown, and Cursor .mdc rules too; .codex/config.toml is language toml
+#   (matched line by line).
 definitions:
   CLAUDE_SETTINGS: '(?:^|/)\.claude/settings(?:\.local)?\.json$'
   CURSOR_CLI: '(?:^|/)\.cursor/cli(?:-config)?\.json$'
@@ -82,6 +82,23 @@ rules:
     remediation_zh: 从项目配置中删除 bypassPermissions 默认模式和提示跳过选项；使用显式 allow 规则并保持默认模式。
     references:
       - https://code.claude.com/docs/en/settings
+  - id: agent-codex-bypass-approvals
+    title: Codex project configuration turns off approvals or the sandbox
+    title_zh: Codex 项目配置关闭了审批或沙箱
+    severity: high
+    confidence: medium
+    cwe: CWE-284
+    owasp: A01:2021
+    languages: [toml]
+    flags: ''
+    pathInclude: '(?:^|/)\.codex/config\.toml$'
+    pattern: '^\s*(?:approval_policy\s*=\s*["\x27]never["\x27]|sandbox_mode\s*=\s*["\x27]danger-full-access["\x27])'
+    message: A committed .codex/config.toml sets approval_policy = "never" or sandbox_mode = "danger-full-access". When Codex loads the project configuration, it runs commands without asking and outside the sandbox, so text in the repository can drive arbitrary commands with the user's full rights.
+    message_zh: 提交到仓库的 .codex/config.toml 设置了 approval_policy = "never" 或 sandbox_mode = "danger-full-access"。Codex 加载项目配置时会不经询问、在沙箱之外执行命令，仓库中的文本即可以用户的全部权限驱动任意命令。
+    remediation: Remove these settings from the project configuration; keep approval and sandbox choices in the user's own ~/.codex/config.toml or on the command line.
+    remediation_zh: 从项目配置中删除这些设置；审批与沙箱选项应放在用户自己的 ~/.codex/config.toml 或命令行中。
+    references:
+      - https://github.com/openai/codex/blob/main/docs/config.md
   - id: agent-claude-allow-unrestricted-shell
     title: Agent permission allow list grants every shell command
     title_zh: Agent 权限允许列表放行所有 shell 命令

@@ -9,8 +9,8 @@ version: 1
 # reviewer agents). The patterns require imperative wording and the
 # notPatterns drop lines that quote, negate or describe the phrase. READMEs
 # and docs/ are not instruction files and are never matched.
-# Not covered: .cursorrules, .windsurfrules and Cursor .mdc rules have no
-# language in the inventory and are not read by the rule engine.
+# .cursorrules, .windsurfrules, .clinerules, .rules and Cursor .mdc rules are
+# language markdown (packages/core/src/language.ts).
 definitions:
   INSTR: '(?:^|/)(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|AGENT|GEMINI|SKILL|QWEN|CRUSH|WARP)\.md$|(?:^|/)(?:\.cursorrules|\.windsurfrules|\.clinerules|\.rules)$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|qwen|dsh|amazonq|augment|trae)/.+\.mdc?$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
   NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|won\x27t|cannot|can\x27t|avoid|refuse)\b'

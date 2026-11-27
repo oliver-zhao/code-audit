@@ -6300,6 +6300,160 @@
       "ruleId": "dep-postinstall-download",
       "language": "json",
       "kind": "finding"
+    },
+    {
+      "file": "agents/codex/.codex/config.toml",
+      "line": 2,
+      "ruleId": "agent-codex-bypass-approvals",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/codex/.codex/config.toml",
+      "line": 3,
+      "ruleId": "agent-codex-bypass-approvals",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/codex/.codex/config.toml",
+      "line": 6,
+      "ruleId": "agent-codex-bypass-approvals",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/rules/team.mdc",
+      "line": 5,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursorrules",
+      "line": 2,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursorrules",
+      "line": 3,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/zed/.rules",
+      "line": 2,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/.npmrc",
+      "line": 1,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/.npmrc",
+      "line": 2,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/python/pip.conf",
+      "line": 2,
+      "ruleId": "dep-pip-insecure-index",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/python/pip.conf",
+      "line": 3,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/python/pip.conf",
+      "line": 4,
+      "ruleId": "dep-pip-extra-index-url",
+      "language": "ini",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/python/requirements.txt",
+      "line": 1,
+      "ruleId": "dep-pip-insecure-index",
+      "language": "requirements",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/python/requirements.txt",
+      "line": 2,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "requirements",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/python/uv.toml",
+      "line": 1,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 3,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 4,
+      "ruleId": "dep-http-install",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 4,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 5,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 6,
+      "ruleId": "dep-go-checksum-off",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/scripts/setup.sh",
+      "line": 7,
+      "ruleId": "dep-http-install",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "sca/python/requirements/requirements.txt",
+      "line": 9,
+      "ruleId": "dep-http-install",
+      "language": "requirements",
+      "kind": "finding"
     }
   ],
   "opengrep": [
