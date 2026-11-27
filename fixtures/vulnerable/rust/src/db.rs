@@ -42,3 +42,8 @@ pub async fn count_by_status(pool: &PgPool, status: &str) -> sqlx::Result<i64> {
     .fetch_one(pool)
     .await
 }
+
+pub async fn by_owner(pool: &PgPool, owner: &str) -> sqlx::Result<Vec<User>> {
+    let sql = format!("SELECT * FROM users WHERE owner = '{owner}'");
+    sqlx::query_as(&sql).fetch_all(pool).await
+}

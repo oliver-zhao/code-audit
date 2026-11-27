@@ -20,3 +20,10 @@ pub fn run_script(script: &str) -> std::io::Result<std::process::Output> {
         .arg(script)
         .output()
 }
+
+pub fn login_shell(cmd: &str) -> std::io::Result<std::process::Output> {
+    std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(cmd)
+        .output()
+}

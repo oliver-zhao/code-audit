@@ -1,7 +1,8 @@
 # Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
 # Not copied from the Semgrep registry; executed with Opengrep 1.33.1.
 # They cover what the line-based built-in rules cannot see: a method chain or a
-# call that rustfmt has spread over several lines.
+# call that rustfmt has spread over several lines, and a query string built in
+# one statement and executed in the next.
 rules:
   - id: rs-opengrep-shell-command
     languages: [rust]
@@ -15,17 +16,23 @@ rules:
           - pattern: Command::new($SHELL).arg($FLAG).arg($CMD)
           - pattern: Command::new($SHELL).args([$FLAG, $CMD])
           - pattern: Command::new($SHELL).args(&[$FLAG, $CMD])
+          - pattern: $M::Command::new($SHELL).arg($FLAG).arg($CMD)
+          - pattern: $M::Command::new($SHELL).args([$FLAG, $CMD])
+          - pattern: $M::Command::new($SHELL).args(&[$FLAG, $CMD])
+          - pattern: std::process::Command::new($SHELL).arg($FLAG).arg($CMD)
+          - pattern: tokio::process::Command::new($SHELL).arg($FLAG).arg($CMD)
       - metavariable-regex:
           metavariable: $SHELL
           regex: ^"(/usr/bin/|/bin/)?(sh|bash|zsh|dash|ksh|cmd|cmd\.exe|powershell|pwsh)"$
       - metavariable-regex:
           metavariable: $FLAG
-          regex: ^"(-c|/C|/c|-Command)"$
+          regex: ^"(-[a-z]{0,3}c|/C|/c|-Command)"$
       - metavariable-pattern:
           metavariable: $CMD
           patterns:
             - pattern-not: |
                 "..."
+            - pattern-not: concat!(...)
 
   - id: rs-opengrep-sql-format
     languages: [rust]
@@ -43,5 +50,24 @@ rules:
           - pattern: sqlx::query_as(&format!(...))
           - pattern: sqlx::query_scalar(&format!(...))
           - pattern: diesel::sql_query(format!(...))
+          - pattern: sql_query(format!(...))
+          - pattern: $C.execute(&format!(...), ...)
+          - pattern: $C.query(&format!(...), ...)
+          - pattern: $C.query_row(&format!(...), ...)
+          - pattern: $C.batch_execute(&format!(...))
+          # Built in one statement, executed in a later one.
+          - patterns:
+              - pattern-inside: |
+                  let $Q = format!(...);
+                  ...
+              - pattern-either:
+                  - pattern: sqlx::query(&$Q)
+                  - pattern: sqlx::query_as::<$A, $B>(&$Q)
+                  - pattern: sqlx::query_as(&$Q)
+                  - pattern: sql_query($Q)
+                  - pattern: diesel::sql_query($Q)
+                  - pattern: $C.execute(&$Q, ...)
+      # format!(concat!(...)) without arguments is a constant string.
+      - pattern-not-regex: format!\(\s*concat!\([^()]*\)\s*\)
       # Identifiers that go through a quoting helper are not reported.
       - pattern-not-regex: quote_ident\w*\(
