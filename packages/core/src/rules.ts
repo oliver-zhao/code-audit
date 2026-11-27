@@ -8,6 +8,12 @@ import type { Confidence, Severity } from "./finding.js";
 import { CONFIDENCE_ORDER } from "./finding.js";
 import { InterruptedError, runInterruptible } from "./interrupt.js";
 import {
+  LiteralScanner,
+  passesFound,
+  requiredLiterals,
+  type LiteralPrefilter,
+} from "./prefilter.js";
+import {
   LINE_MASK_ALL,
   LINE_MASK_STRINGS,
   lexLiterals,
@@ -36,6 +42,12 @@ export const RULE_LANGUAGES = [
   "markdown",
   "razor",
   "xml",
+  "toml",
+  "ini",
+  "properties",
+  "shell",
+  "template",
+  "requirements",
 ] as const;
 
 const RuleLanguageSchema = z.enum(RULE_LANGUAGES);
@@ -75,7 +87,7 @@ const RuleObjectSchema = z
      */
     codeOnly: z.boolean().optional(),
     /**
-     * YAML only: match only inside the value of one of these mapping keys.
+     * YAML or JSON only: match only inside the value of one of these mapping keys.
      * The file is parsed and the patterns see the value of each such key
      * (aliases resolved, `${{ }}` expressions in canonical form, `env` /
      * `matrix` indirection resolved one level); see `yamlValues.ts`. A file
@@ -110,10 +122,16 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
         path: ["patterns"],
       });
     }
-    if (rule.withinKeys && rule.languages.some((language) => language !== "yaml")) {
+    // JSON is parsed by the same YAML parser (JSON is YAML), so a rule may be
+    // [yaml] or [json]; a mix would need one pattern for two syntaxes.
+    if (
+      rule.withinKeys &&
+      !rule.languages.every((language) => language === "yaml") &&
+      !rule.languages.every((language) => language === "json")
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "withinKeys is only supported for rules whose languages are [yaml]",
+        message: "withinKeys is only supported for rules whose languages are [yaml] or [json]",
         path: ["withinKeys"],
       });
     }
@@ -136,6 +154,34 @@ export interface CompiledRule {
   pathExclude?: RegExp;
   filePattern?: RegExp;
   fileAbsentPattern?: RegExp;
+  /**
+   * Literals of which every match of the rule contains one (see
+   * `prefilter.ts`); a unit that contains none is not matched. Absent when
+   * none could be derived with certainty.
+   */
+  prefilter?: LiteralPrefilter;
+}
+
+/**
+ * The most selective literal prefilter of a rule's patterns: the locator and
+ * every other entry of `patterns` must all match, so any one of them that has
+ * required literals can rule a unit out.
+ */
+export function rulePrefilter(definition: Pick<RuleDefinition, "pattern" | "patterns" | "flags">): LiteralPrefilter | undefined {
+  const flags = definition.flags ?? "i";
+  let best: LiteralPrefilter | undefined;
+  let bestScore = -Infinity;
+  for (const source of definition.pattern !== undefined ? [definition.pattern] : definition.patterns ?? []) {
+    const candidate = requiredLiterals(source, flags);
+    if (!candidate) continue;
+    const shortest = Math.min(...candidate.literals.map((literal) => literal.length));
+    const candidateScore = shortest * 100 - candidate.literals.length;
+    if (candidateScore > bestScore) {
+      best = candidate;
+      bestScore = candidateScore;
+    }
+  }
+  return best;
 }
 
 export interface LoadedRule extends RuleDefinition {
@@ -201,6 +247,7 @@ function compileRule(definition: RuleDefinition, sourceFile: string): LoadedRule
         "fileAbsentPattern",
         "im",
       ),
+      prefilter: rulePrefilter(definition),
     },
   };
 }
@@ -402,12 +449,26 @@ function parseSuppression(
   return { ruleIds, reason };
 }
 
+/**
+ * True when the `code-audit:ignore` comment is all the line holds: nothing
+ * but white space and comment openers stands before the marker. Only such a
+ * line suppresses the statement that FOLLOWS it; a trailing comment belongs
+ * to the code on its own line.
+ */
+function isCommentOnlyIgnore(line: string): boolean {
+  const index = line.toLowerCase().indexOf("code-audit:ignore");
+  if (index < 0) return false;
+  return /^\s*(?:(?:#|\/\/|\/\*|\*|<!--|--|;|@\*|\{\{!-*|\{#|%|')\s*)*$/.test(line.slice(0, index));
+}
+
 export function isSuppressed(
   currentLine: string,
   previousLine: string | undefined,
   ruleId: string,
 ): { suppressed: boolean; reason: string } {
-  for (const line of [currentLine, previousLine ?? ""]) {
+  const candidates = [currentLine];
+  if (previousLine !== undefined && isCommentOnlyIgnore(previousLine)) candidates.push(previousLine);
+  for (const line of candidates) {
     const parsed = parseSuppression(line);
     if (!parsed) continue;
     if (parsed.ruleIds.includes("*") || parsed.ruleIds.includes(ruleId)) {
@@ -415,6 +476,73 @@ export function isSuppressed(
     }
   }
   return { suppressed: false, reason: "" };
+}
+
+/**
+ * Inline suppression of a hit of `ruleId` at line `index` of a logical unit:
+ * a `code-audit:ignore` comment on a line of its own right before the unit or
+ * the matched line, or on ANY physical line of the unit (a statement
+ * that spans lines may carry the comment on its first, last or any other
+ * line). Extra units (windows of an over-long line, lexer fallbacks) cover
+ * only their own line.
+ */
+function unitSuppression(
+  lines: readonly string[],
+  unit: Pick<LogicalLine, "start" | "offsets">,
+  index: number,
+  ruleId: string,
+): { suppressed: boolean; reason: string } {
+  const matched = isSuppressed(lines[index] ?? "", lines[index - 1], ruleId);
+  if (matched.suppressed) return matched;
+  const last = unit.start + Math.max(0, unit.offsets.length - 1);
+  for (let line = unit.start - 1; line <= last; line += 1) {
+    if (line < 0 || line === index) continue;
+    const text = lines[line] ?? "";
+    // The line before the unit counts only when it holds just the comment.
+    if (line < unit.start && !isCommentOnlyIgnore(text)) continue;
+    const parsed = isSuppressed(text, undefined, ruleId);
+    if (parsed.suppressed) return parsed;
+  }
+  return { suppressed: false, reason: "" };
+}
+
+/**
+ * Where a credential matched in a parsed YAML / JSON value is written in the
+ * file: each line of `secret` is looked up on the lines from `index` on (a
+ * few lines further for a folded or quoted multi-line scalar). A piece that
+ * cannot be found as written masks the whole line it should be on.
+ */
+export function structuredSecretRanges(
+  lines: readonly string[],
+  index: number,
+  secret: string,
+): Array<[number, RedactRange]> {
+  const result: Array<[number, RedactRange]> = [];
+  const pieces = secret.split("\n");
+  let from = index;
+  for (let piece = 0; piece < pieces.length; piece += 1) {
+    const wanted = (pieces[piece] as string).trim();
+    if (wanted.length === 0) continue;
+    let found = false;
+    const limit = Math.min(lines.length, from + 20);
+    for (let lineIndex = from; lineIndex < limit && !found; lineIndex += 1) {
+      const line = lines[lineIndex] ?? "";
+      let at = line.indexOf(wanted);
+      while (at >= 0) {
+        found = true;
+        result.push([lineIndex, { start: at, end: at + wanted.length }]);
+        at = line.indexOf(wanted, at + wanted.length);
+      }
+      if (found) from = lineIndex;
+    }
+    if (!found) {
+      const lineIndex = Math.min(index + piece, Math.max(0, lines.length - 1));
+      const line = lines[lineIndex] ?? "";
+      const start = line.length - line.trimStart().length;
+      result.push([lineIndex, { start, end: line.length, replacement: "[redacted]" }]);
+    }
+  }
+  return result;
 }
 
 export interface RuleHit {
@@ -1713,6 +1841,12 @@ export interface RuleScanOptions {
    * this off.
    */
   inlineIgnore?: boolean;
+  /**
+   * Skip a rule on a unit that contains none of the rule's required literals
+   * (default true; see `prefilter.ts`). Turned off only to check that the
+   * prefilter changes no result.
+   */
+  prefilter?: boolean;
 }
 
 interface HitPlacement {
@@ -1742,6 +1876,27 @@ function startsInStringLiteral(unit: LogicalLine, offset: number): boolean {
   return skeleton[offset] === " ";
 }
 
+/** One literal scanner per rule set and language, built on first use. */
+const literalScanners = new WeakMap<LoadedRule[], Map<string, LiteralScanner | undefined>>();
+
+function literalScannerFor(ruleSet: RuleSet, language: string): LiteralScanner | undefined {
+  let byLanguage = literalScanners.get(ruleSet.rules);
+  if (!byLanguage) {
+    byLanguage = new Map();
+    literalScanners.set(ruleSet.rules, byLanguage);
+  }
+  if (byLanguage.has(language)) return byLanguage.get(language);
+  const prefilters: LiteralPrefilter[] = [];
+  for (const rule of ruleSet.rules) {
+    if (rule.compiled.prefilter && !rule.withinKeys && rule.languages.includes(language as never)) {
+      prefilters.push(rule.compiled.prefilter);
+    }
+  }
+  const scanner = prefilters.length > 0 ? new LiteralScanner(prefilters) : undefined;
+  byLanguage.set(language, scanner);
+  return scanner;
+}
+
 export function scanRules(
   files: InventoryFile[],
   ruleSet: RuleSet,
@@ -1758,6 +1913,7 @@ export function scanRules(
   let slowFiles = 0;
   const fullBudget = options.fileBudgetMs ?? FILE_MATCH_BUDGET_MS;
   const inlineIgnore = options.inlineIgnore !== false;
+  const usePrefilter = options.prefilter !== false;
 
   for (const file of files) {
     if (!file.scannable || file.language === "unknown") continue;
@@ -1841,10 +1997,29 @@ export function scanRules(
       applicable,
     );
 
+    // Literal prefilter (see `prefilter.ts`): a rule none of whose required
+    // literals occurs anywhere in the file cannot match any unit of it. The
+    // literals hold no white space, and every unit's text is the file's text
+    // with comments blanked to spaces and lines joined by "\n", so a literal
+    // in a unit is a literal in the file. Rules with `withinKeys` match
+    // canonical expression text that is not in the file and are not filtered.
+    if (usePrefilter) {
+      const scanner = literalScannerFor(ruleSet, file.language);
+      const found = scanner ? scanner.scan(content) : undefined;
+      const kept = fileRules.filter((rule) => {
+        const prefilter = rule.compiled.prefilter;
+        if (!prefilter || rule.withinKeys || !found) return true;
+        return passesFound(prefilter, found);
+      });
+      fileRules.length = 0;
+      fileRules.push(...kept);
+    }
+
     // Python and the C-family languages are matched on logical lines with
     // comments removed (see pythonLogicalLines and lexers/clike.ts).
-    // Inline suppression reads the original physical line, or for the
-    // C-family languages the comments on it (`extras.comments`).
+    // Inline suppression reads the original physical lines, or for the
+    // C-family languages those lines with string text blanked
+    // (`extras.comments`).
     const overLong: number[] = [];
     const diagnostics = emptyLexDiagnostics();
     const extras: LexExtras = {};
@@ -2071,16 +2246,7 @@ export function scanRules(
             },
           };
           if (inlineIgnore) {
-            const source = suppressionText ?? lines;
-            const line = source[index] ?? "";
-            let suppression = isSuppressed(line, source[index - 1], rule.id);
-            if (!suppression.suppressed && unit.start !== index) {
-              suppression = isSuppressed(
-                source[unit.start] ?? "",
-                source[unit.start - 1],
-                rule.id,
-              );
-            }
+            const suppression = unitSuppression(suppressionText ?? lines, unit, index, rule.id);
             if (suppression.suppressed) hit.suppressedBy = suppression.reason;
           }
           pending.push(hit);
@@ -2125,6 +2291,24 @@ export function scanRules(
             }
           }
           const index = Math.min(value.lineAt(matchStart), Math.max(0, lines.length - 1));
+          if (rule.redactEvidence) {
+            // The value text is the parsed scalar, not the physical line, so
+            // what the rule matched (or its `secret` group) is looked up on
+            // the lines of the value; when it cannot be found as written
+            // (escapes, folding), the whole line is masked.
+            let secretText = match[0];
+            if (compiled.hasSecretGroup) {
+              const group = (
+                match as RegExpExecArray & {
+                  indices?: { groups?: Record<string, [number, number] | undefined> };
+                }
+              ).indices?.groups?.secret;
+              secretText = group ? text.slice(group[0], group[1]) : "";
+            }
+            for (const [lineIndex, range] of structuredSecretRanges(lines, index, secretText)) {
+              addRedaction(lineIndex, range);
+            }
+          }
           const key = `${rule.id}\u0000${index}`;
           if (reported.has(key)) continue;
           reported.add(key);
@@ -2199,6 +2383,10 @@ export function scanRules(
           line: item.index + 1,
           reason,
         });
+        // A suppressed hit still takes part in the deduplication of its
+        // group below, so a lower-ranked rule of the group cannot take its
+        // place on the same expression.
+        placementOf.set(hit, item.placement);
         continue;
       }
       hits.push(hit);
@@ -2209,16 +2397,22 @@ export function scanRules(
   // Rules of one group are deduplicated per expression: hits whose spans
   // overlap (for example a specific rule and its API-only fallback on the same
   // call, even when they match different lines of it) produce one result, the
-  // one with the highest confidence and severity.
+  // one with the highest confidence and severity. Suppressed hits take part:
+  // when the hit that would be the result is suppressed by an inline ignore
+  // (or ties with the best unsuppressed one), the expression produces no
+  // result, rather than the runner-up of the group surfacing in its place.
+  // An ignore that names only a lower-ranked rule of the group does not
+  // suppress a higher-ranked hit.
   interface Cluster {
     start: number;
     end: number;
     best: RuleHit;
   }
   const score = (hit: RuleHit): number =>
-    CONFIDENCE_ORDER[hit.rule.confidence] * 10 + severityRank(hit.rule.severity);
+    (CONFIDENCE_ORDER[hit.rule.confidence] * 10 + severityRank(hit.rule.severity)) * 2 +
+    (hit.suppressedBy !== undefined ? 1 : 0);
   const clusters = new Map<string, Cluster[]>();
-  for (const hit of hits) {
+  for (const hit of [...hits, ...suppressedHits]) {
     if (!hit.rule.group) continue;
     const placement = placementOf.get(hit) as HitPlacement;
     const key = `${hit.file.relPath}\u0000${placement.unitStart}\u0000${hit.rule.group}`;
@@ -2247,7 +2441,9 @@ export function scanRules(
 
   const winners = new Set<RuleHit>();
   for (const list of clusters.values()) {
-    for (const cluster of list) winners.add(cluster.best);
+    for (const cluster of list) {
+      if (cluster.best.suppressedBy === undefined) winners.add(cluster.best);
+    }
   }
   const dedupedHits = hits.filter((hit) => !hit.rule.group || winners.has(hit));
 

@@ -1,6 +1,8 @@
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { inventory } from "../src/inventory.js";
+import { loadOpengrepRules } from "../src/external/opengrepRules.js";
+import { classifyPath } from "../src/pathContext.js";
 import { loadRules, scanRules } from "../src/rules.js";
 import {
   CLEAN,
@@ -216,7 +218,8 @@ describe("JavaScript rule precision", () => {
       ]),
     ).toEqual([
       "6:js-path-traversal:finding",
-      "7:js-path-traversal:finding",
+      // A path that starts with a variable is only worth a look.
+      "7:js-path-api:hotspot",
       "8:js-path-traversal-request:finding",
       "9:js-path-traversal-request:finding",
     ]);
@@ -267,7 +270,8 @@ describe("JavaScript rule precision", () => {
         "app.use(cors({ credentials: true, origin: true }));",
         "const io = new Server(http, { cors: { origin: \"*\", credentials: true } });",
       ]),
-    ).toEqual(["3:js-cors-credentials-any-origin:finding", "4:js-cors-credentials-any-origin:finding"]);
+    // '*' with credentials is refused by browsers: not reported.
+    ).toEqual(["3:js-cors-credentials-any-origin:finding"]);
   });
 
   it("tells Math.random for secrets from Math.random for other values", () => {
@@ -349,6 +353,277 @@ describe("JavaScript rule precision", () => {
     ).toEqual(["2:js-yaml-load:hotspot"]);
   });
 
+  // ---- Review of fdf8e00 on 15 more repositories (one test per item) ----
+
+  /** Findings only (hotspots are a reading list). */
+  function findingRows(lines: string[], name = "app.js"): string[] {
+    return rows(lines, name).filter((row) => row.endsWith(":finding"));
+  }
+
+  it("1. skips escaped, numeric, placeholder, enum and constant SQL values", () => {
+    expect(
+      findingRows([
+        'const mysql = require("mysql2");',
+        'pool.query("SELECT * FROM t WHERE id = " + connection.escape(req.query.id));',
+        'pool.query("SELECT * FROM t WHERE id = " + pool.escape(req.query.id));',
+        'pool.query("SELECT * FROM t WHERE id = " + mysql.escape(req.query.id));',
+        "pool.query(`SELECT * FROM t WHERE id = ${parseInt(req.params.id, 10)}`);",
+        "pool.query(`SELECT * FROM t WHERE id = ${Number(req.params.id)}`);",
+        "pool.query(`SELECT * FROM t WHERE id IN (${ids.map(() => '?').join(',')})`, ids);",
+        "db.all(`SELECT * FROM t WHERE id IN (${placeholders})`, ids);",
+        "db.run(`INSERT INTO t (a, b) VALUES ${tupleStr}`, values);",
+        "db.run(`SELECT * FROM t WHERE name = ${this.escape(name)}`);",
+        "db.run(`SELECT * FROM t WHERE name = ${this.quoteIdentifier(name)}`);",
+        "db.all(`SELECT COUNT(*) FROM messages WHERE readStatus = ${ReadStatus.Unread}`);",
+        "db.all(`DELETE FROM t WHERE key IN (${new Array(n).fill('?').join(',')})`, keys);",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("1. reports SQL text built away from the query call as a hotspot only", () => {
+    expect(
+      rows([
+        'const mysql = require("mysql2");',
+        "const sql = `SELECT * FROM t WHERE schema = '${schemaName}'`;",
+        "return `SELECT * FROM t WHERE name = '${tableName}'`;",
+        "pool.query(`SELECT * FROM t WHERE name = '${tableName}'`);",
+      ]),
+    ).toEqual([
+      "2:js-sql-string-build:hotspot",
+      "3:js-sql-string-build:hotspot",
+      "4:js-sql-injection:finding",
+    ]);
+  });
+
+  it("2. follows request data into template literals of the -request rules", () => {
+    expect(
+      rows([
+        'const { exec, execSync } = require("child_process");',
+        'const serialize = require("node-serialize");',
+        "execSync(`ls ${req.query.dir}`);",
+        "exec(`convert ${opts.size} ${req.body.file} out.png`);",
+        "eval(`${req.body.expr}`);",
+        "fs.readFile(`/data/${req.params.name}`, cb);",
+        "const re = new RegExp(`^${req.query.q}`);",
+        "serialize.unserialize(`${req.cookies.profile}`);",
+        "const plugin = require(`./plugins/${req.params.name}`);",
+      ]),
+    ).toEqual([
+      "3:js-command-injection-request:finding",
+      "4:js-command-injection-request:finding",
+      "5:js-code-injection-request:finding",
+      "6:js-path-traversal-request:finding",
+      "7:js-regexp-request:hotspot",
+      "8:js-deserialize-request:finding",
+      "9:js-require-request:finding",
+    ]);
+  });
+
+  it("3. reports request data anywhere in SQL text", () => {
+    expect(
+      findingRows([
+        "pool.query(`SELECT * FROM users ORDER BY ${req.query.sort}`);",
+        "pool.query(`SELECT * FROM users LIMIT ${req.query.limit}`);",
+        "pool.query(`SELECT * FROM ${req.params.table} WHERE id = 1`);",
+      ]),
+    ).toEqual([
+      "1:js-sql-injection-request:finding",
+      "2:js-sql-injection-request:finding",
+      "3:js-sql-injection-request:finding",
+    ]);
+  });
+
+  it("4. matches HTTP clients case-sensitively and not their declarations", () => {
+    expect(
+      rows([
+        "app.get('/x', handler(req));",
+        "const r = new Request(url);",
+        "const s = await Fetch(url);",
+        "async fetch(url: string): Promise<Response> {",
+        "#fetch(url) {",
+        "const out = request(options);",
+        "const t = got(options);",
+        "const answer = await fetch(target);",
+      ]),
+    ).toEqual(["8:js-ssrf-api:hotspot"]);
+    expect(rows(["const r = got(req.query.url);", "const s = request(req.body.target);"])).toEqual([
+      "1:js-ssrf:finding",
+      "2:js-ssrf:finding",
+    ]);
+  });
+
+  it("4. keeps other API rules case-sensitive", () => {
+    expect(
+      rows([
+        'const knex = require("knex");',
+        "db.Query(text);",
+        "const x = EVAL(code);",
+        "const y = Merge({}, req.body);",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("5. ignores eval definitions, eval() without arguments and eval in strings", () => {
+    expect(
+      rows([
+        "  eval(source, url) {",
+        "  async eval(code: string): Promise<unknown> {",
+        "function eval(x) { return x; }",
+        'throw new Error("this build requires eval() in development");',
+        'const hint = "do not call eval(userCode) here";',
+        'const msg = "new Function(code) is blocked";',
+        "const result = eval(code);",
+      ]),
+    ).toEqual(["7:js-eval:finding"]);
+  });
+
+  it("6. treats compiled, public library and test-named paths as vendored or test code", () => {
+    expect(classifyPath("packages/next/src/compiled/react/index.js")).toBe("vendored");
+    expect(classifyPath("app/client/public/libraries/jquery.js")).toBe("vendored");
+    expect(classifyPath("site/public/vendor/x.js")).toBe("vendored");
+    expect(classifyPath("site/public/lib/y.js")).toBe("vendored");
+    expect(classifyPath("src/lib/z.js")).toBeUndefined();
+    expect(classifyPath("ts/test-node/sql/a.ts")).toBe("test");
+    expect(classifyPath("ts/test-electron/b.ts")).toBe("test");
+    expect(classifyPath("ts/sql/migrations_test.node.ts")).toBe("test");
+    expect(classifyPath("ts/sql/contest.ts")).toBeUndefined();
+    const lines = ['const { exec } = require("child_process");', 'exec("ls " + dir);', "eval(code);"];
+    expect(
+      scan({
+        "packages/next/src/compiled/x.js": lines,
+        "app/public/libraries/y.js": lines,
+        "ts/test-node/z.ts": lines,
+        "ts/a_test.node.ts": lines,
+      }),
+    ).toEqual([]);
+  });
+
+  it("6. skips medium findings and hotspots in files with a 1000-character line, not high or low ones", () => {
+    expect(
+      rows([
+        'const { exec } = require("child_process");',
+        `const blob = "${"x".repeat(1200)}";`,
+        'exec("ls " + dir);',
+        "eval(code);",
+        'exec("ping " + req.body.host);',
+      ]),
+    ).toEqual(["4:js-eval:finding", "5:js-command-injection-request:finding"]);
+  });
+
+  it("7. needs a directory literal before the runtime part of a path", () => {
+    expect(
+      rows([
+        "app.get('/', (req, res) => {});",
+        "fs.readFileSync(`${dir}/index.js`);",
+        "fs.readFile(chunkPath + '.map', cb);",
+        "fs.readFile('/' + mainName, cb);",
+        "fs.readFile(`/proc/${pid}/stat`, cb);",
+        "fs.readFile('/data/' + name, cb);",
+      ]),
+    ).toEqual([
+      "2:js-path-api:hotspot",
+      "3:js-path-api:hotspot",
+      "4:js-path-api:hotspot",
+      "5:js-path-api:hotspot",
+      "6:js-path-traversal:finding",
+    ]);
+  });
+
+  it("8. leaves TLS options in examples and build scripts alone", () => {
+    const lines = ["const agent = new https.Agent({ rejectUnauthorized: false });"];
+    expect(
+      scan({ "examples/complex/scripts/setup.ts": lines, "scripts/dev.js": lines, "src/client.js": lines }),
+    ).toEqual(["src/client.js:1:js-tls-disabled:finding"]);
+  });
+
+  it("9. does not report '*' with credentials, which browsers refuse", () => {
+    expect(
+      rows([
+        "app.use(cors({ origin: '*', credentials: true }));",
+        "res.setHeader('Access-Control-Allow-Origin', '*');",
+        "res.setHeader('Access-Control-Allow-Credentials', 'true');",
+        "res.setHeader('Access-Control-Allow-Origin', req.headers.origin);",
+      ]),
+    ).toEqual(["4:js-cors-header-credentials:finding"]);
+  });
+
+  it("10. reports nodeIntegrationInSubFrames on its own as a hotspot", () => {
+    expect(
+      rows([
+        "new BrowserWindow({ webPreferences: { sandbox: true, nodeIntegration: false, nodeIntegrationInSubFrames: true } });",
+        "new BrowserWindow({ webPreferences: { nodeIntegration: true } });",
+      ]),
+    ).toEqual(["1:js-electron-node-integration-frames:hotspot", "2:js-electron-node-integration:finding"]);
+  });
+
+  it("12. lets the Opengrep pattern and taint rules collapse (same CWE)", () => {
+    const rules = loadOpengrepRules(path.join(RULES_DIR, "opengrep")).rules;
+    const cwe = (id: string): string | undefined => rules.find((rule) => rule.id === id)?.cwe;
+    expect(cwe("js-opengrep-eval")).toBe(cwe("js-opengrep-req-code"));
+    expect(cwe("js-opengrep-child-process-exec")).toBe(cwe("js-opengrep-req-command"));
+  });
+
+  it("13. gates js-path-api on request handlers and skips signatures and constants", () => {
+    expect(rows(["fs.readFile(file, cb);"], "lib/util.js")).toEqual([]);
+    expect(
+      rows([
+        "app.get('/', (req, res) => {});",
+        "async readFile(path: string): Promise<Buffer> {",
+        "fs.readFile(file, cb);",
+      ]),
+    ).toEqual(["3:js-path-api:hotspot"]);
+    expect(rows(['const knex = require("knex");', "await knex.raw(CREATE_TABLE_SQL);", "await knex.raw(sql);"])).toEqual([
+      "3:js-sql-api:hotspot",
+    ]);
+  });
+
+  it("14. does not report a quoted or numeric command value", () => {
+    expect(
+      rows([
+        'const { exec, execSync } = require("child_process");',
+        'const quote = require("shell-quote").quote;',
+      ]).concat(
+        rows([
+          'const { exec, execSync } = require("child_process");',
+          "exec('lsof -p ' + this.proc.pid + ' | grep cwd');",
+          'execSync(`"${binaryPath}" -CAROOT`);',
+          "execSync(`${manager} --version`);",
+          "exec('git log ' + ref);",
+        ]),
+      ),
+    ).toEqual([
+      "2:js-exec-api:hotspot",
+      "3:js-exec-api:hotspot",
+      "4:js-exec-api:hotspot",
+      "5:js-command-injection:finding",
+    ]);
+    expect(
+      rows(['const { exec } = require("child_process");', "exec('tar xzf ' + shellQuote([name]));"]),
+    ).toEqual(["2:js-exec-api:hotspot"]);
+  });
+
+  it("15. files helmet CSP under CWE-693", () => {
+    expect(jsRules.find((rule) => rule.id === "js-helmet-csp-disabled")?.cwe).toBe("CWE-693");
+  });
+
+  it("covers Koa ctx.body, Fastify text/html, Next.js and axios({ url })", () => {
+    expect(
+      rows([
+        "ctx.body = `<h1>${ctx.query.name}</h1>`;",
+        "ctx.body = `${ctx.query.name}`;",
+        "reply.type('text/html').send(`<p>${request.query.name}</p>`);",
+        "return NextResponse.redirect(request.nextUrl.searchParams.get('next'));",
+        "const r7 = await axios({ url: req.body.url });",
+      ], "route.ts"),
+    ).toEqual([
+      "1:js-res-send-xss:finding",
+      "3:js-res-send-xss:finding",
+      "4:js-open-redirect:finding",
+      "5:js-ssrf:finding",
+    ]);
+  });
+
+
   // The C-family lexer removes comments and joins a statement while ( or [
   // (or an object literal passed as an argument) is open.
   it("reports cors({ ... }) when origin and credentials are on different lines", () => {
@@ -364,9 +639,20 @@ describe("JavaScript rule precision", () => {
   it("ignores a sink inside a trailing comment: run(); // eval(req.body.x)", () => {
     expect(rows(["run(); // eval(req.body.x)", "/* eval(req.body.y)", "   eval(req.query.z) */"])).toEqual([]);
   });
-  // The lexer joins the options object, but the pattern's gap ([^}\n]) stops
-  // at the line break: a rule change, not an engine one.
-  it.todo("reports cookie: {\\n secure: false } in an express-session options object");
+  it("reports cookie: {\\n secure: false } in an express-session options object", () => {
+    expect(
+      rows([
+        "app.use(session({",
+        "  secret: process.env.SESSION_SECRET,",
+        "  cookie: {",
+        "    httpOnly: true,",
+        "    secure: false,",
+        "  },",
+        "}));",
+      ]),
+    ).toEqual(["3:js-cookie-insecure:finding"]);
+    expect(rows(["app.use(session({", "  cookie: {", "    secure: true,", "  },", "}));"])).toEqual([]);
+  });
   it("reports jwt.verify without algorithms only when no options object follows on later lines", () => {
     const head = ["const jwt = require('jsonwebtoken');"];
     expect(rows([...head, "jwt.verify(token, key, {", "  algorithms: ['RS256'],", "});"])).toEqual([]);

@@ -1,0 +1,3 @@
+--index-url http://pypi.example.org/simple
+--trusted-host pypi.example.org
+requests==2.32.3

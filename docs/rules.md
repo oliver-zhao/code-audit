@@ -13,10 +13,10 @@ finding rules and hotspot rules.
 
 | Directory | Content |
 |---|---|
-| `rules/sast/` | Code rules: Python (three files), JavaScript/TypeScript, Java, Go, C/C++, C#. |
+| `rules/sast/` | Code rules: Python, JavaScript/TypeScript, Java, Go, C/C++, C# (with Razor views and .NET configuration), Rust. |
 | `rules/iac/` | Dockerfile, Compose, Kubernetes, Terraform, GitHub Actions. |
 | `rules/agent/` | Agent configuration, instruction files and agent supply chain. |
-| `rules/deps/` | Dependency hygiene (installs over plain HTTP, `--trusted-host`, downloads in post-install scripts). |
+| `rules/deps/` | Dependency hygiene (installs over plain HTTP, `--trusted-host`, downloads in post-install scripts) in Markdown, JSON, YAML, shell scripts, requirements files, `pip.conf`, `uv.toml` and `.npmrc`. |
 | `rules/opengrep/` | Rules in Opengrep/Semgrep syntax, including the Python taint rules. They are **not** loaded by the built-in engine; they are passed to `opengrep` (or `semgrep`) when that tool is installed, and use that tool's schema. |
 
 Every `.yml` / `.yaml` file below the rules directory (except `opengrep/`) is
@@ -31,27 +31,66 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
 1. The inventory assigns each file a language from its name
    (`packages/core/src/language.ts`). A rule applies to a file when the
    file's language is in the rule's `languages` and the path passes
-   `pathInclude` / `pathExclude`.
-2. The file is split into **units**. For Python a unit is one *logical
-   line*: a statement that spans several lines (open brackets, backslash
-   continuation) is one unit; comments, docstrings and statements that are
-   only a string are removed; the header of a `def` / `class` statement and
-   `import` statements are not matched unless the rule sets
-   `matchDeclarations`. C#, Java, JavaScript/TypeScript, Go, C/C++ and Rust
-   go through one C-family lexer (`packages/core/src/lexers/clike.ts`) with
-   each language's string and comment syntax: comments are blanked (columns
-   stay those of the physical line), string text is kept, and a statement is
-   one unit while a `(` or `[` is open (in all but C#, also an object or
-   struct literal passed as an argument, `f({ ... })`), and across a line
-   break next to a binary operator, `=`, `=>`, `.` or `?:` (a method chain
-   `\n  .arg(x)` joins). C/C++ preprocessor directives are units of their own;
-   C# directives are not code. Rust `#[cfg(test)] mod ... { }` modules are
-   test code: findings there are lowered like findings in a test path. A
-   Dockerfile instruction continued with `\` is one unit, and comment lines
-   are blank. XML and Razor comments are blanked. Every other language is
-   matched one physical line at a time. The physical lines of a unit are
-   joined with a line break, so a pattern anchored at a line start needs the
-   `m` flag.
+   `pathInclude` / `pathExclude`. Files with no language (`unknown`) are
+   never matched by rules; secret detection reads every text file whatever
+   its language.
+
+   | Language | Files |
+   |---|---|
+   | `python` | `*.py`, `*.pyw` |
+   | `javascript` / `typescript` | `*.js`, `*.jsx`, `*.mjs`, `*.cjs` / `*.ts`, `*.tsx`, `*.mts`, `*.cts` |
+   | `java`, `go`, `rust`, `csharp` | `*.java`, `*.go`, `*.rs`, `*.cs` |
+   | `c` / `cpp` | `*.c` / `*.h`, `*.cc`, `*.cpp`, `*.cxx`, `*.hpp`, `*.hh`, `*.hxx` |
+   | `razor` | `*.cshtml`, `*.razor` |
+   | `template` | HTML and server-side templates: `*.html`, `*.htm`, `*.jinja`, `*.jinja2`, `*.j2`, `*.njk`, `*.twig`, `*.vue`, `*.svelte`, `*.ejs`, `*.hbs`, `*.handlebars`, `*.mustache` |
+   | `shell` | `*.sh`, `*.bash`, `*.zsh`, `*.ksh` (not `Makefile`, not extension-less scripts) |
+   | `dockerfile` | `Dockerfile`, `Dockerfile.*`, `*.dockerfile` |
+   | `yaml` | `*.yml`, `*.yaml`, and Terraform `*.tf`, `*.tfvars` |
+   | `json` | `*.json`, `*.jsonc` |
+   | `toml` | `*.toml` (`Cargo.toml`, `pyproject.toml`, `uv.toml`, `.codex/config.toml`) |
+   | `ini` | `*.ini`, `*.cfg`, `.npmrc`, `.yarnrc`, `.pypirc`, `pip.conf` |
+   | `properties` | `*.properties` |
+   | `requirements` | pip `requirements*.txt` / `constraints*.txt` (also `*.in`) and `requirements/*.txt` |
+   | `xml` | `*.xml` (Maven, MyBatis mappers, Spring contexts) and .NET `*.config` |
+   | `markdown` | `*.md`, `*.mdx`, Cursor `*.mdc`, and the agent instruction files `.cursorrules`, `.windsurfrules`, `.clinerules`, `.rules` |
+
+   Source languages and `template` files are reported in category `sast`,
+   the rest in category `config`.
+2. The file is split into **units**:
+   - **Python**: a unit is one *logical line*: a statement that spans
+     several lines (open brackets, backslash continuation) is one unit;
+     comments, docstrings and statements that are only a string are removed;
+     the header of a `def` / `class` statement and `import` statements are
+     not matched unless the rule sets `matchDeclarations`.
+   - **C-family languages** (C#, Java, JavaScript/TypeScript, Go, C/C++,
+     Rust): one lexer (`packages/core/src/lexers/clike.ts`) with each
+     language's string and comment syntax (JavaScript template and regex
+     literals, Go raw strings, C++ raw strings, Rust raw strings, nested
+     comments and lifetimes, Java text blocks, C# verbatim, interpolated and
+     raw strings). Comments are blanked (columns stay those of the physical
+     line), string text is kept, and a unit is one statement: it stays open
+     while a `(` or `[` is open (in all but C#, also an object or struct
+     literal passed as an argument, `f({ ... })`), and across a line break
+     next to a binary operator, `=`, `=>`, `.` or `?:` (a method chain
+     `\n  .arg(x)` joins). C/C++ preprocessor directives (with their `\`
+     continuation lines) are units of their own; C# directives are not code.
+     Rust `#[cfg(test)] mod ... { }` modules are test code: findings there
+     are lowered like findings in a test path.
+   - **Dockerfile**: an instruction continued with `\` (or the `# escape=`
+     character) is one unit, and comment lines are blank.
+   - **XML**: `<!-- -->` comments are blanked and a start tag that spans
+     several lines is one unit. **Razor**: `@* *@` comments are blanked;
+     every line is its own unit.
+   - **Every other language** (including `template`, `shell`, `toml`, `ini`,
+     `properties`, `requirements`, `markdown`, `yaml` and `json`): a unit is
+     one physical line, matched as written (HTML comments in templates are
+     not blanked).
+
+   The physical lines of a unit are joined with a line break, so a pattern
+   anchored at a line start needs the `m` flag (and `[ \t]*` rather than
+   `\s*` after `^`). `codeOnly` takes effect only where the lexer knows
+   string literals (Python and the C-family languages); elsewhere it changes
+   nothing.
 3. In each unit, `pattern` (or the first entry of `patterns`) locates
    matches; **every** match is reported, at the line where it starts. With
    `patterns`, all other entries must match the same unit too (for long
@@ -63,19 +102,48 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
 4. `filePattern` / `fileAbsentPattern` gate the rule for a file: at least
    one line must match `filePattern`, and no line may match
    `fileAbsentPattern`.
-5. Rules with `withinKeys` (YAML only) are matched against the *values* of
-   the named mapping keys of the parsed document, so anchors, aliases, quoted
-   keys and block scalars cannot hide a value. A file that does not parse is
-   matched line by line, with a warning.
+5. Rules with `withinKeys` (`languages: [yaml]` or `[json]`) are matched
+   against the *values* of the named mapping keys of the parsed document, so
+   anchors, aliases, quoted keys and block scalars cannot hide a value. A
+   file that does not parse is matched line by line, with a warning.
 6. Hits of rules that share a `group` and overlap in one expression collapse
    into one result: the one with the highest confidence, then severity. This
    is how a specific rule and its API-only fallback avoid double reporting.
-7. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>` on the
-   matched line or the line before suppresses the hit (`*` matches any rule).
+7. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
+   suppresses the hit of a named rule (`*` matches any rule) when it is
+   - on the matched line, or on any other physical line of the same unit (a
+     multi-line statement may carry it on its first, last or any other
+     line), or
+   - on a line of its own (nothing but the comment) right before the
+     matched line or the unit. A trailing comment after code belongs to its
+     own line, not to the statement below it.
+
    In the C-family languages only real comments count: the same text inside
    a string literal suppresses nothing.
-   Suppressed hits are listed in the report; `--no-inline-ignore` disables
-   the comments.
+
+   Suppression is applied after a group is resolved: when the hit that
+   would be the group's result for an expression is suppressed, that
+   expression produces no result, and the next-best rule of the group does
+   not surface in its place. An ignore that names only a lower-ranked rule
+   of the group does not suppress a higher-ranked hit (if the call later
+   gains a request value, the specific finding is reported). Suppressed hits
+   are listed in the report; `--no-inline-ignore` (and `--untrusted`)
+   disables the comments.
+
+**Literal prefilter.** When the rules are loaded, the engine derives from
+each rule's patterns a set of literal strings of which every match must
+contain one (`\bstrcpy\s*\(` needs `strcpy`; `(?:Process\.Start|ShellExecute)`
+needs one of the two; lower-cased for a case-insensitive rule). One pass over
+each file finds which of these literals it contains, and a rule none of whose
+literals occurs in the file is not run on it. The derivation is conservative:
+a pattern construct it does not fully understand, the `u` flag, non-ASCII
+text in a case-insensitive pattern, literals shorter than three characters
+or too many alternatives give the rule no prefilter, and it runs on every
+unit as before. Rules with `withinKeys` are never prefiltered. A test checks,
+for every built-in rule, every fixture line and adversarial variants of
+them, that a line the prefilter rules out is never matched by the rule, and
+that scans of the fixtures are identical with and without the prefilter. Rule
+authors need do nothing; the prefilter only removes work.
 
 Limits that keep matching bounded: a line longer than 2,000 characters is
 matched in windows, a statement longer than 200 lines is split, each
@@ -129,7 +197,7 @@ in `packages/core/src/rules.ts`, by a test):
 | `kind` | `finding` \| `hotspot` | no (default `finding`) | A hotspot is a reading-list entry and is never counted. |
 | `cwe` | string `CWE-<number>` | yes | Weakness id. |
 | `owasp` | string | no | OWASP Top 10 reference, for example `A03:2021`. |
-| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `dockerfile`, `yaml`, `json`, `markdown` | yes | File languages the rule applies to. Terraform files are `yaml`. |
+| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `rust`, `razor`, `template`, `shell`, `dockerfile`, `yaml`, `json`, `toml`, `ini`, `properties`, `requirements`, `xml`, `markdown` | yes | File languages the rule applies to (see the table above). Terraform files are `yaml`. |
 | `pattern` | regex | one of `pattern` / `patterns` | The locator. |
 | `patterns` | list of regex | one of `pattern` / `patterns` | The first entry is the locator; all others must also match (AND). Mutually exclusive with `pattern`. |
 | `notPattern` | regex | no | Discards a match when it matches the expression around it. |
@@ -140,9 +208,9 @@ in `packages/core/src/rules.ts`, by a test):
 | `flags` | string of `i`, `m`, `s`, `u`, `y` | no (default `i`) | Flags for `pattern`, `patterns` and `notPattern`. Give `flags: ""` for a case-sensitive rule. |
 | `group` | string (same form as `id`) | no | Overlapping hits of rules in one group produce one result. |
 | `matchDeclarations` | boolean | no | Python: also match `def` / `class` headers and `import` statements. |
-| `redactEvidence` | boolean | no | The match is a credential: mask it in every output. With a capture group named `secret` only that group is masked. Required for every rule that matches a credential literal. |
-| `codeOnly` | boolean | no | Python and the C-family languages (C#, Java, JavaScript/TypeScript, Go, C/C++, Rust): ignore a match that starts inside a string literal or a JavaScript regex literal (for API-call rules). |
-| `withinKeys` | list of YAML keys | no | YAML only (`languages: [yaml]`): match inside the values of these mapping keys. |
+| `redactEvidence` | boolean | no | The match is a credential: mask it in every output. With a capture group named `secret` only that group is masked. Required for every rule that matches a credential literal. With `withinKeys` the matched text is looked up on the lines of the value; when it is not written there as matched (escapes, folding), the whole line is masked. |
+| `codeOnly` | boolean | no | Python and the C-family languages (C#, Java, JavaScript/TypeScript, Go, C/C++, Rust): ignore a match that starts inside a string literal or a JavaScript regex literal (for API-call rules). No effect in other languages. |
+| `withinKeys` | list of YAML keys | no | YAML or JSON only (`languages: [yaml]` or `[json]`, not mixed): match inside the values of these mapping keys. |
 | `message` | string | yes | What was found and why it matters. |
 | `message_zh` | string | no | Chinese message. |
 | `remediation` | string | yes | How to fix it. |

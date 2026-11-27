@@ -674,8 +674,8 @@ rules:
     cwe: CWE-732
     owasp: A01:2021
     languages: [python]
-    pattern: '\bos\.chmod\s*\([^)\n]{0,300},\s*0o?[0-7]{2,3}[2367]\s*\)|\bos\.chmod\s*\([^)\n]{0,300}\bstat\.S_I(?:WOTH|RWXO)\b'
-    notPattern: '~'
+    pattern: '\bos\.chmod\s*\((?:[^()\n]|\([^()\n]{0,200}\)){0,300}?,\s*0o?[0-7]{2,3}[2367]\s*\)|\bos\.chmod\s*\((?:[^()\n]|\([^()\n]{0,200}\)){0,300}?\bstat\.S_I(?:WOTH|RWXO)\b'
+    notPattern: '~\s*(?:\(\s*)?(?:stat\.|0o?[0-7])'
     message: The mode grants write access to every local user.
     message_zh: 该权限模式允许所有本地用户写入。
     remediation: Use the least privilege mode, typically 0o600 or 0o640.
@@ -755,7 +755,8 @@ rules:
     patterns:
       - '\.search(?:_ext)?(?:_s|_st)?\s*\('
       - '["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}["\x27]\s*(?:\+|%\s*[\w(]|\.format\()|f["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}\{'
-    notPattern: 'escape_filter_chars|escape_rdn'
+    # A filter whose placeholders are all %d / %i takes numbers only.
+    notPattern: 'escape_filter_chars|escape_rdn|["\x27](?:[^"\x27%\n]|%[di]){0,200}["\x27]\s*%'
     message: An LDAP filter such as "(cn=" + value + ")" is built with concatenation, % , .format() or an f-string, so filter metacharacters in the value change the query.
     message_zh: LDAP 过滤器（如 "(cn=" + value + ")"）由拼接、%、.format() 或 f-string 构造，值中的过滤器元字符会改变查询。
     remediation: Escape values with ldap.filter.escape_filter_chars (or ldap3.utils.conv.escape_filter_chars).

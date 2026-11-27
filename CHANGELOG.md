@@ -22,6 +22,8 @@ Before 1.0, minor versions may contain breaking changes.
   literal no longer suppresses anything. The lexer fails open with a
   "<language> lexer fallback" warning. C# goes through the same lexer with
   unchanged results.
+  The Rust API-call rules set `codeOnly`; `js-cookie-insecure` now sees a
+  `cookie: { ... secure: false }` object spread over lines.
 - **Rust test modules:** findings inside `#[cfg(test)] mod name { ... }` are
   lowered like findings in a test path (`pathContext: test`).
 - **Dockerfiles:** an instruction continued with `\` is one unit (so

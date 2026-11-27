@@ -244,14 +244,14 @@ describe("C-family lexer: C and C++", () => {
   it("continues a // comment and a string after a backslash at the end of the line", () => {
     const { units, diagnostics, extras } = lex("c", [
       "// comment continues \\",
-      "   strcpy(dst, src);",
+      "   strcpy(dst, src); code-audit:ignore *",
       'const char *s = "abc\\',
       'def";',
     ]);
     expect(diagnostics.fallbacks).toEqual([]);
     const code = units.filter((unit) => unit.text.trim());
     expect(code.map((unit) => [unit.start, unit.text])).toEqual([[2, 'const char *s = "abc\\\ndef";']]);
-    expect(extras.comments?.[1]).toBe("   strcpy(dst, src);");
+    expect(extras.comments?.[1]).toBe("   strcpy(dst, src); code-audit:ignore *");
   });
 
   it("ends a directive whose last line is a // comment continued by a backslash", () => {
@@ -411,6 +411,23 @@ describe("C-family lexer: Rust", () => {
     const broken = lex("rust", ["let x = f(", "pub fn g() {", "}"]);
     expect(broken.diagnostics.fallbacks.map((region) => region.reason)).toEqual([
       'a declaration starts while a "(" or "[" is still open',
+    ]);
+  });
+});
+
+describe("C-family lexer: lines for inline suppression", () => {
+  it("keeps comments and code, blanks string text, and is empty without a marker", () => {
+    const { extras } = lex("javascript", [
+      "run(); // code-audit:ignore js-eval",
+      'const s = "code-audit:ignore *"; // other',
+      "/* code-audit:ignore * */",
+      "plain();",
+    ]);
+    expect(extras.comments).toEqual([
+      "run(); // code-audit:ignore js-eval",
+      `const s = "${" ".repeat(19)}"; // other`,
+      "/* code-audit:ignore * */",
+      "",
     ]);
   });
 });

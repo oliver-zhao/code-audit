@@ -7,6 +7,9 @@ version: 1
 #   ( or [ is open and across a line break before `.` (a rustfmt method chain
 #   `Command::new("sh")` / `.arg("-c")` / `.arg(cmd)` is one unit). The
 #   {{COMMENT}} notPatterns remain for the lexer's fail-open paths.
+# - API-call rules set `codeOnly: true`: a match that starts inside a string
+#   literal (a doc string, a message, code generated as text) is not a call.
+#   Rules about literals (SQL text, secrets, nonces, HTML) do not.
 # - A chain whose links are separate statements is not joined. Rules that
 #   need two such links use filePattern for the other link.
 # - Rust's `regex` crate is linear-time: there is no ReDoS rule on purpose.
@@ -58,6 +61,7 @@ rules:
     cwe: CWE-89
     owasp: A03:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # SQL-specific entry points (sqlx, diesel, sea-orm, sea-query) accept any
     # runtime string; generic method names (.query / .execute / .prepare of
@@ -111,6 +115,7 @@ rules:
     cwe: CWE-78
     owasp: A03:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # .arg("-c").arg(x) / .args(["-c", x]) / .args(&["/C", &x]) with x not a
     # string literal, in a file that starts a shell.
@@ -138,6 +143,7 @@ rules:
     cwe: CWE-78
     owasp: A03:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bCommand::new\(\s*{{SHELL}}\s*\)'
     notPattern: '{{COMMENT}}'
@@ -155,6 +161,7 @@ rules:
     cwe: CWE-78
     owasp: A03:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bCommand::new\(\s*(?![\s"]|r#*")(?:&\s*)?[A-Za-z_]'
     notPattern: '{{COMMENT}}|\benv!\s*\(|\bcurrent_exe\b|CARGO_BIN_EXE|\bstd::env::var\("(?:CARGO|RUSTC|RUSTDOC|SHELL|EDITOR|PAGER)\w{0,10}"\)'
@@ -174,6 +181,7 @@ rules:
     cwe: CWE-22
     owasp: A01:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '(?:\bFile::(?:open|create)|\b(?:tokio::)?fs::(?:read|read_to_string|read_dir|write|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|copy|rename|metadata|canonicalize)|\bNamedFile::open(?:_async)?|\bServeFile::new|\bPathBuf::from|\bPath::new|(?:\b\w{0,30}(?:path|dir|file|base|root|dest|folder|upload|static)\w{0,20}|\bPath(?:Buf)?::(?:new|from)\s*\([^()\n]{0,200}\))\.(?:join|push))\s*\([^;\n]{0,300}{{REQVAL}}|\blet\s+(?:mut\s+)?\w{1,40}\s*:\s*PathBuf\s*=\s*[^;\n]{0,200}{{REQVAL}}'
     notPattern: '{{COMMENT}}|\.enclosed_name\(\)|\bsanitize\w{0,20}\s*\('
@@ -190,6 +198,7 @@ rules:
     cwe: CWE-22
     owasp: A01:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '(?:\.join|\bFile::create|\bPath::new|\bPathBuf::from|\bfs::(?:create_dir_all|write))\s*\(\s*(?:&\s*)?[a-z_]\w{0,30}\.name\(\)'
     notPattern: '{{COMMENT}}'
@@ -210,6 +219,7 @@ rules:
     cwe: CWE-22
     owasp: A01:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.join\s*\(\s*(?:&\s*)?[a-z_]\w{0,30}\.(?:path|header\(\)\s*\.\s*path)\s*\(\)|\b(?:entry|file|ent|item|tar_entry)\.unpack\s*\('
     notPattern: '{{COMMENT}}'
@@ -228,6 +238,7 @@ rules:
     cwe: CWE-295
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)|\.set_verify_hostname\s*\(\s*false\s*\)'
     notPattern: '{{COMMENT}}'
@@ -247,6 +258,7 @@ rules:
     cwe: CWE-295
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.dangerous\(\)\s*\.\s*(?:set_certificate_verifier|with_custom_certificate_verifier)\s*\(|\bOk\(\s*(?:rustls::)?(?:client::danger::)?ServerCertVerified::assertion\(\)\s*\)'
     notPattern: '{{COMMENT}}'
@@ -262,6 +274,7 @@ rules:
     cwe: CWE-295
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bset_verify\s*\(\s*(?:openssl::ssl::)?SslVerifyMode::NONE\b|\bset_verify_callback\s*\([^;\n]{0,120}\|\s*_\w{0,20}\s*,\s*_\w{0,20}\s*\|\s*true\b'
     notPattern: '{{COMMENT}}'
@@ -283,6 +296,7 @@ rules:
     cwe: CWE-328
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bmd5::compute\s*\(|\bMd5::(?:new|digest|new_with_prefix)\s*\(|\bSha1::(?:new|digest|from|new_with_prefix)\s*\(|\bMessageDigest::(?:md5|sha1)\s*\(\)|\bdigest::SHA1_FOR_LEGACY_USE_ONLY\b'
     notPattern: '{{COMMENT}}|websocket|accept_key|\betag\b'
@@ -299,6 +313,7 @@ rules:
     cwe: CWE-916
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     patterns:
       - '\bmd5::compute\s*\(|\bMd5::(?:new|digest|new_with_prefix)\s*\(|\bSha1::(?:new|digest|from|new_with_prefix)\s*\(|\bMessageDigest::(?:md5|sha1)\s*\(\)'
@@ -320,6 +335,7 @@ rules:
     cwe: CWE-327
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\b(?:Des|TdesEde[23]|TdesEee[23]|Rc4|Blowfish|BlowfishLE)(?:::<[^()\n]{0,80}>)?::new(?:_from_slices?)?\s*\(|\bCipher::(?:des_\w{1,20}|rc4|rc4_40|bf_\w{1,10}|aes_\d{3}_ecb)\s*\(\)|\becb::(?:Encryptor|Decryptor)(?:::<[^()\n]{0,120}>)?::new(?:_from_slices?)?\s*\(|\bEcb(?:::<[^()\n]{0,120}>)?::new(?:_from_slices?|_var)?\s*\('
     notPattern: '{{COMMENT}}'
@@ -354,6 +370,7 @@ rules:
     cwe: CWE-338
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # thread_rng(), rand::rng() and OsRng are cryptographically secure and are
     # not matched. A ChaCha/StdRng seeded from a derived value (from_seed of a
@@ -404,6 +421,7 @@ rules:
     cwe: CWE-347
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.insecure_disable_signature_validation\s*\(\s*\)'
     notPattern: '{{COMMENT}}'
@@ -423,6 +441,7 @@ rules:
     cwe: CWE-613
     owasp: A07:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.validate_exp\s*=\s*false\b|\bvalidate_exp\s*:\s*false\b|\.required_spec_claims\s*\.\s*clear\s*\(\s*\)'
     notPattern: '{{COMMENT}}'
@@ -439,6 +458,7 @@ rules:
     cwe: CWE-347
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bdangerous_insecure_decode(?:_with_validation)?(?:::<[^()\n]{0,80}>)?\s*\(|\b(?:dangerous_unsafe_decode|dangerous::insecure_decode|insecure_decode)(?:::<[^()\n]{0,80}>)?\s*\(|\bdecode_header\s*\('
     notPattern: '{{COMMENT}}'
@@ -473,6 +493,7 @@ rules:
     cwe: CWE-916
     owasp: A02:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # bcrypt::hash(..) or a bare hash(..) in a file that imports from bcrypt;
     # method calls (.hash) and other paths (argon2::hash) are not matched.
@@ -493,6 +514,7 @@ rules:
     kind: hotspot
     cwe: CWE-843
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '(?<![.\w])(?:(?:std|core)::)?(?:mem::)?transmute(?:_copy)?(?:::<[^()\n]{0,120}>)?\s*\('
     notPattern: '{{COMMENT}}'
@@ -508,6 +530,7 @@ rules:
     kind: hotspot
     cwe: CWE-119
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bfrom_raw_parts(?:_mut|_in)?\s*\('
     notPattern: '{{COMMENT}}'
@@ -522,6 +545,7 @@ rules:
     confidence: high
     cwe: CWE-908
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bmem::uninitialized(?:::<[^()\n]{0,120}>)?\s*\('
     notPattern: '{{COMMENT}}'
@@ -537,6 +561,7 @@ rules:
     kind: hotspot
     cwe: CWE-125
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.get_unchecked(?:_mut)?\s*\('
     notPattern: '{{COMMENT}}'
@@ -552,6 +577,7 @@ rules:
     kind: hotspot
     cwe: CWE-362
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     flags: ''
     pattern: '\bstatic\s+mut\s+[A-Za-z_]'
@@ -568,6 +594,7 @@ rules:
     kind: hotspot
     cwe: CWE-908
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.set_len\s*\('
     # File::set_len truncates a file and is safe.
@@ -584,6 +611,7 @@ rules:
     kind: hotspot
     cwe: CWE-120
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bcopy_nonoverlapping(?:::<[^()\n]{0,80}>)?\s*\(|\.copy_to_nonoverlapping\s*\('
     notPattern: '{{COMMENT}}'
@@ -601,6 +629,7 @@ rules:
     cwe: CWE-942
     owasp: A05:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # actix-cors Cors::permissive() and tower-http CorsLayer::very_permissive()
     # both reflect any origin and allow credentials.
@@ -622,6 +651,7 @@ rules:
     cwe: CWE-942
     owasp: A05:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     # send_wildcard() with credentials is rejected by actix-cors and is not matched.
     pattern: '\.allow_any_origin\s*\(\)|\bAllowOrigin::mirror_request\s*\(\)|\.allowed_origin_fn\s*\(\s*\|[^|\n]{0,80}\|\s*true\b|\bAllowOrigin::predicate\s*\(\s*\|[^|\n]{0,80}\|\s*true\b'
@@ -643,6 +673,7 @@ rules:
     cwe: CWE-614
     owasp: A05:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\.(?:set_|with_|cookie_)?(?:secure|http_only)\s*\(\s*false\s*\)'
     notPattern: '{{COMMENT}}'
@@ -660,6 +691,7 @@ rules:
     cwe: CWE-1275
     owasp: A01:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bSameSite::None\b'
     notPattern: '{{COMMENT}}|[=!]=\s*(?:Some\(\s*)?(?:\w+::)?SameSite::None'
@@ -676,6 +708,7 @@ rules:
     cwe: CWE-601
     owasp: A01:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bRedirect::(?:to|temporary|permanent|see_other|found|moved)\s*\(\s*(?![\s"])[^;\n]{0,200}\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback|location|dest\w{0,20})\b(?!\s*[(!])|(?:\bheader::LOCATION|"Location")\s*,\s*(?![\s"])[^;\n]{0,200}\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback)\b(?!\s*[(!])'
     notPattern: '{{COMMENT}}'
@@ -710,6 +743,7 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bbincode::(?:deserialize|deserialize_from|decode_from_slice|decode_from_std_read|serde::decode_from_slice|serde::decode_from_std_read)(?:::<[^()\n]{0,80}>)?\s*\(|\bserde_pickle::(?:from_slice|from_reader|from_value)(?:::<[^()\n]{0,80}>)?\s*\(|\brmp_serde::(?:from_slice|from_read|decode::from_read|decode::from_slice)(?:::<[^()\n]{0,80}>)?\s*\('
     notPattern: '{{COMMENT}}|\.with_limit\b|\bwith_limit\s*::'
@@ -725,6 +759,7 @@ rules:
     kind: hotspot
     cwe: CWE-400
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\b(?:stream|socket|sock|conn|connection|tcp\w{0,10}|client|tls_stream|reader|body)\.read_to_(?:end|string)\s*\('
     notPattern: '{{COMMENT}}|\.take\s*\('
@@ -741,6 +776,7 @@ rules:
     kind: hotspot
     cwe: CWE-789
     languages: [rust]
+    codeOnly: true
     pathExclude: '{{TESTPATH}}'
     pattern: '\bVec::with_capacity\s*\(\s*(?:[^;\n()]{0,80}\b(?:read_u(?:16|32|64)|read_i(?:32|64)|from_(?:be|le|ne)_bytes|get_u(?:16|32|64)(?:_le)?)\b|(?:len|length|size|count|n|\w{1,30}_(?:len|length|size|count))\s+as\s+usize\s*\))|\bvec!\s*\[\s*0(?:u8)?\s*;\s*(?:len|length|size|n|\w{1,30}_(?:len|length|size))\s+as\s+usize\s*\]'
     notPattern: '{{COMMENT}}|\.min\s*\(|\bmin\s*\('

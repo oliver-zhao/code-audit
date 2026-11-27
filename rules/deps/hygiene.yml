@@ -2,10 +2,10 @@ version: 1
 # Dependency hygiene. Written for code-audit (Apache-2.0).
 #
 # Scope: Markdown, JSON (package.json) and YAML files such as .yarnrc.yml and
-# non-GitHub CI files. Dockerfiles and GitHub workflows belong to rules/iac;
-# the first three rules keep their original Dockerfile coverage.
-# Not covered: shell scripts, requirements*.txt, pip.conf, uv.toml, .npmrc and
-# TOML files have no language in the inventory and are not matched.
+# non-GitHub CI files, shell scripts (language shell), requirements*.txt
+# (language requirements), pip.conf / .npmrc / *.ini / *.cfg (language ini)
+# and uv.toml (language toml). Dockerfiles and GitHub workflows belong to
+# rules/iac; the first three rules keep their original Dockerfile coverage.
 definitions:
   LOCALHOST: '(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|0\.0\.0\.0|host\.docker\.internal)(?:[:/"\x27\s]|$)'
   # GitHub workflows/actions and Compose files are matched by rules/iac.
@@ -13,7 +13,9 @@ definitions:
   README: '(?:^|/)(?:README|Readme|readme|INSTALL|Install|install|INSTALLATION|Installation|installation|SETUP|Setup|setup|GETTING[-_]STARTED|Getting[-_]Started|getting[-_]started|BUILDING|Building|building|DEVELOPMENT|Development|development|CONTRIBUTING|Contributing|contributing|HACKING)[^/]*\.mdx?$'
   PLACEHOLDER: '(?:your|xxx|<|\.\.\.|example|placeholder|changeme|replace|dummy|redacted|insert|todo|fake|\*\*\*)'
   # Well-known vendor installers that are documented as curl | sh.
-  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|mise\.run)'
+  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|chatgpt\.com/codex/install\.sh|zed\.dev/install\.sh|mise\.run)'
+  # Downloaded code executed (shell or interpreter); a URL or variable must be named.
+  REMOTE_EXEC_DOC: '\b(?:curl|wget)\b[^|\n]{0,300}?(?:https?://|\$\{?\w)[^|\n]{0,300}(?<!\\)\|\s*(?:sudo\s+(?:-\S+\s+)?)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\b(?!\s+-[ceE]\b)|\b(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+(?:-\S+\s+)?<\(\s*(?:curl|wget)\b|\b(?:ba|z|da)?sh\s+-c\s+\\?[\"\x27]?\$\(\s*(?:curl|wget)\b|\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)[=\s]{0,3}[\"\x27]?[^\s\"\x27;&|]{1,200}[^\n]{0,40}?(?:&&|;)\s*(?:chmod\s+\+x\s+\S{1,200}\s*(?:&&|;)\s*)?(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+[\"\x27]?[\w./~$]|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*(?:iex|Invoke-Expression)\b'
 rules:
   - id: dep-http-install
     title: Dependency installed over plain HTTP or unpinned git URL
@@ -26,10 +28,12 @@ rules:
       - javascript
       - python
       - dockerfile
+      - shell
+      - requirements
     # A user:password@ part of the URL is masked in the evidence.
-    pattern: (?:pip\s+install\s[^\n]{0,600}--index-url\s+http://|npm\s+install\s[^\n]{0,600}http://|git\+https?://(?!\S*#[0-9a-f]{7,}))(?:(?<secret>[^\s/@]{1,200})@)?\S*
+    pattern: (?:pip\s+install\s[^\n]{0,600}--index-url\s+http://|npm\s+install\s[^\n]{0,600}http://|git\+https?://(?!\S*(?:#|@)[0-9a-f]{7,40}(?![\w.-])))(?:(?<secret>[^\s/@]{1,200})@)?\S*
     redactEvidence: true
-    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt|json))$
+    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|bash|zsh|ksh|md|txt|in|json))$
     message: Installing from a plain HTTP URL or an unpinned git URL allows a man-in-the-middle or moving target to swap the code.
     message_zh: 通过明文 HTTP 或未固定提交的 git URL 安装依赖，中间人或可变目标可替换代码。
     remediation: Use HTTPS and pin dependencies to a commit SHA or an exact version with a checksum.
@@ -38,7 +42,7 @@ rules:
       - CWE-494
       - OWASP A08:2021
   - id: dep-postinstall-download
-    title: Install script downloads and executes code
+    title: Install or prepare script downloads and executes code
     title_zh: 安装脚本下载并执行代码
     severity: high
     confidence: high
@@ -46,11 +50,11 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: "['\"]?(?:preinstall|install|postinstall)['\"]?\\s*:\\s*\"[^\"]{0,600}(?:curl|wget)[^\"]{0,600}\\|\\s*(?:sudo\\s+)?(?:ba|z)?sh"
+    pattern: '[\"\x27]?(?:pre|post)?(?:install|prepare)[\"\x27]?\s*:\s*\"[^\"\n]{0,600}?\b(?:curl|wget)\b[^\"\n]{0,600}?(?:\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|node|perl|ruby)\b|(?:&&|;)\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|node|perl|ruby)\s+[\w./~$])|[\"\x27]?(?:pre|post)?(?:install|prepare)[\"\x27]?\s*:\s*\"[^\"\n]{0,600}?\b(?:ba|z)?sh\s+(?:-c\s+\\?[\"\x27]?\$\(|<\()\s*(?:curl|wget)\b'
     pathInclude: (?:^|/)package\.json$
     group: dep-remote-exec
-    message: A preinstall/install/postinstall script downloads and runs code during install, a supply-chain risk that executes without review.
-    message_zh: preinstall/install/postinstall 脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
+    message: An install or prepare lifecycle script downloads and runs code during install, a supply-chain risk that executes without review.
+    message_zh: install 或 prepare 生命周期脚本在安装期间下载并执行代码，属于未经审查的供应链风险。
     remediation: Remove the download from the install script or vendor the binary with a pinned checksum.
     remediation_zh: 移除安装脚本中的下载，或将二进制纳入仓库并固定校验和。
     references:
@@ -69,9 +73,13 @@ rules:
       - markdown
       - yaml
       - json
-    pattern: 'pip\s+install\s[^\n]{0,600}(?:--trusted-host|--index-url\s+http://(?:(?<secret>[^\s/@]{1,200})@)?)|--trusted-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bPIP_TRUSTED_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|^\s*trusted-host\s*=\s*(?!{{LOCALHOST}})[\w.-]|--allow-insecure-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bUV_INSECURE_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]'
+      - shell
+      - requirements
+      - ini
+      - toml
+    pattern: 'pip\s+install\s[^\n]{0,600}(?:--trusted-host|--index-url\s+http://(?:(?<secret>[^\s/@]{1,200})@)?)|--trusted-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bPIP_TRUSTED_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|^\s*trusted-host\s*=\s*(?!{{LOCALHOST}})[\w.-]|--allow-insecure-host[= ]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|\bUV_INSECURE_HOST\b["\x27]?\s*[=:]\s*["\x27]?(?!{{LOCALHOST}})[\w.-]|^\s*allow-insecure-host\s*=\s*(?:\[\s*)?["\x27](?!{{LOCALHOST}})[\w.-]'
     redactEvidence: true
-    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|.*\.(?:sh|md|txt|ya?ml|json))$
+    pathInclude: (?:^|/)(?:Dockerfile(?:\.[^/]*)?|pip\.conf|\.pip\.conf|uv\.toml|.*\.(?:sh|bash|zsh|ksh|md|txt|in|ini|cfg|ya?ml|json))$
     pathExclude: '{{NOT_IAC}}'
     group: dep-pip-insecure
     message: --trusted-host (pip) or --allow-insecure-host (uv) turns off TLS verification for that host, allowing package substitution.
@@ -89,8 +97,8 @@ rules:
     confidence: high
     cwe: CWE-319
     owasp: A08:2021
-    languages: [markdown, yaml, json]
-    pattern: '\bpip\d?(?:\.\d+)?\s+(?:install|download)\b[^\n]{0,300}?\s(?:-i|-f|--index-url|--extra-index-url|--find-links)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\buv\s+(?:pip\s+install|add|sync|lock)\b[^\n]{0,300}?\s(?:--index-url|--extra-index-url|--default-index|--index|-i)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\b(?:PIP_(?:EXTRA_)?INDEX_URL|PIP_FIND_LINKS|UV_(?:EXTRA_)?INDEX_URL|UV_DEFAULT_INDEX|UV_INDEX)\b["\x27]?\s*[=:]\s*["\x27]?http://(?!{{LOCALHOST}})'
+    languages: [markdown, yaml, json, shell, requirements, ini]
+    pattern: '^\s*(?:-i|-f|--index-url|--extra-index-url|--find-links)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*(?:index-url|extra-index-url|find-links)\s*=\s*http://(?!{{LOCALHOST}})|\bpip\d?(?:\.\d+)?\s+(?:install|download)\b[^\n]{0,300}?\s(?:-i|-f|--index-url|--extra-index-url|--find-links)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\buv\s+(?:pip\s+install|add|sync|lock)\b[^\n]{0,300}?\s(?:--index-url|--extra-index-url|--default-index|--index|-i)[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\b(?:PIP_(?:EXTRA_)?INDEX_URL|PIP_FIND_LINKS|UV_(?:EXTRA_)?INDEX_URL|UV_DEFAULT_INDEX|UV_INDEX)\b["\x27]?\s*[=:]\s*["\x27]?http://(?!{{LOCALHOST}})'
     pathExclude: '{{NOT_IAC}}'
     group: dep-pip-insecure
     message: Packages are downloaded from an index over plain HTTP, so anyone on the network path can replace them.
@@ -105,7 +113,7 @@ rules:
     kind: hotspot
     cwe: CWE-427
     owasp: A08:2021
-    languages: [markdown, yaml, json]
+    languages: [markdown, yaml, json, shell, requirements, ini]
     pattern: '--extra-index-url[= ]\s*["\x27]?(?:https?://|\$)|\b(?:PIP|UV)_EXTRA_INDEX_URL["\x27]?\s*[=:]\s*["\x27]?(?:https?://|\$)|^\s*extra-index-url\s*=\s*(?:https?://|\$)'
     pathExclude: '{{NOT_IAC}}'
     message: pip merges --extra-index-url with PyPI and installs the highest version from either, so a public package with the name of a private one can win (dependency confusion); check which index each package must come from.
@@ -121,7 +129,7 @@ rules:
     cwe: CWE-494
     owasp: A08:2021
     languages: [markdown, json]
-    pattern: '\b(?:curl|wget)\b[^|\n"]{0,300}?(?:https?://|\$\{?\w)[^|\n"]{0,300}\|\s*(?:sudo\s+)?(?:-E\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n"]{0,300}\|\s*iex\b'
+    pattern: '{{REMOTE_EXEC_DOC}}'
     notPattern: '{{KNOWN_INSTALLER}}'
     pathInclude: '{{README}}|(?:^|/)(?:package|composer)\.json$'
     group: dep-remote-exec
@@ -138,7 +146,7 @@ rules:
     cwe: CWE-829
     owasp: A08:2021
     languages: [json]
-    pattern: '"(?:preinstall|install|postinstall)"\s*:\s*"[^"]{0,400}(?:\b(?:curl|wget)\b|https?://)'
+    pattern: '\"(?:pre|post)?(?:install|prepare)\"\s*:\s*\"[^\"]{0,400}(?:\b(?:curl|wget)\b|https?://)'
     pathInclude: '(?:^|/)package\.json$'
     group: dep-remote-exec
     message: An npm lifecycle script that runs on every install downloads something; check what it fetches and whether it is verified.
@@ -152,9 +160,9 @@ rules:
     confidence: high
     cwe: CWE-319
     owasp: A08:2021
-    languages: [json, yaml, markdown]
-    pattern: '^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|bin|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+http://(?!{{LOCALHOST}})|http://(?!{{LOCALHOST}})[^"\s]{1,300}\.(?:tgz|tar\.gz|git)(?:#[^"]{0,100})?")|"registry"\s*:\s*"http://(?!{{LOCALHOST}})|^\s*npmRegistryServer\s*:\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*enableStrictSsl\s*:\s*false\b|"strict-ssl"\s*:\s*false|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry\s+["\x27]?http://(?!{{LOCALHOST}})|strict-ssl\s+false\b)|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\b[^\n]{0,200}?\s(?:--registry[= ]\s*)?["\x27]?http://(?!{{LOCALHOST}})'
-    pathInclude: '(?:^|/)package\.json$|(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$'
+    languages: [json, yaml, markdown, ini, shell]
+    pattern: '^\s*(?:@[\w.-]+:)?registry\s*=\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*strict-ssl\s*=\s*false\b|^\s*"(?!(?:url|homepage|repository|bugs|funding|author|web|email|license|description|main|module|types|bin|website)")(?:@[\w.-]+/)?[\w.-]+"\s*:\s*"(?:git\+http://(?!{{LOCALHOST}})|http://(?!{{LOCALHOST}})[^"\s]{1,300}\.(?:tgz|tar\.gz|git)(?:#[^"]{0,100})?")|"registry"\s*:\s*"http://(?!{{LOCALHOST}})|^\s*npmRegistryServer\s*:\s*["\x27]?http://(?!{{LOCALHOST}})|^\s*enableStrictSsl\s*:\s*false\b|"strict-ssl"\s*:\s*false|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry\s+["\x27]?http://(?!{{LOCALHOST}})|strict-ssl\s+false\b)|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\b[^#\n]{0,200}?\s--registry[= ]\s*["\x27]?http://(?!{{LOCALHOST}})|\b(?:npm|yarn|pnpm)\s+(?:install|i|add)\s+(?:-\S+\s+){0,3}["\x27]?(?:git\+)?http://(?!{{LOCALHOST}})'
+    pathInclude: '(?:^|/)package\.json$|(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$|(?:^|/)\.npmrc$|\.(?:sh|bash|zsh|ksh)$'
     pathExclude: '{{NOT_IAC}}'
     message: Packages are fetched over plain HTTP or with certificate checks off, so anyone on the network path can replace them.
     message_zh: 软件包通过明文 HTTP 获取或关闭了证书校验，网络路径上的任何人都可替换它们。
@@ -183,11 +191,11 @@ rules:
     confidence: medium
     cwe: CWE-798
     owasp: A07:2021
-    languages: [yaml, markdown]
+    languages: [yaml, markdown, ini]
     pattern: '(?:^\s*npmAuth(?:Token|Ident)\s*:\s*["\x27]?|:_(?:authToken|auth|password)\s*=\s*["\x27]?)(?<secret>(?![\w-]*\$)(?=[A-Za-z_\-.=+/]{0,200}\d)[A-Za-z0-9_\-.=+/]{16,})'
     notPattern: '{{PLACEHOLDER}}'
     redactEvidence: true
-    pathInclude: '(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$'
+    pathInclude: '(?:^|/)\.yarnrc\.ya?ml$|\.mdx?$|(?:^|/)\.npmrc$'
     pathExclude: '{{NOT_IAC}}'
     message: A registry token in a committed file lets anyone who reads the repository publish or read packages as its owner.
     message_zh: 提交文件中的注册表令牌使任何能读取仓库的人都能以其所有者身份发布或读取包。
@@ -200,11 +208,11 @@ rules:
     confidence: medium
     cwe: CWE-494
     owasp: A08:2021
-    languages: [markdown, yaml, json]
+    languages: [markdown, yaml, json, shell]
     # The variable must start the line (a YAML/JSON key, a shell line in a
     # code block) or follow export / set / env / go env -w, so prose and
     # lists that name the setting as something to avoid are not matched.
-    pattern: '(?:^\s*["\x27]?|\b(?:export|set|setenv|env|go\s+env\s+-w)\s+)(?:GOSUMDB["\x27]?\s*[=:]\s*["\x27]?off\b|GOINSECURE["\x27]?\s*[=:]\s*["\x27]?[\w*.]|GONOSUMCHECK["\x27]?\s*[=:]\s*["\x27]?1\b|GONOSUMDB["\x27]?\s*[=:]\s*["\x27]?(?:\*|[^"\x27\s]{0,200}\b(?:github\.com|golang\.org|gopkg\.in|gitlab\.com)\b)|GOFLAGS["\x27]?\s*[=:]\s*["\x27]?[^"\x27\n]{0,100}-insecure\b)|\bgo\s+(?:get|install|mod\s+download)\b[^\n]{0,100}\s-insecure\b'
+    pattern: '(?:^\s*["\x27]?|\b(?:export|set|setenv|env|go\s+env\s+-w)\s+)(?:GOSUMDB["\x27]?\s*[=:]\s*["\x27]?off\b|GOINSECURE["\x27]?\s*[=:]\s*["\x27]?[\w*.]|GONOSUMCHECK["\x27]?\s*[=:]\s*["\x27]?1\b|GONOSUMDB["\x27]?\s*[=:]\s*["\x27]?(?:[^,\s"\x27]{1,200},){0,20}(?:\*|(?:github\.com|gitlab\.com|bitbucket\.org|golang\.org|gopkg\.in|go\.googlesource\.com)(?:/\*)?)(?=[,\s"\x27]|$)|GOFLAGS["\x27]?\s*[=:]\s*["\x27]?[^"\x27\n]{0,100}-insecure\b)|\bgo\s+(?:get|install|mod\s+download)\b[^\n]{0,100}\s-insecure\b'
     pathExclude: '{{NOT_IAC}}'
     message: Go downloads modules without checking them against the checksum database (or over insecure transport), so a tampered public module is accepted.
     message_zh: Go 下载模块时不对照校验和数据库检查（或使用不安全传输），被篡改的公共模块会被接受。

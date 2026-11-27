@@ -8,6 +8,7 @@ function createWindow(link) {
       nodeIntegration: true,
       contextIsolation: false,
       webSecurity: false,
+      nodeIntegrationInSubFrames: true,
     },
   });
   win.webContents.on("will-navigate", () => shell.openExternal(link));

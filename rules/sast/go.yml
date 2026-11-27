@@ -607,7 +607,7 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     filePattern: '"(?:text|html)/template"'
-    pattern: '(?:\btemplate\.(?:New\([^()\n]{0,100}\)(?:\.(?:Funcs|Option|Delims)\([^;\n]{0,200}?\)){0,3}\.)?|\b(?:t|tp|tmpl|tpl|templ|\w{0,20}template)\.)Parse\([^;\n]{0,200}?{{REQ}}'
+    pattern: '(?:\btemplate\.(?:New\([^()\n]{0,100}\)(?:\.(?:Funcs|Option|Delims)\([^();\n]{0,200}\)){0,3}\.)?|\b(?:t|tp|tmpl|tpl|templ|\w{0,20}template)\.)Parse\([^;\n]{0,200}?{{REQ}}'
     message: A template is compiled from request data; the client can call any method or function reachable from the template data (server-side template injection).
     message_zh: 模板由请求数据编译而成；客户端可以调用模板数据可达的任何方法或函数（服务端模板注入）。
     remediation: Parse only templates from the code base; pass user input as template data.

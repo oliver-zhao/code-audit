@@ -14,6 +14,8 @@ definitions:
   HOOKS: '(?:^|/)\.claude/settings(?:\.local)?\.json$|(?:^|/)hooks?\.json$|(?:^|/)\.github/hooks/[^/]+\.json$'
   LOCALHOST: '(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|0\.0\.0\.0|host\.docker\.internal)(?:[:/"\x27\s]|$)'
   PLACEHOLDER: '(?:your|xxx|<|\.\.\.|example|placeholder|changeme|change[-_]me|replace|dummy|redacted|insert|todo|fake|\*\*\*)'
+  # Code that is downloaded and executed (shell or interpreter).
+  REMOTE_EXEC: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+)?)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\b(?!\s+-[ceE]\b)|\b(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+(?:-\S+\s+)?<\(\s*(?:curl|wget)\b|\b(?:ba|z|da)?sh\s+-c\s+\\?[\"\x27]?\$\(\s*(?:curl|wget)\b|"-c"\s*,\s*"\$\(\s*(?:curl|wget)\b|\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)[=\s]{0,3}[\"\x27]?[^\s\"\x27;&|]{1,200}[^\n]{0,40}?(?:&&|;)\s*(?:chmod\s+\+x\s+\S{1,200}\s*(?:&&|;)\s*)?(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+[\"\x27]?[\w./~$]|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*(?:iex|Invoke-Expression)\b'
 rules:
   - id: agent-mcp-remote-script
     title: MCP server config runs a remote script
@@ -23,7 +25,7 @@ rules:
     cwe: CWE-829
     owasp: A08:2021
     languages: [json, yaml]
-    pattern: '(?:curl|wget)[^|\n]{0,600}\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*iex\b'
+    pattern: '{{REMOTE_EXEC}}'
     # .mcp.json and opencode.json: agent-curl-sh.
     pathInclude: '{{MCP}}'
     pathExclude: '(?:^|/)(?:\.mcp\.json|opencode\.jsonc?)$'
@@ -45,7 +47,7 @@ rules:
     languages: [json, yaml]
     # Matches an inline command ("npx -y pkg", "uvx pkg") and an args array that
     # starts with -y on the same line. Multi-line args arrays are not seen.
-    pattern: '\b(?:npx|bunx|pnpm\s+dlx|yarn\s+dlx)\s+(?:-(?:y|-yes)\s+)(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@latest)?(?=["\x27\s,\]]|$)|\buvx\s+(?!-)[\w.-]+(?:@latest)?(?=["\x27\s,\]]|$)|["\x27]?args["\x27]?\s*:\s*\[\s*(?:["\x27](?:-y|--yes)["\x27]\s*,\s*)(?:["\x27]-{1,2}[\w-]+["\x27]\s*,\s*){0,2}["\x27](?:@[\w.-]+/)?[\w.-]+(?:@latest)?["\x27]\s*[,\]]|"command"\s*:\s*"(?:uvx|npx|bunx)"\s*,\s*"args"\s*:\s*\[\s*(?:"-{1,2}[\w-]+"\s*,\s*){0,3}"(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@latest)?"\s*[,\]]'
+    pattern: '\b(?:npx|bunx|pnpm\s+dlx|yarn\s+dlx)\s+(?:-(?:y|-yes)\s+)(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@latest)?(?=["\x27\s,\]]|$)|\buvx\s+(?!-)[\w.-]+(?:@latest)?(?=["\x27\s,\]]|$)|["\x27]?args["\x27]?\s*:\s*\[\s*(?:["\x27](?:-y|--yes)["\x27]\s*,\s*)(?:["\x27]-{1,2}[\w-]+["\x27]\s*,\s*){0,2}["\x27](?:@[\w.-]+/)?[\w.-]+(?:@latest)?["\x27]\s*[,\]]|"command"\s*:\s*"(?:uvx|npx|bunx)"\s*,\s*"args"\s*:\s*\[\s*(?:"-{1,2}[\w-]+"\s*,\s*){0,3}"(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@latest)?"\s*[,\]]|\[\s*\"(?:npx|bunx|uvx)\"\s*,\s*(?:\"-{1,2}[\w-]+\"\s*,\s*){0,3}\"(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@latest)?\"\s*[,\]]'
     pathInclude: '{{MCP}}'
     message: An MCP server runs a registry package without a pinned version (or with @latest), so each start can fetch different code.
     message_zh: MCP 服务器运行未固定版本（或 @latest）的注册表包，每次启动都可能获取不同的代码。
@@ -160,7 +162,7 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: '(?:curl|wget|fetch|http)[^"\n]{0,600}\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*iex\b'
+    pattern: '(?:fetch|http)[^\"\n]{0,600}\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|node|perl|ruby)\b|{{REMOTE_EXEC}}'
     pathInclude: '{{HOOKS}}'
     message: A hook downloads and executes code from the network, enabling remote code execution on every tool call.
     message_zh: Hook 从网络下载并执行代码，可在每次工具调用时实现远程代码执行。
@@ -179,7 +181,9 @@ rules:
     languages: [json]
     patterns:
       - '\b(?:curl|wget|nc|ncat|socat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b'
-      - '(?:~|\$HOME|\$\{HOME\})/\.(?:ssh|aws|gnupg|kube|docker/config|netrc|npmrc|pypirc|git-credentials|config/gh|config/gcloud|azure)\b|\$\(\s*(?:env|printenv|set)\s*\)|`\s*(?:env|printenv)\s*`|\b(?:env|printenv)\s*\|\s*(?:curl|wget|nc|base64|gzip)|(?:^|[\s"\x27@<=])\.env\b|/etc/(?:passwd|shadow)\b|\bsecurity\s+find-(?:generic|internet)-password\b'
+      # A credential file or the environment is the data that is sent. A
+      # hook that only loads .env (source .env) for a webhook URL is not.
+      - '(?:~|\$HOME|\$\{HOME\})/\.(?:ssh|aws|gnupg|kube|docker/config|netrc|npmrc|pypirc|git-credentials|config/gh|config/gcloud|azure)\b|\$\(\s*(?:env|printenv|set)\s*\)|`\s*(?:env|printenv)\s*`|\b(?:env|printenv)\s*\|\s*(?:curl|wget|nc|base64|gzip)|(?:-d|--data(?:-binary|-raw|-urlencode)?|-T|--upload-file|--post-file)[=\s]{0,3}[\\\"\x27]{0,2}@?\.env\b|-F\s*[\\\"\x27]{0,2}[\w-]+=@\.env\b|\bcat\s+\.env\b[^|\n]{0,40}\||<\s*\.env\b|/etc/(?:passwd|shadow)\b|\bsecurity\s+find-(?:generic|internet)-password\b'
     pathInclude: '{{HOOKS}}|{{MCP_JSON}}'
     message: A command that runs automatically reads SSH or cloud credentials, .env files or the whole environment and sends them to a network endpoint.
     message_zh: 自动运行的命令读取 SSH/云凭据、.env 文件或整个环境变量并发送到网络端点。

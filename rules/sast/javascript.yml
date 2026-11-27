@@ -12,47 +12,69 @@ version: 1
 # statement, or the option is dangerous whatever the data; medium = a value
 # built at run time reaches the sink; hotspot = the API alone.
 definitions:
-  TESTPATH: '(?:^|/)(?:tests?|__tests__|__mocks__|specs?|e2e|cypress|fixtures?|testing|test-?utils|testdata)/|\.(?:test|spec|e2e-spec|cy|stories)\.[cm]?[jt]sx?$'
+  TESTPATH: '(?:^|/)(?:tests?|__tests__|__mocks__|specs?|e2e|cypress|fixtures?|testing|test-?utils|testdata|test-[\w-]{1,40}|mocks?|mock-[\w-]{1,40})/|\.(?:test|spec|e2e-spec|cy|stories)\.[cm]?[jt]sx?$|_test\.[\w.]{0,20}[jt]sx?$'
   # Minified and bundled files.
-  MINIFIED: '\.min\.[cm]?js$|[.-](?:bundle|chunk)\.[cm]?js$'
+  MINIFIED: '\.min\.[cm]?js$|[.-](?:bundle|chunk)\.[cm]?js$|(?:^|/)compiled/|(?:^|/)public/(?:libraries|vendor|lib)/'
   # Build and developer tooling, where paths and commands come from the developer.
-  BUILDPATH: '(?:^|/)(?:scripts?|tools|\.github|\.husky)/|(?:^|/)(?:vite|webpack|rollup|esbuild|jest|vitest|babel|karma|playwright|eslint|gulpfile|Gruntfile)[\w.-]{0,40}\.[cm]?[jt]s$|\.config\.[cm]?[jt]s$'
+  BUILDPATH: '(?:^|/)(?:scripts?|tools|deploy|\.github|\.husky)/|(?:^|/)(?:vite|webpack|rollup|esbuild|jest|vitest|babel|karma|playwright|eslint|gulpfile|Gruntfile|generate|codegen)[\w.-]{0,40}\.[cm]?[jt]s$|\.config\.[cm]?[jt]s$'
   # Schema migrations and seed data run by the operator.
-  MIGRATIONS: '(?:^|/)(?:migrations?|seeds?|seeders)/'
+  MIGRATIONS: '(?:^|/)[\w-]{0,40}(?:[Mm]igrations?|seeds?|seeders)/'
   SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:examples?|samples?|docs?|demos?|tutorials?|benchmarks?|playground)/'
   # A line that is only comment text: // ..., /* ..., or * ... inside JSDoc.
   COMMENT: '^\s*(?://|/?\*)'
   # Request data in Express, Koa, Fastify and hapi handlers.
-  REQ: '(?:\b(?:req|request)\.(?:query|body|params|headers|cookies|signedCookies|files?|payload)\b|\breq\.(?:param|get|header)\s*\(|\bctx\.(?:request\.)?(?:query|body|params|headers|cookies)\b)'
+  REQ: '(?:\b(?:req|request)\.(?:query|body|params|headers|cookies|signedCookies|files?|payload)\b|\breq\.(?:param|get|header)\s*\(|\bctx\.(?:request\.)?(?:query|body|params|headers|cookies|files)\b|\b(?:req|request)\.nextUrl\.searchParams\.get\s*\()'
   # Browser values an attacker controls through a link.
   DOMSRC: '(?:\b(?:document\.(?:URL|documentURI|referrer|baseURI)|location\.(?:hash|search|href)|window\.name)\b)'
   # SQL text: SELECT ... FROM, INSERT INTO, UPDATE x SET, DELETE FROM.
   SQLHEAD: '(?:\b(?:SELECT|select)\b[^;\n]{0,300}?\b(?:FROM|from)\b|\b(?:INSERT|insert)\s+(?:(?:OR|or)\s+\w+\s+)?(?:INTO|into)\b|\b(?:UPDATE|update)\s+[\w."`\[\]]{1,80}\s+(?:SET|set)\b|\b(?:DELETE|delete)\s+(?:FROM|from)\b|\b(?:REPLACE|replace)\s+(?:INTO|into)\b)'
-  # A comparison or list where a SQL value goes.
-  VALPOS: '(?:[=<>]|\b(?:LIKE|like|IN|in|VALUES|values)\b)'
+  # A comparison or list where a SQL value goes (VALUES only with its parenthesis).
+  VALPOS: '(?:[=<>]|\b(?:LIKE|like|IN|in)\b|\b(?:VALUES|values)\s*(?=\())'
   # A string that ends at a SQL value position and is continued by
   # concatenation (+ non-literal) or a template literal with ${...} there.
-  SQLVAL: '(?:"[^"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?"\s*\+\s*(?=[\w$(])(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?"?%?\x27\s*\+\s*(?=[\w$(])(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|(?<![\w$.\])])`[^`\n]{0,400}?{{VALPOS}}\s*\(?["\x27]?%?\$\{\s*(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$)))'
-  # The same, filled directly with request data (optionally through a call).
-  SQLVALREQ: '(?:"[^"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?"\s*\+|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?"?%?\x27\s*\+|(?<![\w$.\])])`[^`\n]{0,400}?{{VALPOS}}\s*\(?["\x27]?%?\$\{)\s*(?:[\w$.]{1,60}\(\s*)?{{REQ}}'
+  # Values that are escaped, numeric, placeholders, enum members or constants.
+  SAFEVAL: '(?:(?:[\w$]+\.){0,4}(?:escape\w{0,20}|quote\w{0,20}|format\w{0,10}|parseInt|parseFloat|Number|BigInt|toNumber|placeholders?)\s*\(|[\w$.]{0,60}(?:[Pp]laceholders?|[Bb]indings|qmarks)\b|[\w$.\[\]()]{1,80}\.map\(\s*\(\s*\)\s*=>\s*["\x27]\(?\?|new\s+Array\(|["\x27]\?["\x27]|[A-Z][\w$]*\.[A-Z][\w$]*\s*(?:\}|[+;,)]|$)|[A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))'
+  SQLVAL: '(?:"[^"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?"\s*\+\s*(?=[\w$(])(?!{{SAFEVAL}})|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?"?%?\x27\s*\+\s*(?=[\w$(])(?!{{SAFEVAL}})|(?<![\w$.\])])`[^`\n]{0,400}?{{VALPOS}}\s*\(?["\x27]?%?\$\{\s*(?!{{SAFEVAL}}))'
+  # Request data concatenated or interpolated anywhere in SQL text (not through an escaping or numeric wrapper).
+  SQLVALREQ: '(?:["\x27`]\s*\+\s*|\$\{\s*)(?!{{SAFEVAL}})(?:[\w$.]{1,60}\(\s*)?{{REQ}}'
   # Tagged templates that parameterize: sql`...`, Prisma $queryRaw`...`.
   TAGGEDSQL: '(?:\bsql|\$queryRaw|\$executeRaw|\bPrisma\.sql)\s*`'
   # exec itself or through child_process / shelljs, not a method of another
   # object: RegExp.prototype.exec and query.exec() are not commands.
   CPRECV: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27](?:node:)?child_process["\x27]\s*\)\.)'
   STRLIT: '(?:"[^"\n]{0,300}"|\x27[^\x27\n]{0,300}\x27)'
+  # A query call whose first argument follows, optionally after literal + value + pieces.
+  SQLCALL: '\.(?:query|execute|exec|run|all|get|each|prepare|raw|unsafe|\$queryRawUnsafe|\$executeRawUnsafe)\s*\(\s*(?:{{STRLIT}}\s*\+\s*[\w$.()\[\]]{1,80}\s*\+\s*){0,3}'
   # First argument built by concatenation or interpolation with a value that
   # is not __dirname / process.cwd().
   DYNARG: '(?:{{STRLIT}}\s*\+\s*(?=[\w$(])|(?!__dirname\b|process\.cwd\(\))[\w$][\w$.\[\]]{0,80}\s*\+(?!\+)|(?:__dirname|process\.cwd\(\))\s*\+\s*(?:{{STRLIT}}\s*\+\s*)?(?=[\w$(])|`[^`\n]{0,300}\$\{\s*(?!__dirname\b|process\.cwd\(\)))'
+  # Numbers and process ids: not an injection vector.
+  NUMISH: '(?:[\w$.]{0,60}\.pid\b|[\w$.]{0,60}(?:[Pp]id|[Pp]ort|[Cc]ount|[Ii]ndex|[Ll]ength|[Ss]ize)\s*[)}+]|Number\(|parseInt\(|String\(\s*\d)'
+  # A shell command that starts with a literal command word and continues with
+  # an unquoted runtime value: 'tar xzf ' + name, `git log ${ref}`.
+  CMDDYN: '(?:"\s*[A-Za-z][^"\n]{0,299}[^"\x27\n]"\s*\+\s*(?=[\w$(])(?!{{NUMISH}})|\x27\s*[A-Za-z][^\x27\n]{0,299}[^"\x27\n]\x27\s*\+\s*(?=[\w$(])(?!{{NUMISH}})|`\s*[A-Za-z][^`$\n]{0,300}?(?<!["\x27])\$\{\s*(?!{{NUMISH}}|__dirname\b|process\.cwd\(\)))'
+  # A path built from a literal that names a directory (it has a letter)
+  # followed by a runtime value: '/data/' + name, `uploads/${name}`.
+  PATHDYN: '(?:"(?=[^"\n]{0,300}?[A-Za-z])[^"\n]{1,300}"\s*\+\s*(?=[\w$(])|\x27(?=[^\x27\n]{0,300}?[A-Za-z])[^\x27\n]{1,300}\x27\s*\+\s*(?=[\w$(])(?!{{NUMISH}})|`(?=[^`$\n]{0,300}?[A-Za-z])[^`$\n]{1,300}\$\{\s*(?!{{NUMISH}}))'
   # File-system sinks; the call's first argument follows.
   FSSINK: '(?:\b(?:readFile|readFileSync|writeFile|writeFileSync|appendFile|appendFileSync|createReadStream|createWriteStream|unlink|unlinkSync|readdir|readdirSync|sendFile|sendfile)|\b(?:res|response)\.download)\s*\(\s*'
   # A path made of __dirname / process.cwd() and literals only.
   CONSTPATH: '(?:path\.(?:join|resolve)\(\s*(?:__dirname|process\.cwd\(\)|{{STRLIT}})(?:\s*,\s*{{STRLIT}}){0,8}\s*\)|(?:__dirname|process\.cwd\(\))(?:\s*\+\s*{{STRLIT}})?)'
   # Outbound HTTP clients; the call's first argument follows.
-  OUTBOUND: '(?<!\bfunction\s{1,5})(?:(?<![\w$.])fetch|\baxios(?:\.(?:get|post|put|patch|delete|head|request))?|\bgot(?:\.(?:get|post|put|patch|delete|stream))?|\b(?:http|https)\.(?:get|request)|\bneedle(?:\.(?:get|post|put|request))?|\bsuperagent(?:\.(?:get|post|put))?|\bundici\.(?:request|fetch)|(?<![\w$.])request(?:\.(?:get|post))?)\s*\('
+  OUTBOUND: '(?<!\b(?:function|async|new)\s{1,5})(?:(?<![\w$.#])fetch|\baxios(?:\.(?:get|post|put|patch|delete|head|request))?|\bgot\.(?:get|post|put|patch|delete|stream)|\b(?:http|https)\.(?:get|request)|\bneedle(?:\.(?:get|post|put|request))?|\bsuperagent(?:\.(?:get|post|put))?|\bundici\.(?:request|fetch))\s*\((?!\s*[\w$]+\??\s*:(?!:))'
+  # The same plus bare got( / request(, which are often local names: only with request data.
+  OUTBOUNDANY: '(?:{{OUTBOUND}}|(?<!\b(?:function|async|new)\s{1,5})(?<![\w$.#])(?:got|request)\s*\()'
+  # A method or function definition named like an HTTP client.
+  CLIENTDEF: '^\s*(?:(?:export|public|private|protected|static|async|override|function)\s+){0,4}#?(?:fetch|request|got)\s*\([^()]{0,200}\)\s*(?::[^{]{1,80})?\{'
+  # A method or function definition named eval / Function, not a call.
+  EVALDEF: '^\s*(?:(?:export|public|private|protected|static|async|override|function)\s+){0,4}(?:eval|Function)\s*\([^()]{0,200}\)\s*(?::[^{]{1,80})?\{'
+  # The word appears inside a string literal ("requires eval() in development").
+  INSTRING: '["\x27`][^"\x27`\n]{0,200}\b(?:eval|Function)\s*\([^"\x27`\n]{0,200}["\x27`]'
+  # Shell quoting helpers.
+  SHELLQUOTE: '\b(?:shellEscape|shellQuote|escapeShellArg|quote)\s*\(|shell-quote'
   SANITIZED: '\bDOMPurify\b|\b(?:sanitize\w{0,20}|purify|xss|filterXSS|escapeHtml|escapeHTML|encodeHTML|he\.encode|escape)\s*\('
   # A file that handles requests (Express / Koa / Nest handlers).
-  HANDLER: '{{REQ}}|\b(?:req|ctx)\b|:\s*Request\b'
+  HANDLER: '{{REQ}}|\b(?:req|ctx)\b|:\s*(?:Request|NextRequest|FastifyRequest)\b'
 rules:
   - id: js-sql-injection
     title: "Node.js SQL query built with string concatenation"
@@ -64,19 +86,48 @@ rules:
     languages:
       - javascript
       - typescript
-    # SQL text (SELECT..FROM, INSERT INTO, ...) whose value position is filled by
-    # + or ${...}. Identifiers (ALTER TABLE ${table}) are not value positions.
+    # The first argument of a query call is SQL text (SELECT..FROM, INSERT INTO, ...)
+    # whose value position is filled by + or ${...}. Identifiers (ALTER TABLE ${table})
+    # are not value positions; escaped, numeric, placeholder, enum and constant values
+    # are skipped. SQL text built away from the call is js-sql-string-build.
+    patterns:
+      - '{{SQLCALL}}{{SQLVAL}}'
+      - '{{SQLHEAD}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{TAGGEDSQL}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
+    group: js-sql
+    message: "A SQL statement is built by concatenating or interpolating a value where a SQL value goes, so the value can change the query."
+    message_zh: "SQL 语句在取值位置通过拼接或模板插值写入变量，该值可以改变查询语义。"
+    remediation: "Use placeholders with a bound parameter array, a sql`...` tagged template, or the ORM's query builder."
+    remediation_zh: "使用占位符加绑定参数数组、sql`...` 标签模板或 ORM 查询构造器。"
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-sql-string-build
+    title: "SQL text built with a runtime value"
+    title_zh: "用运行时值拼接 SQL 文本"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
     patterns:
       - '{{SQLVAL}}'
       - '{{SQLHEAD}}'
     flags: ''
     notPattern: '{{COMMENT}}|{{TAGGEDSQL}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-sql
-    message: "A SQL statement is built by concatenating or interpolating a value where a SQL value goes, so the value can change the query."
-    message_zh: "SQL 语句在取值位置通过拼接或模板插值写入变量，该值可以改变查询语义。"
-    remediation: "Use placeholders with a bound parameter array, a sql`...` tagged template, or the ORM's query builder."
-    remediation_zh: "使用占位符加绑定参数数组、sql`...` 标签模板或 ORM 查询构造器。"
+    message: "SQL text puts a runtime value where a SQL value goes; confirm the value is escaped or comes from code, not from a user."
+    message_zh: "SQL 文本在取值位置写入了运行时值；需确认该值已转义或来自代码而非用户。"
+    remediation: "Use placeholders with a bound parameter array or a sql`...` tagged template."
+    remediation_zh: "使用占位符加绑定参数数组或 sql`...` 标签模板。"
     references:
       - CWE-89
       - OWASP A03:2021
@@ -114,10 +165,11 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\.(?:raw|whereRaw|orWhereRaw|andWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|where|andWhere|orWhere|having|andHaving|orHaving|literal)\s*\(\s*(?:`[^`\n]{0,400}?{{VALPOS}}\s*\(?[\"\x27]?%?\$\{\s*|\"[^\"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?\"\s*\+\s*(?=[\w$(])|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?\"?%?\x27\s*\+\s*(?=[\w$(]))(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))(?![\w$.]{1,80}\.map\(\s*\(\)\s*=>\s*[\"\x27]\?[\"\x27]\s*\))'
+    pattern: '\.(?:raw|whereRaw|orWhereRaw|andWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|where|andWhere|orWhere|having|andHaving|orHaving|literal)\s*\(\s*(?:`(?!\$\{)[^`\n]{0,400}?{{VALPOS}}\s*\(?[\"\x27]?%?\$\{\s*|\"[^\"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?\"\s*\+\s*(?=[\w$(])|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?\"?%?\x27\s*\+\s*(?=[\w$(]))(?!{{SAFEVAL}})'
     flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-sql
     message: "A raw SQL fragment of knex (raw, whereRaw, ...), TypeORM (where, andWhere, ...) or Sequelize (literal) puts a value into a comparison by concatenation or ${...}."
     message_zh: "knex（raw、whereRaw 等）、TypeORM（where、andWhere 等）或 Sequelize（literal）的原始 SQL 片段通过拼接或 ${...} 把变量写入比较位置。"
@@ -136,10 +188,11 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:\$(?:queryRawUnsafe|executeRawUnsafe)|\bPrisma\.raw)\s*\(\s*(?:`[^`\n]{0,400}\$\{\s*(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|[\w$][\w$.]{0,80}\s*\+)'
+    pattern: '(?:\$(?:queryRawUnsafe|executeRawUnsafe)|\bPrisma\.raw)\s*\(\s*(?:`[^`\n]{0,400}\$\{\s*(?!{{SAFEVAL}})|{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|[\w$][\w$.]{0,80}\s*\+)'
     flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-sql
     message: "The Unsafe raw-query APIs of Prisma run the string as SQL; concatenation or ${...} in it allows SQL injection."
     message_zh: "Prisma 的 Unsafe 原始查询 API 会把字符串直接当作 SQL 执行；其中的拼接或 ${...} 会造成 SQL 注入。"
@@ -160,10 +213,12 @@ rules:
       - javascript
       - typescript
     # Only files that use a SQL client; the first argument is not a literal.
-    pattern: '\.(?:query|execute|raw|whereRaw|orderByRaw|\$queryRawUnsafe|\$executeRawUnsafe)\s*\((?!\s*(?:[\"\x27\[{()]|`(?:[^`$\n]|\$(?!\{)){0,300}(?:`|$)|sql`|function\b|async\b|\w{1,40}\s*=>|$))'
+    pattern: '\.(?:query|execute|raw|whereRaw|orderByRaw|\$queryRawUnsafe|\$executeRawUnsafe)\s*\((?!\s*(?:[\"\x27\[{()]|`(?:[^`$\n]|\$(?!\{)){0,300}(?:`|$)|sql`|function\b|async\b|\w{1,40}\s*=>|$|[A-Z][A-Z0-9_]{1,40}\s*[,)]))'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
     filePattern: '\b(?:knex|sequelize|typeorm|prisma|mysql2?|pg|sqlite3?|better-sqlite3|mssql|oracledb|mariadb|pg-promise|postgres|createPool|createConnection|QueryRunner|DataSource)\b'
+    fileAbsentPattern: '^.{1000}'
     group: js-sql
     message: "The SQL text comes from a runtime value; confirm it is not attacker-controlled."
     message_zh: "SQL 文本来自运行时值；需确认不可被攻击者控制。"
@@ -183,8 +238,10 @@ rules:
       - javascript
       - typescript
     pattern: '[\"\x27]?\$where[\"\x27]?\s*:\s*(?:`[^`\n]{0,300}\$\{|{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|[\w$][\w$.]{0,80}\s*\+|{{REQ}})|\.\$where\s*\(\s*(?:`[^`\n]{0,300}\$\{|{{STRLIT}}\s*\+|{{REQ}})'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "$where runs JavaScript on the database server; a concatenated or interpolated value allows NoSQL/JavaScript injection."
     message_zh: "$where 会在数据库服务器上执行 JavaScript；拼接或插值的变量可导致 NoSQL/JavaScript 注入。"
     remediation: "Replace $where with query operators ($eq, $gt, ...) on typed values."
@@ -204,9 +261,11 @@ rules:
       - javascript
       - typescript
     pattern: '\.(?:find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|updateOne|updateMany|update|deleteOne|deleteMany|remove|countDocuments|count|exists)\s*\(\s*(?:{{REQ}}\s*[,)]|\{[^;{}]{0,300}?:\s*{{REQ}}(?:\.[\w$]+){0,3}\s*[,}])'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: '\b(?:mongoose|mongodb|mongojs|monk|marsdb|nedb|MongoClient)\b|\.collection\s*\('
+    fileAbsentPattern: '^.{1000}'
     message: "A request value is used as (part of) a MongoDB filter; an object such as {\"$ne\": null} or {\"$gt\": \"\"} changes the query (login bypass)."
     message_zh: "请求值被用作 MongoDB 过滤条件（或其一部分）；{\"$ne\": null}、{\"$gt\": \"\"} 之类的对象会改变查询（如绕过登录）。"
     remediation: "Cast request values to the expected type (String(x)), validate with a schema, or enable sanitizeFilter / express-mongo-sanitize."
@@ -224,12 +283,14 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*{{DYNARG}}'
-    notPattern: '{{COMMENT}}'
+    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*{{CMDDYN}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{SHELLQUOTE}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
     filePattern: 'child_process|shelljs'
+    fileAbsentPattern: '^.{1000}'
     group: js-command
-    message: "A shell command is built by concatenation or ${...}; a value with shell metacharacters runs extra commands."
+    message: "A shell command starts with a literal command and continues with an unquoted runtime value (concatenation or ${...}); a value with shell metacharacters runs extra commands. A command that is itself a variable is js-exec-api."
     message_zh: "shell 命令通过拼接或 ${...} 构造；含 shell 元字符的值会执行额外命令。"
     remediation: "Use execFile/spawn with an argument array, avoid shell: true, and allowlist inputs."
     remediation_zh: "使用 execFile/spawn 参数数组，避免 shell: true，并对输入做白名单校验。"
@@ -246,7 +307,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*[^;(){}]{0,300}?{{REQ}}'
+    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*(?:[^;(){}]|\$\{|\}){0,300}?{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'child_process|shelljs'
@@ -269,8 +331,10 @@ rules:
       - javascript
       - typescript
     pattern: '\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*(?![\"\x27])[^;]{0,400}?\bshell\s*:\s*true\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-command
     message: "With shell: true the command and its arguments are joined and parsed by a shell, so a runtime value can inject commands."
     message_zh: "shell: true 会把命令和参数拼接后交给 shell 解析，运行时值可注入命令。"
@@ -292,9 +356,11 @@ rules:
       - typescript
     # Same receivers as js-command-injection; a literal command is not reported.
     pattern: '{{CPRECV}}exec(?:Sync)?\s*\((?!\s*(?:{{STRLIT}}\s*[,)]|{{CONSTPATH}}\s*[,)]|`(?:[^`$\n]|\$(?!\{)|\$\{\s*(?:__dirname|process\.cwd\(\))\s*\}){0,300}`\s*[,)]|$))'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
     filePattern: 'child_process|shelljs'
+    fileAbsentPattern: '^.{1000}'
     group: js-command
     message: "The subprocess command comes from a runtime value; confirm the command and arguments are trusted."
     message_zh: "子进程命令来自运行时值；需确认命令与参数可信。"
@@ -313,8 +379,9 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?<![\w.$\"\x27`])eval\s*\((?!\s*{{STRLIT}}\s*\))'
-    notPattern: '{{COMMENT}}'
+    pattern: '(?<![\w.$\"\x27`#])eval\s*\((?!\s*\)|\s*{{STRLIT}}\s*\))'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{EVALDEF}}|{{INSTRING}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-eval
     message: "eval executes a string as code, so untrusted input can achieve remote code execution."
@@ -334,7 +401,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:(?<![\w.$\"\x27`])(?:eval|Function)|\bnew\s+Function|\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)|\bnew\s+(?:vm\.)?Script|\b(?:math|mathjs)\.(?:eval|evaluate))\s*\(\s*[^;{}]{0,200}?{{REQ}}|(?<![\w.$])(?:setTimeout|setInterval)\s*\(\s*(?:{{STRLIT}}\s*\+\s*)?{{REQ}}'
+    pattern: '(?:(?<![\w.$\"\x27`])(?:eval|Function)|\bnew\s+Function|\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)|\bnew\s+(?:vm\.)?Script|\b(?:math|mathjs)\.(?:eval|evaluate))\s*\(\s*(?:[^;{}]|\$\{|\}){0,200}?{{REQ}}|(?<![\w.$])(?:setTimeout|setInterval)\s*\(\s*(?:{{STRLIT}}\s*\+\s*)?{{REQ}}'
     flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
@@ -359,8 +426,9 @@ rules:
       - typescript
     pattern: '(?:\bnew\s+|(?<![\w.$]))Function\s*\((?!\s*\)|\s*(?:{{STRLIT}}\s*,\s*){0,8}{{STRLIT}}\s*\))'
     flags: ''
-    notPattern: '{{COMMENT}}'
+    notPattern: '{{COMMENT}}|{{EVALDEF}}|{{INSTRING}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-eval
     message: "new Function(...) compiles its string arguments as code like eval; confirm none of them can come from a user."
     message_zh: "new Function(...) 会像 eval 一样把字符串参数编译为代码；需确认这些参数不来自用户。"
@@ -380,8 +448,10 @@ rules:
       - javascript
       - typescript
     pattern: '(?<![\w.$])(?:setTimeout|setInterval)\s*\(\s*(?:{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|`[^`\n]{0,200}\$\{)'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-eval
     message: "A string passed to setTimeout/setInterval is evaluated like eval; it is built from a runtime value here."
     message_zh: "传给 setTimeout/setInterval 的字符串会像 eval 一样执行；此处它由运行时值拼接而成。"
@@ -402,8 +472,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\.Script\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-eval
     message: "The vm module is not a security sandbox: code it runs can escape to the host process. Confirm the code and the sandbox objects are trusted."
     message_zh: "vm 模块不是安全沙箱：其执行的代码可逃逸到宿主进程。需确认代码和沙箱对象可信。"
@@ -422,7 +494,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?<![\w.$])(?:require|import)\s*\(\s*[^;(){}]{0,200}?{{REQ}}'
+    pattern: '(?<![\w.$])(?:require|import)\s*\(\s*(?:[^;(){}]|\$\{|\}){0,200}?{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     message: "require()/import() of a request value lets an attacker load arbitrary modules or files as code."
@@ -443,6 +516,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bunserialize\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'node-serialize|serialize-to-js|funcster|cryo'
@@ -464,7 +538,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\b(?:unserialize|deserialize)\s*\(\s*[^;{}]{0,200}?{{REQ}}'
+    pattern: '\b(?:unserialize|deserialize)\s*\(\s*(?:[^;{}]|\$\{|\}){0,200}?{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'node-serialize|serialize-to-js|funcster|cryo'
@@ -487,8 +562,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bschema\s*:\s*(?:[\w$]{1,20}\.)?(?:DEFAULT_FULL_SCHEMA|FULL_SCHEMA)\b|\b(?:yaml|jsyaml|jsYaml|YAML)\.(?:unsafeLoad|unsafeLoadAll)\s*\(|\brequire\s*\(\s*[\"\x27]js-yaml-js-types|\bfrom\s+[\"\x27]js-yaml-js-types'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-yaml
     message: "The full schema (or js-yaml-js-types, unsafeLoad) resolves !!js/function tags, so a YAML document can run code."
     message_zh: "完整 schema（或 js-yaml-js-types、unsafeLoad）会解析 !!js/function 标签，YAML 文档可借此执行代码。"
@@ -509,9 +586,11 @@ rules:
       - javascript
       - typescript
     pattern: '\b(?:yaml|jsyaml|jsYaml|YAML)\.load(?:All)?\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}|\b(?:JSON_SCHEMA|CORE_SCHEMA|FAILSAFE_SCHEMA)\b'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'js-yaml'
+    fileAbsentPattern: '^.{1000}'
     group: js-yaml
     message: "In js-yaml 3, load() uses the full schema and runs !!js/function tags; in js-yaml 4 it is safe. Check the installed version and where the YAML comes from."
     message_zh: "js-yaml 3 的 load() 使用完整 schema，会执行 !!js/function 标签；js-yaml 4 中则是安全的。需检查所装版本及 YAML 来源。"
@@ -530,11 +609,13 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '{{FSSINK}}{{DYNARG}}'
+    pattern: '{{FSSINK}}{{PATHDYN}}'
+    flags: ''
     notPattern: '{{COMMENT}}|\bbasename\s*\(|\broot\s*:'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-path
-    message: "A file path is built by concatenation or ${...} with a runtime value, and may leave the intended directory (../)."
+    message: "A file path is a directory literal continued by concatenation or ${...} with a runtime value, and may leave the intended directory (../)."
     message_zh: "文件路径通过拼接或 ${...} 由运行时值构造，可能借助 ../ 越出预期目录。"
     remediation: "Use path.basename or an allowlist, and verify the resolved realpath stays inside the allowed directory."
     remediation_zh: "使用 path.basename 或白名单映射，并校验解析后的 realpath 位于允许目录内。"
@@ -551,7 +632,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:{{FSSINK}}|\bpath\.(?:join|resolve)\s*\(\s*)[^;{}]{0,200}?{{REQ}}'
+    pattern: '(?:{{FSSINK}}|\bpath\.(?:join|resolve)\s*\(\s*)(?:[^;{}]|\$\{|\}){0,200}?{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}|\bbasename\s*\(|\broot\s*:'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-path
@@ -573,9 +655,12 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:(?<!\b(?:function|async|static)\s{1,5})\b(?:readFile|sendFile|createReadStream)|\b(?:res|response)\.download)\s*\((?!\s*(?:{{STRLIT}}\s*[,)]|{{CONSTPATH}}\s*[,)]|\)|$))'
+    pattern: '(?:(?<!\b(?:function|async|static)\s{1,5})\b(?:readFile|readFileSync|sendFile|createReadStream)|\b(?:res|response)\.download)\s*\((?!\s*(?:{{STRLIT}}\s*[,)]|{{CONSTPATH}}\s*[,)]|\)|$|[\w$]+\??\s*:(?!:)))'
+    flags: ''
     notPattern: '{{COMMENT}}|\broot\s*:|\bbasename\s*\('
     pathExclude: '{{SAMPLEPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    filePattern: '{{HANDLER}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-path
     message: "The file path comes from a runtime value; confirm it resolves inside the allowed directory."
     message_zh: "文件路径来自运行时值；需确认解析后仍位于允许目录内。"
@@ -594,8 +679,9 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '{{OUTBOUND}}\s*(?:`\$\{\s*)?{{REQ}}'
-    notPattern: '{{COMMENT}}'
+    pattern: '{{OUTBOUNDANY}}\s*(?:`\$\{\s*)?{{REQ}}|\baxios(?:\.request)?\s*\(\s*\{[^;{}]{0,200}?\burl\s*:\s*{{REQ}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{CLIENTDEF}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-ssrf
     message: "A request value is used as the target of an outbound HTTP request, which can reach internal services and cloud metadata."
@@ -617,9 +703,11 @@ rules:
       - javascript
       - typescript
     pattern: '{{OUTBOUND}}(?!\s*(?:[\"\x27{)]|`(?!\$\{)|$))'
-    notPattern: '{{COMMENT}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{CLIENTDEF}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: '{{HANDLER}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-ssrf
     message: "This file handles requests and sends an outbound request to a URL that is not a literal; confirm the URL cannot be chosen by the client."
     message_zh: "该文件处理请求，并向非字面量 URL 发起出站请求；需确认 URL 不能由客户端决定。"
@@ -638,8 +726,9 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\b(?:res|response|reply|ctx)\.(?:redirect|location)\s*\(\s*(?:\d{3}\s*,\s*)?(?:decodeURIComponent\(\s*)?{{REQ}}'
-    notPattern: '{{COMMENT}}|\breferr?er\b'
+    pattern: '(?:\b(?:res|response|reply|ctx)\.(?:redirect|location)|\bNextResponse\.redirect)\s*\(\s*(?:\d{3}\s*,\s*)?(?:decodeURIComponent\(\s*|new\s+URL\(\s*)?{{REQ}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|\b[Rr]eferr?er\b'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-redirect
     message: "The redirect target is taken from the request, so links on this site can send users to a phishing page."
@@ -661,9 +750,11 @@ rules:
       - javascript
       - typescript
     pattern: '\b(?:res|response|reply|ctx)\.redirect\s*\((?!\s*(?:\d{3}\s*,\s*)?(?:[\"\x27/)]|`/(?!/)|process\.env\b|req\.(?:baseUrl|originalUrl|url)\b|$))'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: '{{HANDLER}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-redirect
     message: "The redirect target is a runtime value; confirm it cannot be an absolute URL chosen by the client."
     message_zh: "重定向目标是运行时值；需确认它不会是客户端指定的绝对 URL。"
@@ -682,7 +773,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\b(?:res|response)\.send\s*\(\s*(?:[^;(){}]{0,200}?(?:\+\s*|\$\{\s*))?{{REQ}}\s*(?:\.\s*[\w$]+|\[)'
+    pattern: '(?:\b(?:res|response)\.send|\breply\.type\(\s*[\"\x27]text/html[^\"\x27]{0,40}[\"\x27]\s*\)\.send)\s*\(\s*(?:(?:[^;(){}]|\$\{|\}){0,200}?(?:\+\s*|\$\{\s*))?{{REQ}}\s*(?:\.\s*[\w$]+|\[)|\bctx\.body\s*=\s*[\"\x27`]\s*<(?:[^;(){}]|\$\{|\}){0,200}?(?:\+\s*|\$\{\s*){{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}|{{SANITIZED}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     message: "res.send with a string answers text/html; a request value in it is reflected XSS."
@@ -703,6 +795,7 @@ rules:
       - javascript
       - typescript
     pattern: '(?:\.(?:innerHTML|outerHTML)\s*\+?=(?!=)|\.insertAdjacentHTML\s*\(|\bdocument\.write(?:ln)?\s*\(|\.html\s*\(|(?<![\w$.])(?:\$|jQuery)\s*\()[^;)]{0,200}?{{DOMSRC}}'
+    flags: ''
     notPattern: '{{COMMENT}}|{{SANITIZED}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-dom-xss
@@ -725,8 +818,10 @@ rules:
       - javascript
       - typescript
     pattern: '\.(?:innerHTML|outerHTML)\s*\+?=(?!=)(?!\s*(?:{{STRLIT}}\s*(?:;|$)|`[^`$\n]{0,300}`\s*(?:;|$)|$|null\b))|\.insertAdjacentHTML\s*\(\s*[\"\x27][\w-]{1,20}[\"\x27]\s*,(?!\s*(?:{{STRLIT}}\s*\)|`[^`$\n]{0,300}`\s*\)))|\bdocument\.write(?:ln)?\s*\((?!\s*(?:{{STRLIT}}\s*\)|\)))'
+    flags: ''
     notPattern: '{{COMMENT}}|{{SANITIZED}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-dom-xss
     message: "innerHTML / outerHTML / insertAdjacentHTML / document.write gets a value that is not a literal; confirm it is escaped or sanitized."
     message_zh: "innerHTML、outerHTML、insertAdjacentHTML、document.write 接收了非字面量值；需确认已转义或清洗。"
@@ -747,9 +842,11 @@ rules:
       - javascript
       - typescript
     pattern: '\.html\s*\((?!\s*(?:{{STRLIT}}\s*\)|\)|`[^`$\n]{0,300}`\s*\)|$))'
+    flags: ''
     notPattern: '{{COMMENT}}|{{SANITIZED}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: '\bjquery\b|(?<![\w$])\$\('
+    fileAbsentPattern: '^.{1000}'
     group: js-dom-xss
     message: "jQuery .html() parses its argument as HTML (scripts in event handlers run); confirm the value is escaped."
     message_zh: "jQuery .html() 会把参数当 HTML 解析（事件处理器中的脚本会执行）；需确认取值已转义。"
@@ -770,8 +867,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bdangerouslySetInnerHTML\s*[=:]\s*\{(?!\s*(?:\{\s*)?(?:{{STRLIT}}\s*\}|__html\s*:\s*{{STRLIT}}\s*\}))'
+    flags: ''
     notPattern: '{{COMMENT}}|{{SANITIZED}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "dangerouslySetInnerHTML bypasses React's escaping; confirm the HTML is sanitized."
     message_zh: "dangerouslySetInnerHTML 绕过了 React 的转义；需确认 HTML 已清洗。"
     remediation: "Render text as children, or sanitize with DOMPurify before using dangerouslySetInnerHTML."
@@ -791,8 +890,10 @@ rules:
       - javascript
       - typescript
     pattern: '\.bypassSecurityTrust(?:Html|Script|Style|Url|ResourceUrl)\s*\((?!\s*{{STRLIT}}\s*\))'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "bypassSecurityTrust* marks the value as safe HTML / script / URL; confirm it cannot contain user input."
     message_zh: "bypassSecurityTrust* 会把取值标记为安全的 HTML/脚本/URL；需确认其中不可能有用户输入。"
     remediation: "Let Angular sanitize the value, or sanitize it with DOMPurify before trusting it."
@@ -812,8 +913,10 @@ rules:
       - javascript
       - typescript
     pattern: '(?:\b(?:_|lodash|\$|jQuery|Hoek|hoek|objectPath|dotProp)\.(?:merge|mergeWith|defaultsDeep|set|setWith|zipObjectDeep|extend|applyToDefaults)|(?<![\w$.])(?:merge|deepmerge|deepExtend|defaultsDeep|mergeDeep|setWith|zipObjectDeep))\s*\((?:[^;{}]|\{\s*\}){0,200}?{{REQ}}|\bObject\.assign\s*\([^;]{0,200}?\bJSON\.parse\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}|JSON\.parse\(\s*JSON\.stringify'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "A deep merge / path setter (lodash merge, defaultsDeep, set, zipObjectDeep, $.extend(true, ...)) receives request data, or Object.assign copies parsed JSON; keys like __proto__ can pollute Object.prototype depending on the library version."
     message_zh: "深度合并/按路径赋值（lodash merge、defaultsDeep、set、zipObjectDeep、$.extend(true, ...)）接收了请求数据，或 Object.assign 复制了解析后的 JSON；视库版本而定，__proto__ 等键可污染 Object.prototype。"
     remediation: "Validate request bodies with a schema, copy only known keys, use Object.create(null) targets, and keep lodash up to date."
@@ -832,9 +935,11 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:\bnew\s+|(?<![\w.$]))RegExp\s*\(\s*[^;{}]{0,200}?{{REQ}}'
+    pattern: '(?:\bnew\s+|(?<![\w.$]))RegExp\s*\(\s*(?:[^;{}]|\$\{|\}){0,200}?{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}|escapeRegExp|escape-string-regexp|escapeRegex|escapeStringRegexp'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "A request value becomes a regular expression: a crafted pattern can make matching take exponential time (ReDoS) or change what is matched."
     message_zh: "请求参数被构造为正则表达式：精心构造的模式可让匹配耗时呈指数级（ReDoS）或改变匹配语义。"
     remediation: "Escape the value (lodash escapeRegExp) or match it as a plain string."
@@ -888,7 +993,7 @@ rules:
     title: "JavaScript Math.random used for security-sensitive values"
     title_zh: "JavaScript 使用 Math.random 生成安全值"
     severity: medium
-    confidence: medium
+    confidence: low
     cwe: CWE-338
     owasp: A02:2021
     languages:
@@ -915,6 +1020,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bcreate(?:Cipher|Decipher)\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-cipher
@@ -959,6 +1065,7 @@ rules:
     pattern: '(?:\bcreate(?:Cipher|Decipher)iv\s*\(\s*[^,()]{1,60},\s*(?:[^,()]{1,100},\s*)?|\bcreateHmac\s*\(\s*[\"\x27][\w-]{1,20}[\"\x27]\s*,\s*|\bCryptoJS\.(?:(?:AES|DES|TripleDES|Rabbit|RC4)\.(?:encrypt|decrypt)|Hmac\w{1,10})\s*\(\s*[^,()]{1,100},\s*)(?:Buffer\.from\(\s*)?[\"\x27](?<secret>[^\"\x27\n]{8,200})[\"\x27]'
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     redactEvidence: true
     message: "A cipher key, IV or HMAC key is a literal in source: anyone with the code can decrypt or forge data, and it cannot be rotated."
     message_zh: "加密密钥、IV 或 HMAC 密钥是源码中的字面量：拿到代码的人都能解密或伪造数据，且无法轮换。"
@@ -1019,9 +1126,11 @@ rules:
       - javascript
       - typescript
     pattern: '\bjwt\.verify\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}|\balgorithms\s*:'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'jsonwebtoken'
+    fileAbsentPattern: '^.{1000}'
     message: "Without algorithms the accepted algorithm follows the token header and the key type; with a public key and an old jsonwebtoken an attacker can sign with HS256 (algorithm confusion). The option may be on a following line."
     message_zh: "未指定 algorithms 时接受的算法取决于令牌头和密钥类型；使用公钥和旧版 jsonwebtoken 时，攻击者可用 HS256 签名（算法混淆）。该选项也可能写在后续行。"
     remediation: "Pass algorithms: ['RS256'] (or the one algorithm you issue)."
@@ -1041,9 +1150,11 @@ rules:
       - javascript
       - typescript
     pattern: '\b(?:jwt|jsonwebtoken|jws)\.decode\s*\('
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     filePattern: 'jsonwebtoken|\bjws\b'
+    fileAbsentPattern: '^.{1000}'
     message: "jwt.decode does not check the signature; confirm the claims are not used for authentication or authorization."
     message_zh: "jwt.decode 不校验签名；需确认解码出的声明未被用于认证或授权。"
     remediation: "Use jwt.verify with the key and a pinned algorithms list before trusting claims."
@@ -1062,8 +1173,10 @@ rules:
       - javascript
       - typescript
     pattern: '(?:\bjwt\.(?:sign|verify)\s*\(\s*(?:\{[^{}\n]{0,300}\}|[\w$.]{1,80}(?:\([^()\n]{0,100}\))?)\s*,\s*|\b(?:secretOrKey|secretOrPrivateKey)\s*:\s*|\b(?:expressJwt|expressjwt|jwt)\s*\(\s*\{[^;]{0,200}?\bsecret\s*:\s*)[\"\x27](?<secret>[^\"\x27\n]{3,200})[\"\x27]'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     redactEvidence: true
     message: "The JWT secret is a literal in source: anyone with the code can mint valid tokens."
     message_zh: "JWT 密钥是源码中的字面量：拿到代码的人都能签发有效令牌。"
@@ -1083,6 +1196,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bignoreExpiration\s*:\s*true\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     message: "ignoreExpiration: true accepts expired tokens forever, so a leaked token never stops working."
@@ -1104,7 +1218,7 @@ rules:
       - typescript
     pattern: '\b(?:rejectUnauthorized|strictSSL)\s*:\s*false\b'
     notPattern: '{{COMMENT}}'
-    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    pathExclude: '{{SAMPLEPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
     group: js-tls
     message: "Disabling certificate validation makes TLS connections vulnerable to man-in-the-middle attacks."
     message_zh: "关闭证书校验会使 TLS 连接可被中间人攻击。"
@@ -1124,6 +1238,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bNODE_TLS_REJECT_UNAUTHORIZED\b[\"\x27\]]{0,2}\s*(?<![=!<>])[=:](?!=)\s*[\"\x27]?0\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-tls
@@ -1145,6 +1260,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bsecureProtocol\s*:\s*[\"\x27](?:SSLv2|SSLv3|TLSv1|TLSv1_1)_(?:client_|server_)?method[\"\x27]|\b(?:minVersion|maxVersion)\s*:\s*[\"\x27](?:SSLv3|TLSv1|TLSv1\.1)[\"\x27]'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-tls
@@ -1156,7 +1272,7 @@ rules:
       - CWE-327
       - OWASP A02:2021
   - id: js-cors-credentials-any-origin
-    title: "CORS allows any origin together with credentials"
+    title: "CORS reflects any origin together with credentials"
     title_zh: "CORS 允许任意来源并携带凭据"
     severity: high
     confidence: high
@@ -1165,20 +1281,21 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\bcors\s*(?:\(\s*|:\s*)\{(?:[^;]{0,300}?\borigin\s*:\s*(?:true\b|[\"\x27]\*[\"\x27])[^;]{0,300}?\bcredentials\s*:\s*true\b|[^;]{0,300}?\bcredentials\s*:\s*true\b[^;]{0,300}?\borigin\s*:\s*(?:true\b|[\"\x27]\*[\"\x27]))'
+    pattern: '\bcors\s*(?:\(\s*|:\s*)\{(?:[^;]{0,300}?\borigin\s*:\s*true\b[^;]{0,300}?\bcredentials\s*:\s*true\b|[^;]{0,300}?\bcredentials\s*:\s*true\b[^;]{0,300}?\borigin\s*:\s*true\b)'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     group: js-cors
-    message: "The CORS options combine origin: true (reflect every Origin) or '*' with credentials: true, so any website can make authenticated requests and read the answers."
-    message_zh: "CORS 选项把 origin: true（反射任意 Origin）或 '*' 与 credentials: true 组合使用，任何网站都能发起带凭据的请求并读取响应。"
+    message: "The CORS options combine origin: true (reflect every Origin) with credentials: true, so any website can make authenticated requests and read the answers. ('*' with credentials is refused by browsers and not reported.)"
+    message_zh: "CORS 选项把 origin: true（反射任意 Origin）与 credentials: true 组合使用，任何网站都能发起带凭据的请求并读取响应。（'*' 加凭据会被浏览器拒绝，不报告。）"
     remediation: "List the trusted origins explicitly when credentials are allowed."
     remediation_zh: "允许凭据时明确列出可信来源。"
     references:
       - CWE-942
       - OWASP A05:2021
   - id: js-cors-header-credentials
-    title: "Access-Control-Allow-Origin wildcard or reflected, with credentials"
-    title_zh: "Access-Control-Allow-Origin 为通配或反射且允许凭据"
+    title: "Access-Control-Allow-Origin reflects the request Origin, with credentials"
+    title_zh: "Access-Control-Allow-Origin 反射请求 Origin 且允许凭据"
     severity: high
     confidence: medium
     cwe: CWE-942
@@ -1186,13 +1303,15 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\b(?:setHeader|header|set|append)\s*\(\s*[\"\x27]Access-Control-Allow-Origin[\"\x27]\s*,\s*(?:[\"\x27]\*[\"\x27]|{{REQ}})'
+    pattern: '\b(?:setHeader|header|set|append)\s*\(\s*[\"\x27]Access-Control-Allow-Origin[\"\x27]\s*,\s*{{REQ}}'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: 'Access-Control-Allow-Credentials[\"\x27]\s*,\s*[\"\x27]?true|\bcredentials\s*:\s*true\b'
+    fileAbsentPattern: '^.{1000}'
     group: js-cors
-    message: "The response sets Access-Control-Allow-Origin to '*' or the request's Origin while this file also allows credentials."
-    message_zh: "响应把 Access-Control-Allow-Origin 设为 '*' 或请求的 Origin，而本文件同时允许凭据。"
+    message: "The response copies the request's Origin into Access-Control-Allow-Origin while this file also allows credentials."
+    message_zh: "响应把请求的 Origin 复制到 Access-Control-Allow-Origin，而本文件同时允许凭据。"
     remediation: "Compare the Origin with an allowlist before echoing it."
     remediation_zh: "回显 Origin 之前先与白名单比较。"
     references:
@@ -1208,9 +1327,10 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\bhttpOnly\s*:\s*false\b|\bcookie\s*:\s*\{[^}\n]{0,200}?\bsecure\s*:\s*false\b|\b(?:res\.cookie|cookies\.set|setCookie|cookie\.serialize)\s*\([^;\n]{0,300}?\bsecure\s*:\s*false\b'
+    pattern: '\bhttpOnly\s*:\s*false\b|\bcookie\s*:\s*\{[^}]{0,200}?\bsecure\s*:\s*false\b|\b(?:res\.cookie|cookies\.set|setCookie|cookie\.serialize)\s*\([^;]{0,300}?\bsecure\s*:\s*false\b'
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-cookie
     message: "httpOnly: false lets scripts read the cookie (stolen by XSS); secure: false sends it over plain HTTP."
     message_zh: "httpOnly: false 让脚本可读取 Cookie（可被 XSS 窃取）；secure: false 会经明文 HTTP 发送。"
@@ -1233,6 +1353,7 @@ rules:
     pattern: '\bsameSite\s*:\s*(?:[\"\x27]none[\"\x27]|false\b)'
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-cookie
     message: "SameSite=None sends the cookie on cross-site requests; confirm the endpoint has CSRF protection and the cookie is Secure."
     message_zh: "SameSite=None 会在跨站请求中携带 Cookie；需确认端点具有 CSRF 防护且 Cookie 带 Secure。"
@@ -1258,6 +1379,7 @@ rules:
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: 'express-session|cookie-session|cookie-parser|koa-session|\bsession\s*\(\s*\{'
+    fileAbsentPattern: '^.{1000}'
     redactEvidence: true
     message: "The session / cookie signing secret is a literal in source: anyone with the code can forge session cookies."
     message_zh: "会话/Cookie 签名密钥是源码中的字面量：拿到代码的人都能伪造会话 Cookie。"
@@ -1272,20 +1394,22 @@ rules:
     severity: medium
     confidence: low
     kind: hotspot
-    cwe: CWE-1021
+    cwe: CWE-693
     owasp: A05:2021
     languages:
       - javascript
       - typescript
     pattern: '\bcontentSecurityPolicy\s*:\s*false\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "contentSecurityPolicy: false removes the CSP header, the main defence in depth against XSS; confirm this is intended."
     message_zh: "contentSecurityPolicy: false 会去掉 CSP 头，而它是防御 XSS 的主要纵深措施；需确认是有意为之。"
     remediation: "Keep helmet's CSP and relax only the directives you need."
     remediation_zh: "保留 helmet 的 CSP，只放宽需要的指令。"
     references:
-      - CWE-1021
+      - CWE-693
       - OWASP A05:2021
   - id: js-postmessage-no-origin
     title: "message event handler without an origin check"
@@ -1299,9 +1423,10 @@ rules:
       - javascript
       - typescript
     pattern: '(?:(?<![\w$.])|\bwindow\.)addEventListener\s*\(\s*[\"\x27]message[\"\x27]|\bwindow\.onmessage\s*=(?!=)'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|[Ww]orker|{{MINIFIED}}'
-    fileAbsentPattern: '\.origin\b|\borigin\s*[!=]==?'
+    fileAbsentPattern: '\.origin\b|\borigin\s*[!=]==?|^.{1000}'
     message: "This file listens for window messages and never reads event.origin, so any page that can open or frame it can send commands."
     message_zh: "本文件监听 window 消息却从不读取 event.origin，任何能打开或嵌入它的页面都能发送指令。"
     remediation: "Compare event.origin with the expected origin before using event.data."
@@ -1320,8 +1445,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bnoent\s*:\s*true\b|\bXML_PARSE_NOENT\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "noent: true (XML_PARSE_NOENT) expands external entities, so an XML document can read local files or reach internal URLs (XXE)."
     message_zh: "noent: true（XML_PARSE_NOENT）会展开外部实体，XML 文档可借此读取本地文件或访问内网 URL（XXE）。"
     remediation: "Leave entity expansion off (the default) and reject DTDs in untrusted XML."
@@ -1339,7 +1466,8 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\bnodeIntegration(?:InWorker|InSubFrames)?\s*:\s*true\b'
+    pattern: '\bnodeIntegration\s*:\s*true\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-electron
@@ -1347,6 +1475,30 @@ rules:
     message_zh: "启用 nodeIntegration 后，窗口中的任何 XSS 都会变成用户机器上的代码执行。"
     remediation: "Set nodeIntegration: false and expose a minimal API through a preload script with contextBridge."
     remediation_zh: "设置 nodeIntegration: false，通过 preload 脚本和 contextBridge 暴露最小 API。"
+    references:
+      - CWE-94
+      - OWASP A05:2021
+  - id: js-electron-node-integration-frames
+    title: "Electron Node.js integration in sub-frames or workers"
+    title_zh: "Electron 在子框架或 Worker 中启用 Node.js 集成"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bnodeIntegrationIn(?:SubFrames|Worker)\s*:\s*true\b'
+    flags: ''
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
+    group: js-electron
+    message: "nodeIntegrationInSubFrames / nodeIntegrationInWorker give Node.js to iframes or workers when nodeIntegration is on; with sandbox and nodeIntegration off they mostly affect preload scripts. Check the other webPreferences."
+    message_zh: "nodeIntegrationInSubFrames / nodeIntegrationInWorker 在 nodeIntegration 开启时把 Node.js 交给 iframe 或 Worker；在 sandbox 开启且 nodeIntegration 关闭时主要影响 preload 脚本。需检查其他 webPreferences。"
+    remediation: "Remove the option unless sub-frames or workers really need Node.js."
+    remediation_zh: "除非子框架或 Worker 确实需要 Node.js，否则删除该选项。"
     references:
       - CWE-94
       - OWASP A05:2021
@@ -1361,6 +1513,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bcontextIsolation\s*:\s*false\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-electron
@@ -1382,6 +1535,7 @@ rules:
       - javascript
       - typescript
     pattern: '\bwebSecurity\s*:\s*false\b|\ballowRunningInsecureContent\s*:\s*true\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-electron
@@ -1404,8 +1558,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bshell\.openExternal\s*\((?!\s*[\"\x27`]https?://)'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     group: js-electron
     message: "shell.openExternal hands the URL to the operating system; file:, smb: or custom schemes can run programs. Confirm the URL is validated."
     message_zh: "shell.openExternal 会把 URL 交给操作系统；file:、smb: 或自定义协议可启动程序。需确认 URL 已校验。"
@@ -1428,6 +1584,7 @@ rules:
     pattern: '\b(?:localStorage|sessionStorage)\.setItem\s*\(\s*[\"\x27`][^\"\x27`\n]{0,60}?(?:token|jwt|secret|password|passwd|credential|api[_-]?key)|\b(?:localStorage|sessionStorage)\.(?:token|jwt|authToken|accessToken|idToken|password)\s*=(?!=)|\b(?:localStorage|sessionStorage)\[\s*[\"\x27][^\"\x27\n]{0,40}?(?:token|jwt)[^\"\x27\n]{0,20}[\"\x27]\s*\]\s*=(?!=)'
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "localStorage / sessionStorage are readable by any script on the origin, so an XSS bug exposes the stored token."
     message_zh: "localStorage/sessionStorage 可被同源的任何脚本读取，一旦存在 XSS，存储的令牌就会泄露。"
     remediation: "Prefer an HttpOnly, Secure, SameSite cookie for session tokens."
@@ -1447,8 +1604,10 @@ rules:
       - javascript
       - typescript
     pattern: '\bintrospection\s*:\s*true\b'
+    flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    fileAbsentPattern: '^.{1000}'
     message: "Introspection publishes the whole schema; confirm it is not enabled in production."
     message_zh: "introspection 会公开整个 schema；需确认生产环境未开启。"
     remediation: "Enable introspection only outside production (introspection: process.env.NODE_ENV !== 'production')."

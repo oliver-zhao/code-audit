@@ -70,11 +70,12 @@ export function isClikeLanguage(language: string): language is ClikeLanguage {
 /** What a lexer reports besides the units. */
 export interface LexExtras {
   /**
-   * Per physical line: the text of the comments on it (other characters
-   * dropped), "" when it has none. A line in a fallback region holds the
-   * whole physical line, since the lexer could not tell. Inline suppression
-   * reads these instead of the raw line, so a `code-audit:ignore` inside a
-   * string literal suppresses nothing.
+   * Per physical line, for inline suppression: the line with the text of
+   * string (and regex) literals blanked, comments and code as written; ""
+   * when the line holds no `code-audit:ignore`. A line in a fallback region
+   * holds the whole physical line, since the lexer could not tell. A
+   * `code-audit:ignore` inside a string literal therefore suppresses
+   * nothing, and a trailing comment after code is still seen as one.
    */
   comments?: string[];
   /**
@@ -625,7 +626,9 @@ export function clikeLogicalLines(
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex] ?? "";
     const length = line.length;
-    let commentText = "";
+    // Columns of the comments on this line, as [start, end) pairs.
+    const commentRanges: number[] = [];
+    let rawSuppression = false;
     prevIsIdentifier = false;
 
     if (stack.length > 0 && stack[0]?.kind === "string") {
@@ -686,7 +689,7 @@ export function clikeLogicalLines(
       // C/C++: a // comment continued by a backslash on the line before.
       code = " ".repeat(length);
       skeleton = code;
-      commentText = line;
+      rawSuppression = true;
       commentSpliced = line.endsWith("\\");
       // A directive whose last line ended in that comment ends with it.
       if (directiveOpen && !commentSpliced) {
@@ -697,7 +700,7 @@ export function clikeLogicalLines(
       // Hashbang line.
       code = " ".repeat(length);
       skeleton = code;
-      commentText = line;
+      rawSuppression = true;
     } else {
       let index = 0;
       while (index < length) {
@@ -721,7 +724,7 @@ export function clikeLogicalLines(
             const end = found < 0 ? length : found + 2;
             code += " ".repeat(end - index);
             skeleton += " ".repeat(end - index);
-            commentText += line.slice(index, end);
+            commentRanges.push(index, end);
             index = end;
             if (found >= 0) {
               if (line[found] === "*") {
@@ -737,7 +740,7 @@ export function clikeLogicalLines(
           const end = close < 0 ? length : close + 2;
           code += " ".repeat(end - index);
           skeleton += " ".repeat(end - index);
-          commentText += line.slice(index, end);
+          commentRanges.push(index, end);
           index = end;
           if (close >= 0) stack.pop();
           continue;
@@ -878,7 +881,7 @@ export function clikeLogicalLines(
         if (ch === "/" && line[index + 1] === "/" && (!hole || hole.js)) {
           code += " ".repeat(length - index);
           skeleton += " ".repeat(length - index);
-          commentText += line.slice(index);
+          commentRanges.push(index, length);
           if (cfamily && line.endsWith("\\")) commentSpliced = true;
           index = length;
           continue;
@@ -888,7 +891,7 @@ export function clikeLogicalLines(
           stack.push({ kind: "comment", depth: 1 });
           code += "  ";
           skeleton += "  ";
-          commentText += "/*";
+          commentRanges.push(index, index + 2);
           index += 2;
           continue;
         }
@@ -1112,7 +1115,11 @@ export function clikeLogicalLines(
       }
     }
 
-    if (comments) comments[lineIndex] = commentText;
+    if (comments) {
+      if (!line.toLowerCase().includes("code-audit:ignore")) comments[lineIndex] = "";
+      else if (rawSuppression || csDirective) comments[lineIndex] = line;
+      else comments[lineIndex] = suppressionLine(line, skeleton, commentRanges);
+    }
 
     const isCodeLine = code.trim().length > 0;
     if (!isCodeLine) {
@@ -1285,6 +1292,23 @@ function stringRun(top: StringContext): RegExp | null {
     STRING_RUNS.set(excluded, run);
   }
   return run;
+}
+
+/**
+ * The line as inline suppression reads it: comments as written, code as in
+ * the skeleton (string and regex text blank), so a `code-audit:ignore` inside
+ * a string literal is not seen, and code before a comment still shows.
+ */
+function suppressionLine(line: string, skeleton: string, ranges: number[]): string {
+  let result = "";
+  let at = 0;
+  for (let index = 0; index < ranges.length; index += 2) {
+    const from = ranges[index] as number;
+    const to = ranges[index + 1] as number;
+    result += skeleton.slice(at, from).padEnd(from - at, " ") + line.slice(from, to);
+    at = to;
+  }
+  return result + skeleton.slice(at, line.length);
 }
 
 function regularString(quote: string, multiline: boolean): StringContext {

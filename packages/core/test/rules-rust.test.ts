@@ -307,9 +307,20 @@ describe("Rust rules: safe variants and paths stay silent", () => {
       ]),
     ).toEqual([]);
   });
-  // String text is blanked in the skeleton; a rule ignores matches there once
-  // it sets `codeOnly: true` (a rule change).
-  it.todo("all rules: no match inside string literals (needs codeOnly on the API rules)");
+  it("API rules: no match that starts inside a string literal (codeOnly)", () => {
+    expect(
+      rustHits("src/docs.rs", [
+        'const HELP: &str = "use Command::new(\\"sh\\").arg(\\"-c\\").arg(cmd) and .danger_accept_invalid_certs(true)";',
+        'let code = r#"let k = mem::transmute::<u8, i8>(x); Cors::permissive()"#;',
+        "let s = \"multi line",
+        "    md5::compute(data) and SameSite::None\";",
+      ]),
+    ).toEqual([]);
+    // The same calls as code are reported.
+    expect(
+      ids(rustHits("src/net.rs", ["let c = builder.danger_accept_invalid_certs(true);", "let l = Cors::permissive();"])),
+    ).toEqual(["rs-tls-accept-invalid", "rs-cors-permissive"]);
+  });
   it.todo("rs-cors-any-origin-credentials: credentials enabled in another file than the any-origin policy");
   it.todo("rs-path-traversal: Path(name) extractor bound in the signature and used on a later line (needs data flow)");
 });

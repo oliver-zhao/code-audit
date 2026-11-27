@@ -6,24 +6,24 @@ version: 1
 # Written for code-audit (Apache-2.0).
 #
 # Engine notes:
-# - JSON and Markdown are matched one physical line at a time. A line cannot
-#   tell whether an array element sits in "allow" or in "deny", so the rules
-#   for permission lists match either a single-line "allow": [...] or an
-#   element on its own line in a file that has no multi-line "deny"/"ask"
-#   array (fileAbsentPattern).
-# - TOML (.codex/config.toml), .mdc, .cursorrules, .windsurfrules and .npmrc
-#   have no language in the inventory and are not matched at all.
+# - Permission lists are matched structurally (withinKeys: [allow]) so an
+#   entry under "deny" or "ask" is never read as a grant. Other JSON and all
+#   Markdown are matched one physical line at a time.
+# - .cursorrules, .windsurfrules, .clinerules and .rules are language
+#   markdown, and Cursor .mdc rules too; .codex/config.toml is language toml
+#   (matched line by line).
 definitions:
   CLAUDE_SETTINGS: '(?:^|/)\.claude/settings(?:\.local)?\.json$'
   CURSOR_CLI: '(?:^|/)\.cursor/cli(?:-config)?\.json$'
   # Instruction, skill, command and subagent files that agent hosts load.
-  INSTR: '(?:^|/)(?:AGENTS?|SKILL|CLAUDE|GEMINI)[\w.-]*\.md$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|dsh)/.+\.md$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
+  INSTR: '(?:^|/)(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|AGENT|GEMINI|SKILL|QWEN|CRUSH|WARP)\.md$|(?:^|/)(?:\.cursorrules|\.windsurfrules|\.clinerules|\.rules)$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|qwen|dsh|amazonq|augment|trae)/.+\.mdc?$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
   # Subagent definitions.
   AGENTDEF: '(?:^|/)\.(?:claude|opencode|codex|cursor|kiro|dsh)/agents?/.+\.md$|(?:^|/)\.github/(?:agents|chatmodes)/.+\.md$|(?:^|/)plugins/[^/]+/agents/.+\.md$'
   # Multi-line deny/ask arrays: elements on their own lines cannot be told
   # apart from allow elements.
-  DENYARRAY: '"(?:deny|ask)"\s*:\s*\[\s*$'
-  NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|avoid|without)\b'
+  NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|won\x27t|cannot|can\x27t|avoid|refuse)\b'
+  # Code that is downloaded and executed (shell or interpreter).
+  REMOTE_EXEC: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+)?)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\b(?!\s+-[ceE]\b)|\b(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+(?:-\S+\s+)?<\(\s*(?:curl|wget)\b|\b(?:ba|z|da)?sh\s+-c\s+\\?[\"\x27]?\$\(\s*(?:curl|wget)\b|"-c"\s*,\s*"\$\(\s*(?:curl|wget)\b|\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)[=\s]{0,3}[\"\x27]?[^\s\"\x27;&|]{1,200}[^\n]{0,40}?(?:&&|;)\s*(?:chmod\s+\+x\s+\S{1,200}\s*(?:&&|;)\s*)?(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+[\"\x27]?[\w./~$]|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*(?:iex|Invoke-Expression)\b'
 rules:
   - id: agent-auto-approve
     title: Agent/MCP configuration auto-approves all permissions
@@ -53,7 +53,7 @@ rules:
     owasp: A08:2021
     languages:
       - json
-    pattern: '(?:curl|wget)[^|\n]{0,600}\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b'
+    pattern: '{{REMOTE_EXEC}}'
     # Other MCP files: agent-mcp-remote-script; hook files: agent-hook-network-exec.
     pathInclude: '(?:^|/)(?:\.mcp\.json|opencode\.jsonc?)$'
     message: Executing a remote script from agent configuration is a severe supply-chain risk.
@@ -76,12 +76,29 @@ rules:
     flags: ''
     pathInclude: '{{CLAUDE_SETTINGS}}'
     pattern: '"defaultMode"\s*:\s*"bypassPermissions"|"skipDangerousModePermissionPrompt"\s*:\s*true'
-    message: A committed settings file asks Claude Code to run every tool without a permission prompt (older releases honour it from project files), so text in the repository can drive arbitrary commands.
-    message_zh: 提交到仓库的配置要求 Claude Code 无需确认即可运行所有工具（旧版本会从项目文件中生效），仓库中的文本即可驱动任意命令。
+    message: A committed settings file asks Claude Code to run every tool without a permission prompt. Claude Code v2.1.257 and later ignore bypassPermissions from project and local settings, but earlier releases apply it from any settings file, so on those text in the repository can drive arbitrary commands.
+    message_zh: 提交到仓库的配置要求 Claude Code 无需确认即可运行所有工具。Claude Code v2.1.257 及以后版本会忽略项目与本地配置中的 bypassPermissions，但更早的版本会从任何配置文件中应用它，此时仓库中的文本即可驱动任意命令。
     remediation: Remove defaultMode bypassPermissions and the prompt skip from project settings; use explicit allow rules and keep the default mode.
     remediation_zh: 从项目配置中删除 bypassPermissions 默认模式和提示跳过选项；使用显式 allow 规则并保持默认模式。
     references:
       - https://code.claude.com/docs/en/settings
+  - id: agent-codex-bypass-approvals
+    title: Codex project configuration turns off approvals or the sandbox
+    title_zh: Codex 项目配置关闭了审批或沙箱
+    severity: high
+    confidence: medium
+    cwe: CWE-284
+    owasp: A01:2021
+    languages: [toml]
+    flags: ''
+    pathInclude: '(?:^|/)\.codex/config\.toml$'
+    pattern: '^\s*(?:approval_policy\s*=\s*["\x27]never["\x27]|sandbox_mode\s*=\s*["\x27]danger-full-access["\x27])'
+    message: A committed .codex/config.toml sets approval_policy = "never" or sandbox_mode = "danger-full-access". When Codex loads the project configuration, it runs commands without asking and outside the sandbox, so text in the repository can drive arbitrary commands with the user's full rights.
+    message_zh: 提交到仓库的 .codex/config.toml 设置了 approval_policy = "never" 或 sandbox_mode = "danger-full-access"。Codex 加载项目配置时会不经询问、在沙箱之外执行命令，仓库中的文本即可以用户的全部权限驱动任意命令。
+    remediation: Remove these settings from the project configuration; keep approval and sandbox choices in the user's own ~/.codex/config.toml or on the command line.
+    remediation_zh: 从项目配置中删除这些设置；审批与沙箱选项应放在用户自己的 ~/.codex/config.toml 或命令行中。
+    references:
+      - https://github.com/openai/codex/blob/main/docs/config.md
   - id: agent-claude-allow-unrestricted-shell
     title: Agent permission allow list grants every shell command
     title_zh: Agent 权限允许列表放行所有 shell 命令
@@ -92,8 +109,11 @@ rules:
     languages: [json]
     flags: ''
     pathInclude: '{{CLAUDE_SETTINGS}}|{{CURSOR_CLI}}'
-    pattern: '^\s*"(?:Bash|Shell)(?:\((?:\*|:\*|\*\*)\))?"\s*,?\s*$|"allow"\s*:\s*\[[^\]\n]{0,600}?"(?:Bash|Shell)(?:\((?:\*|:\*|\*\*)\))?"'
-    fileAbsentPattern: '{{DENYARRAY}}'
+    # Matched against each entry of a permissions "allow" list (the parsed
+    # file), so the same entry under "deny" or "ask" is not a grant. If the
+    # file does not parse, every line is matched and the scan warns.
+    withinKeys: [allow]
+    pattern: '^\s*"?(?:Bash|Shell)(?:\((?:\*|:\*|\*\*|\*:\*)\))?"?\s*,?\s*$'
     group: agent-shell-allow
     message: An allow rule of Bash / Bash(*) / Shell(*) lets the agent run any command without asking, so a prompt injection becomes command execution.
     message_zh: Bash / Bash(*) / Shell(*) 允许规则让 Agent 无需确认即可运行任意命令，提示注入即可变为命令执行。
@@ -109,8 +129,11 @@ rules:
     languages: [json]
     flags: ''
     pathInclude: '{{CLAUDE_SETTINGS}}|{{CURSOR_CLI}}'
-    pattern: '^\s*"(?:Bash|Shell)\((?:sudo|su|curl|wget|rm|bash|sh|zsh|eval|nc|ncat|ssh|scp|dd|chmod|chown)(?:\s+-[\w-]+){0,3}(?::\*|\s+\*|\s*\*)\)"\s*,?\s*$|"allow"\s*:\s*\[[^\]\n]{0,600}?"(?:Bash|Shell)\((?:sudo|su|curl|wget|rm|bash|sh|zsh|eval|nc|ncat|ssh|scp|dd|chmod|chown)(?:\s+-[\w-]+){0,3}(?::\*|\s+\*|\s*\*)\)"'
-    fileAbsentPattern: '{{DENYARRAY}}'
+    # Matched against each entry of a permissions "allow" list (the parsed
+    # file), so the same entry under "deny" or "ask" is not a grant. If the
+    # file does not parse, every line is matched and the scan warns.
+    withinKeys: [allow]
+    pattern: '^\s*"?(?:Bash|Shell)\((?:sudo|su|curl|wget|rm|bash|sh|zsh|eval|nc|ncat|ssh|scp|dd|chmod|chown)(?:\s+-[\w-]+){0,3}(?::\*|\s+\*|\s*\*)\)"?\s*,?\s*$'
     group: agent-shell-allow
     message: Pre-approving curl, wget, rm, sudo or a shell interpreter with any arguments lets the agent download, delete, escalate or run arbitrary code without a prompt.
     message_zh: 预先放行任意参数的 curl、wget、rm、sudo 或 shell 解释器，Agent 可无需确认地下载、删除、提权或执行任意代码。
@@ -156,9 +179,9 @@ rules:
     owasp: A01:2021
     languages: [json, yaml]
     pathInclude: '(?:^|/)(?:\.vscode/settings\.json|\.zed/settings\.json|\.gemini/settings\.json|\.aider\.conf\.ya?ml)$'
-    pattern: '"chat\.tools\.(?:global\.)?autoApprove"\s*:\s*true|"chat\.tools\.terminal\.autoApprove"\s*:\s*\{\s*"/\.\*/[a-z]*"\s*:\s*true|"always_allow_tool_actions"\s*:\s*true|"allowed"\s*:\s*\[[^\]\n]{0,400}"run_shell_command"\s*[,\]]|^\s*yes-always\s*:\s*true\b'
-    message: Workspace settings approve agent tool or shell calls without asking (VS Code chat.tools autoApprove, Zed always_allow_tool_actions, Gemini tools.allowed run_shell_command, Aider yes-always), so injected instructions run unattended.
-    message_zh: 工作区配置无需确认即批准 Agent 工具或 shell 调用（VS Code chat.tools autoApprove、Zed always_allow_tool_actions、Gemini tools.allowed run_shell_command、Aider yes-always），注入的指令会无人值守地执行。
+    pattern: '"chat\.tools\.(?:global\.)?autoApprove"\s*:\s*true|"chat\.tools\.terminal\.autoApprove"\s*:\s*\{\s*"/\.\*/[a-z]*"\s*:\s*true|"always_allow_tool_actions"\s*:\s*true|^\s*"default"\s*:\s*"allow"|"tool_permissions"\s*:\s*\{\s*"default"\s*:\s*"allow"|"allowed"\s*:\s*\[[^\]\n]{0,400}"run_shell_command"\s*[,\]]|^\s*yes-always\s*:\s*true\b'
+    message: Workspace settings approve agent tool or shell calls without asking (VS Code chat.tools autoApprove, Zed always_allow_tool_actions or tool_permissions default allow, Gemini tools.allowed run_shell_command, Aider yes-always), so injected instructions run unattended.
+    message_zh: 工作区配置无需确认即批准 Agent 工具或 shell 调用（VS Code chat.tools autoApprove、Zed always_allow_tool_actions 或 tool_permissions default allow、Gemini tools.allowed run_shell_command、Aider yes-always），注入的指令会无人值守地执行。
     remediation: Remove the auto-approval from the repository; approve tools per user and allowlist specific commands only.
     remediation_zh: 从仓库中删除自动批准设置；按用户批准工具，只放行特定命令。
     references:
@@ -181,16 +204,18 @@ rules:
 
   # ---- Instruction files that tell the user or agent to bypass approvals ----
   - id: agent-disable-permissions
-    title: Agent config disables permission checks
-    title_zh: Agent 配置关闭权限检查
+    title: Agent instructions tell the agent to bypass permission checks
+    title_zh: Agent 指令要求绕过权限检查
     severity: high
-    confidence: high
+    confidence: medium
     cwe: CWE-284
     owasp: A01:2021
     languages:
       - markdown
-    pattern: 'dangerously[- _]?skip[- _]?permissions|--dangerously-bypass-approvals-and-sandbox|--permission-mode[= ]bypassPermissions|--approval-mode[= ]yolo|\b(?:codex|gemini|qwen)\b[^\n]{0,80}\s--yolo\b|\bcopilot\b[^\n]{0,80}\s--allow-all-tools\b|\bdisable\s+(?:all\s+)?permission(?:s|\s+(?:checks?|prompts?))\b'
-    notPattern: '{{NEG}}[^\n]{0,60}(?:dangerously|--yolo|--allow-all-tools|bypass|disable)|\b(?:sandbox(?:ed)?|container|devcontainer|VM|virtual machine|isolated)\b'
+    # An imperative at the start of a sentence or list item. Launch flags
+    # (--dangerously-skip-permissions and others) are agent-cli-permission-bypass-flag.
+    pattern: '(?:^\s*|[.!:;]\s+)(?:[-*>]\s+|\d+[.)]\s+)?(?:please\s+|always\s+|you\s+(?:must|should)\s+)?(?:disable|bypass|turn\s+off|skip|circumvent|deactivate)\s+(?:(?:all|any|the|every|your)\s+){0,2}(?:permission|approval)s?(?:\s+(?:checks?|prompts?|requests?|dialogs?))?\b'
+    notPattern: '{{NEG}}\s+(?:[\w\x27]+\s+){0,3}(?:disable|bypass|turn\s+off|skip|circumvent|deactivate)\b'
     pathInclude: '{{INSTR}}'
     group: agent-instr-bypass
     message: Documentation instructs the agent to bypass permission checks, allowing arbitrary tool execution.
@@ -200,6 +225,22 @@ rules:
     references:
       - CWE-284
       - OWASP A01:2021
+  - id: agent-cli-permission-bypass-flag
+    title: Agent instructions launch an agent CLI with approvals turned off
+    title_zh: Agent 指令以关闭审批的方式启动 Agent CLI
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-284
+    owasp: A01:2021
+    languages: [markdown]
+    pattern: 'dangerously[- _]?skip[- _]?permissions|--dangerously-bypass-approvals-and-sandbox|--permission-mode[= ]bypassPermissions|--approval-mode[= ]yolo|\b(?:codex|gemini|qwen|copilot|cursor-agent)\b[^\n]{0,80}\s--yolo\b|\bcopilot\b[^\n]{0,80}\s--allow-all(?:-tools)?\b|\bcursor-agent\b[^\n]{0,80}\s(?:--force|-f)\b|--dangerously-allow-all\b|--skip-permissions-unsafe\b'
+    notPattern: '{{NEG}}\s+(?:[\w\x27]+\s+){0,3}[\x60"\x27]?(?:claude|codex|gemini|qwen|copilot|cursor-agent|amp|droid|--)'
+    pathInclude: '{{INSTR}}'
+    message: The file tells the agent to start Claude Code, Codex, Gemini CLI, Copilot CLI, cursor-agent, Amp or Droid with every approval turned off; check that this only happens in a disposable sandbox.
+    message_zh: 该文件要求 Agent 以关闭所有审批的方式启动 Claude Code、Codex、Gemini CLI、Copilot CLI、cursor-agent、Amp 或 Droid；需确认只在一次性沙箱中这样做。
+    remediation: Run such sessions only in an isolated container or VM, or drop the flag and allowlist the needed commands.
+    remediation_zh: 只在隔离的容器或虚拟机中运行此类会话，或去掉该参数并放行所需命令。
 
   # ---- Skills, commands and subagents ----
   - id: agent-skill-unrestricted-bash

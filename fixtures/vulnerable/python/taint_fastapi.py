@@ -7,6 +7,7 @@ Every sink line ends with a comment naming the rule expected to report it.
 
 import pickle
 import subprocess
+import ldap
 
 import httpx
 import yaml
@@ -94,7 +95,7 @@ async def hello(name: str):
 @app.post("/orders/search")
 async def order_search(request: Request):
     criteria = await request.json()
-    order = await orders.find_one(criteria)  # expect: py-taint-nosql
+    order = await db.orders.find_one(criteria)  # expect: py-taint-nosql
     return {"id": str(order["_id"])}
 
 

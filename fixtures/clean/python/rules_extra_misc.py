@@ -105,3 +105,11 @@ def run_answer(client, prompt, ACTIONS):
 
 def share(path):
     os.chmod(path, 0o640)
+
+
+def load_any(name, trust_remote_code: bool = False):
+    return AutoModel.from_pretrained(name, trust_remote_code=trust_remote_code)
+
+
+def config_path():
+    return os.path.expanduser("~/.config/app")
