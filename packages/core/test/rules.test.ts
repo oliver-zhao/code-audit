@@ -1497,7 +1497,20 @@ function worstRegexCost(
           if (best <= stage.budget) break;
         }
         if (best > stage.budget) {
-          return { ms: Math.round(best), size: stage.size, input: input.slice(0, 60) };
+          // Over budget on a slow or busy host is not yet super-linear: time
+          // the same shape at twice the size. Linear growth doubles the time;
+          // quadratic quadruples it. Report only clear super-linear growth, or
+          // a time far beyond any host's slowness.
+          const doubled = input + input.slice(prefix.length);
+          let twice = Infinity;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const started = performance.now();
+            probe.test(doubled);
+            twice = Math.min(twice, performance.now() - started);
+          }
+          if (twice / Math.max(best, 1) >= 2.8 || best > stage.budget * 10) {
+            return { ms: Math.round(best), size: stage.size, input: input.slice(0, 60) };
+          }
         }
       }
     }
