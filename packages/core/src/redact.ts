@@ -475,7 +475,7 @@ const UNQUOTED_KEYWORDS = /^(?:none|null|nil|true|false|undefined|yes|no|on|off|
  * hash algorithm names (`algorithm="HS256"`).
  */
 const NON_SECRET_WORD =
-  /^(?:optional|required|enabled|disabled|inherit|none|null|nil|true|false|yes|no|on|off|auto|default|unset|strict|lax|(?:HS|RS|ES|PS)(?:256|384|512)|EdDSA|sha-?(?:1|224|256|384|512)|sha3-(?:224|256|384|512)|md5)$/i;
+  /^(?:optional|required|enabled|disabled|inherit|none|null|nil|true|false|yes|no|on|off|auto|default|unset|strict|lax)$/i;
 
 /**
  * A dotted class path: lower-case package segments and a capitalised class
@@ -485,11 +485,54 @@ const NON_SECRET_WORD =
  */
 const CLASS_PATH = /^(?:[a-z_][a-z0-9_]{0,40}\.){2,12}[A-Z][A-Za-z0-9_]{0,80}$/;
 
-/** True for a setting word, an algorithm name or a class path (see above). */
-export function isNonSecretValue(value: string): boolean {
+const ALGORITHM_NAME =
+  /^(?:(?:HS|RS|ES|PS)(?:256|384|512)|EdDSA|sha-?(?:1|224|256|384|512)|sha3-(?:224|256|384|512)|md5)$/i;
+
+/**
+ * A name whose value is a credential itself: a password, a secret, a token, a
+ * key, a credential, a connection string. After such a name no value is ever
+ * treated as harmless (`password: "default"`, `password = "a.b.Charlie7"`,
+ * `--password -Xk9...` stay masked). Plural setting names (`secrets: inherit`,
+ * `http_tokens = "optional"`, `keys`) are not credentials themselves.
+ */
+const CREDENTIAL_NAME =
+  /pass|pwd|(?<![A-Za-z])pw(?![a-z])|[a-z]Pw(?![a-z])|credential|private[_-]?key|api[_-]?key|access[_-]?key|master[_-]?key|encryption[_-]?key|session[_-]?key|secret(?!s(?![a-z]))|token(?!s(?![a-z]))|(?<![A-Za-z])key(?![a-z])|[_-]key(?![a-z])|[a-z]Key(?![a-z])|conn(?:ection)?[_-]?str|dsn|requirepass|masterauth/i;
+
+/** What may be left readable after a secret-like name; see `exemptionsFor`. */
+export interface ValueExemptions {
+  /** Setting words (`optional`, `inherit`, `none`, ...). */
+  words: boolean;
+  /** JOSE / hash algorithm names (`HS256`, `sha256`). */
+  algorithms: boolean;
+  /** Dotted class paths (`django.contrib.auth.hashers.PBKDF2PasswordHasher`). */
+  classPaths: boolean;
+}
+
+export const NO_EXEMPTIONS: ValueExemptions = { words: false, algorithms: false, classPaths: false };
+
+/**
+ * Which harmless-value exemptions apply to the value of `name`: setting
+ * words only when the name is not a credential name; algorithm names when the
+ * name says algorithm (`JWT_ALGORITHM`, `algorithm=`) or is a JWT / HMAC /
+ * signing call that is not a credential name; class paths only for names of
+ * class lists (`PASSWORD_HASHERS`, `AUTHENTICATION_BACKENDS`).
+ */
+export function exemptionsFor(name: string): ValueExemptions {
+  const credential = CREDENTIAL_NAME.test(name);
+  return {
+    words: !credential,
+    algorithms: /alg/i.test(name) || (!credential && /jwt|hmac|sign/i.test(name)),
+    classPaths: /hashers?|backends?|class(?:es)?|validators?|middlewares?|providers?|handlers?|engines?|serializers?/i.test(name),
+  };
+}
+
+/** True for a setting word, an algorithm name or a class path that `exemptions` allows. */
+export function isNonSecretValue(value: string, exemptions: ValueExemptions = NO_EXEMPTIONS): boolean {
   const trimmed = value.trim();
   if (trimmed.length > 400) return false;
-  return NON_SECRET_WORD.test(trimmed) || CLASS_PATH.test(trimmed);
+  if (exemptions.algorithms && ALGORITHM_NAME.test(trimmed)) return true;
+  if (exemptions.words && NON_SECRET_WORD.test(trimmed) && !ALGORITHM_NAME.test(trimmed)) return true;
+  return exemptions.classPaths && CLASS_PATH.test(trimmed);
 }
 
 function skipSpaces(line: string, from: number, limit: number): number {
@@ -519,6 +562,8 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
   const ranges: RedactRange[] = [];
   if (!SECRET_WORD_TEST.test(line)) return ranges;
   const literals = lexLiterals(line);
+  // Harmless-value exemptions for the name being looked at (see below).
+  let exempt: ValueExemptions = NO_EXEMPTIONS;
   // Literals are sorted by position: the last one that opens at or before
   // `position`, by binary search (a minified line can hold thousands).
   const lastOpeningAtOrBefore = (position: number): Literal | undefined => {
@@ -550,7 +595,7 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
   const addLiteral = (literal: Literal): void => {
     if (literal.contentEnd <= literal.contentStart) return;
     const content = line.slice(literal.contentStart, literal.contentEnd);
-    if (isReferenceValue(content) || isNonSecretValue(content)) return;
+    if (isReferenceValue(content) || isNonSecretValue(content, exempt)) return;
     ranges.push({ start: literal.contentStart, end: literal.contentEnd });
   };
 
@@ -589,7 +634,7 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       let end = start + 1;
       while (end < limit && line[end] !== first) end += 1;
       const quoted = line.slice(start + 1, end);
-      if (end > start + 1 && !isReferenceValue(quoted) && !isNonSecretValue(quoted)) {
+      if (end > start + 1 && !isReferenceValue(quoted) && !isNonSecretValue(quoted, exempt)) {
         ranges.push({ start: start + 1, end });
       }
       return;
@@ -601,7 +646,7 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       value.length === 0 ||
       isReferenceValue(value) ||
       UNQUOTED_KEYWORDS.test(value) ||
-      isNonSecretValue(value)
+      isNonSecretValue(value, exempt)
     ) {
       return;
     }
@@ -673,6 +718,10 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
     SECRET_WORD.lastIndex = Math.max(SECRET_WORD.lastIndex, nameEnd);
     const name = line.slice(nameStart, nameEnd);
     const isFlag = /^--?[A-Za-z]/.test(name);
+    exempt = exemptionsFor(name);
+    // A flag after a flag is a switch only when the first flag does not
+    // name a credential: `--password -Xk9...` is a password.
+    const switchFlag = isFlag && exempt.words;
 
     const inside = literalAt(match.index);
     let position = nameEnd;
@@ -690,7 +739,7 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
           }
         } else if (isFlag && scan > nameEnd) {
           // `--allow-unauthenticated --region x`: the next word is a flag.
-          if (line[scan] !== "-") maskUnquoted(scan, inside.contentEnd, true);
+          if (!(switchFlag && line[scan] === "-")) maskUnquoted(scan, inside.contentEnd, true);
           continue;
         } else if (scan < inside.contentEnd) {
           continue;
@@ -749,7 +798,7 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       const literal = literalOpeningAt(position);
       if (literal) addLiteral(literal);
       // A flag followed by another flag is a switch, not a name and a value.
-      else if (!(isFlag && line[position] === "-")) maskUnquoted(position, line.length, true);
+      else if (!(switchFlag && line[position] === "-")) maskUnquoted(position, line.length, true);
     } else if (!keyLiteral && position > afterName && !/[)\]]/.test(line.slice(afterName, position))) {
       // `password VALUE`: the value is separated from the name by blanks
       // only (redis `requirepass`-style settings, `.netrc`, notes, comments).
@@ -803,7 +852,8 @@ export const PRIVATE_KEY_MAX_LINES = 400;
 /**
  * True when a line can be part of the body of a PEM block: base64 text (also
  * quoted, concatenated or with a `\n` escape, as when a key is written in
- * source code), a PEM header such as `Proc-Type:` / `DEK-Info:`, or blank.
+ * source code), any line with a run of 40 or more base64 characters, a PEM
+ * header such as `Proc-Type:` / `DEK-Info:`, or blank.
  * Code such as `if (pem.startsWith(...)) {` is not, and ends the block.
  */
 function isPemBodyLine(line: string): boolean {
@@ -820,7 +870,12 @@ function isPemBodyLine(line: string): boolean {
     .replace(/[\s"'`+,;)&.\\]+$/, "")
     // A string prefix (b"...", r"...", L"...").
     .replace(/^[bBrRuUL]{1,2}(?=["'])["']/, "");
-  return /^[A-Za-z0-9+/]{1,}={0,2}$/.test(text);
+  if (/^[A-Za-z0-9+/]{1,}={0,2}$/.test(text)) return true;
+  // Key material wrapped in something else: a trailing comment, a Markdown
+  // quote (`> MII...`), a diff (`-MII...`), a margin (`|MII...`), a table
+  // cell, a tag, `echo "MII..." >> key`. A run of 40 base64 characters is
+  // not code.
+  return /[A-Za-z0-9+/]{40,}/.test(line);
 }
 
 /**
@@ -831,16 +886,24 @@ function isPemBodyLine(line: string): boolean {
 const STRONG_SECRET_WORD =
   /pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|conn(?:ection)?[_-]?str(?:ing)?|dsn|session[_-]?key/i;
 
-/** A `key: value` / `"key": value` / `key = value` line inside a mapping. */
-const KEY_VALUE_LINE = /^\s*(?:"[^"\n]{1,200}"|'[^'\n]{1,200}'|[A-Za-z_$][\w$.-]{0,200})\s*(?::(?!:)|=(?![=>]))/;
+/** A `key: value` / `"key": value` / `key = value` line inside a mapping; group 1 is the key. */
+const KEY_VALUE_LINE = /^\s*(?:"([^"\n]{1,200})"|'([^'\n]{1,200})'|([A-Za-z_$][\w$.-]{0,200}))\s*(?::(?!:)|=(?![=>]))/;
 
-/** Every string literal of the line is a reference or a non-secret value. */
-function literalsAreHarmless(line: string): boolean {
+/** A `key: value` line whose key is not secret-like: left to per-line redaction. */
+function isPlainKeyValueLine(line: string): boolean {
+  const match = KEY_VALUE_LINE.exec(line);
+  if (!match) return false;
+  const key = match[1] ?? match[2] ?? match[3] ?? "";
+  return !SECRET_WORD_TEST.test(key) && !CREDENTIAL_NAME.test(key);
+}
+
+/** Every string literal of the line is a reference or a value `exemptions` allows. */
+function literalsAreHarmless(line: string, exemptions: ValueExemptions): boolean {
   const literals = lexLiterals(line);
   if (literals.length === 0) return false;
   for (const literal of literals) {
     const content = line.slice(literal.contentStart, literal.contentEnd);
-    if (!isReferenceValue(content) && !isNonSecretValue(content)) return false;
+    if (!isReferenceValue(content) && !isNonSecretValue(content, exemptions)) return false;
   }
   return true;
 }
@@ -867,6 +930,7 @@ export function sensitiveLines(lines: string[]): Uint8Array {
   let keyLines = 0;
   let continuation = 0;
   let relaxed = false;
+  let continuationExempt: ValueExemptions = NO_EXEMPTIONS;
   let blockIndent = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
@@ -908,7 +972,7 @@ export function sensitiveLines(lines: string[]): Uint8Array {
     }
     if (continuation > 0) {
       const harmless =
-        (relaxed && KEY_VALUE_LINE.test(line)) || literalsAreHarmless(line);
+        (relaxed && isPlainKeyValueLine(line)) || literalsAreHarmless(line, continuationExempt);
       if (!harmless) flags[index] = LINE_MASK_STRINGS;
       continuation -= 1;
       const trimmed = line.trim();
@@ -923,7 +987,8 @@ export function sensitiveLines(lines: string[]): Uint8Array {
     if (SECRET_BLOCK_SCALAR.test(body)) blockIndent = indent;
     else if (SECRET_CONTINUES.test(body)) {
       continuation = 20;
-      relaxed = /[{:]$/.test(body) && !STRONG_SECRET_WORD.test(body);
+      relaxed = /[{:]$/.test(body) && !STRONG_SECRET_WORD.test(body) && !CREDENTIAL_NAME.test(body);
+      continuationExempt = exemptionsFor(body);
     }
   }
   return flags;

@@ -143,17 +143,22 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
     `config.json`, `token:` / `client-key-data:` in a kubeconfig.
   `.netrc`, `.pgpass`, `.npmrc`, `.pypirc` / `pip.conf`, Docker `auths` and
   kubeconfig credentials are also reported as findings.
-  Deliberately left readable, because they are not secrets: setting words
+  Deliberately left readable, because they are not secrets, and only when
+  the name is not itself a credential name (password, passwd, pwd, pw,
+  secret, token, key, credential, connection string, ...): setting words
   (`http_tokens = "optional"`, `secrets: inherit`), JOSE and hash algorithm
-  names (`"HS256"`, `sha256`), dotted class paths with lower-case packages
-  (`django.contrib.auth.hashers.PBKDF2PasswordHasher`), a flag that follows a
-  secret-like flag (`--allow-unauthenticated --region`), and inside a
-  settings section named only weakly like a secret (`"AuthServer": {`,
-  `jwt:`) the values of keys that are not secret-like (`"Authority"`,
-  `"ClientId"`). A PEM private-key block is masked up to its END marker, or
-  up to the first line that cannot be key material (so a BEGIN marker in a
-  string literal of code does not mask the rest of the file), at most 400
-  lines.
+  names where the name says algorithm or JWT/HMAC (`JWT_ALGORITHM = "HS256"`),
+  dotted class paths in class lists (`PASSWORD_HASHERS`,
+  `AUTHENTICATION_BACKENDS`), a flag that follows a non-credential flag
+  (`--allow-unauthenticated --region`; `--password -X...` is masked), and
+  inside a settings section named only weakly like a secret
+  (`"AuthServer": {`, `jwt:`) the values of keys that are not secret-like
+  (`"Authority"`, `"ClientId"`; `"Pw"`, `"Secret"` stay masked). A PEM
+  private-key block is masked up to its END marker, or up to the first line
+  that is neither blank, a PEM header, nor holds a run of 40 base64
+  characters (so a BEGIN marker in a string literal of code does not mask
+  the rest of the file, and a key quoted, commented, diffed or in a table is
+  still masked), at most 400 lines.
 - **Nothing in the repository lowers the result silently.** Every mechanism
   in the table below is counted and printed as a `WARNING`, and `--untrusted`
   turns all of them off.
