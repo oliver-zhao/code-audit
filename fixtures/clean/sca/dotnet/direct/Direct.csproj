@@ -10,7 +10,7 @@
     <PackageReference Include="SharpZipLib">
       <Version>$(ZipLibVersion)</Version>
     </PackageReference>
-    <PackageReference Include="StyleCop.Analyzers" Version="1.1.118" PrivateAssets="all" />
+    <PackageReference Include="StyleCop.Analyzers" Version="1.1.118" PrivateAssets="all" IncludeAssets="analyzers; build" />
   </ItemGroup>
 
 </Project>

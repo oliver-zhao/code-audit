@@ -12,8 +12,8 @@
     <PackageReference Include="SharpZipLib">
       <Version>$(ZipLibVersion)</Version>
     </PackageReference>
-    <!-- Build-only analyzer: dev scope -->
-    <PackageReference Include="StyleCop.Analyzers" Version="1.1.118" PrivateAssets="all" />
+    <!-- Analyzer without compile or runtime assets: dev scope -->
+    <PackageReference Include="StyleCop.Analyzers" Version="1.1.118" PrivateAssets="all" IncludeAssets="analyzers; build" />
     <!-- Floating version: not queried, counted in a warning -->
     <PackageReference Include="Serilog" Version="2.*" />
   </ItemGroup>
