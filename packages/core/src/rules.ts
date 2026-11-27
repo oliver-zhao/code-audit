@@ -32,6 +32,8 @@ export const RULE_LANGUAGES = [
   "yaml",
   "json",
   "markdown",
+  "razor",
+  "xml",
 ] as const;
 
 const RuleLanguageSchema = z.enum(RULE_LANGUAGES);
@@ -63,7 +65,7 @@ const RuleObjectSchema = z
      */
     redactEvidence: z.boolean().optional(),
     /**
-     * Python only: ignore a match that starts inside the text of a string
+     * Python and C#: ignore a match that starts inside the text of a string
      * literal (`s = "os.system(cmd)"`). For rules that look for an API call;
      * not for rules that legitimately read literals (SQL text, URLs, hosts).
      */
@@ -481,8 +483,9 @@ export interface LogicalLine {
    */
   headerEnd: number;
   /**
-   * Python only: `text` with the contents of string literals replaced by
-   * spaces, the code of f-string replacement fields replaced by
+   * Python and C#: `text` with the contents of string literals replaced by
+   * spaces, the code of f-string replacement fields (C#: interpolation holes)
+   * replaced by
    * `SKELETON_FIELD`, and the line breaks that do not end anything (inside a
    * string, after a backslash) replaced by a space. Brackets, commas and
    * semicolons that remain are code. Same length as `text`.
@@ -658,7 +661,7 @@ function stringPrefixAt(line: string, index: number): number {
   return ahead[0].length;
 }
 
-/** Why and where the Python lexer could not vouch for its own result. */
+/** Why and where the Python or C# lexer could not vouch for its own result. */
 export interface LexDiagnostics {
   /** Zero-based indexes of lines whose code is longer than the line cap. */
   overLong: number[];
@@ -1283,6 +1286,634 @@ export function pythonLogicalLines(
   return result;
 }
 
+/** An open C# string literal. */
+interface CsStringContext {
+  kind: "string";
+  form: "regular" | "verbatim" | "raw";
+  /** Number of `$` in the prefix; 0 when the literal is not interpolated. */
+  dollars: number;
+  /** Raw string literal: number of quotes in the delimiter. */
+  quotes: number;
+}
+
+/** An interpolation hole `{...}` of an interpolated C# string. */
+interface CsHoleContext {
+  kind: "hole";
+  /** Brackets opened inside the hole and not closed yet. */
+  depth: number;
+  /** True after the `:` that starts the format string. */
+  spec: boolean;
+}
+
+/** An open `/* ... *\/` comment. */
+interface CsCommentContext {
+  kind: "comment";
+}
+
+type CsContext = CsStringContext | CsHoleContext | CsCommentContext;
+
+/** An open code bracket and the line it was opened on. */
+interface CsBracket {
+  ch: "(" | "[" | "{";
+  line: number;
+}
+
+/** Prefix and opening quotes of a C# string literal: `"`, `@"`, `$"`, `$@"`, `@$"`, `"""`, `$$"""`. */
+const CS_STRING_START = /(\${0,16})(@?)(\${0,16})("+)/y;
+
+/** A complete C# character literal. */
+const CS_CHAR_LITERAL = /'(?:\\(?:u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{1,4}|[^\n])|[^'\\\n])'/y;
+
+/** The end of a line whose expression goes on: a binary operator, `=`, `=>`, `.` or `?`. */
+const CS_CONTINUES_AT_END = /(?:(?<!\+)\+|=>?|&&|\|\||\?|(?<!\.)\.)\s*$/;
+
+/** The start of a line that continues the expression before it. */
+const CS_CONTINUES_AT_START = /^\s*(?:\+(?!\+)|\.[A-Za-z_@]|\?|:(?!:)|&&|\|\||=>)/;
+
+/**
+ * A line that can only be the start of a member or type, never the inside of
+ * an open `(` or `[`: when one turns up while a bracket is open, the lexer (or
+ * the file) is wrong about that bracket.
+ */
+const CS_HARD_RESTART =
+  /^\s*(?:(?:public|private|protected|internal)\s+[\w<\[]|namespace\s+[A-Za-z_][\w.]*(?:\s*[;{])?\s*$|(?:(?:sealed|static|abstract|partial)\s+){0,3}(?:class|interface|struct|enum)\s+[A-Za-z_]\w*\s*(?:[:<{(]|$))/;
+
+/** A line inside a multi-line string that looks like a C# statement. */
+const CS_STATEMENT_LIKE =
+  /^\s*(?:var\s+\w+\s*=|return\b|await\s|throw\s+new\b|(?:if|foreach|while|using)\s*\(|[A-Za-z_][\w.]{0,100}\s*(?:[-+*/|&]?=(?!=)|\())[^\n]{0,400};\s*$/;
+
+/**
+ * Open brackets that are tracked; deeper nesting (generated or hostile input)
+ * is only counted, so every bracket costs constant time.
+ */
+const CS_MAX_BRACKETS = 256;
+/** Nested `#if` levels whose bracket state is saved. */
+const CS_MAX_CONDITIONALS = 64;
+
+/** A multi-line string longer than this many lines is checked for code-like content. */
+const CS_STRING_FALLBACK_MIN_LINES = 60;
+const CS_STRING_FALLBACK_MIN_CODE_LINES = 20;
+
+/**
+ * Turn the physical lines of a C# file into the text rules are matched
+ * against. The units have the same shape as the Python ones
+ * (`pythonLogicalLines`):
+ *
+ * - `//`, `///` and `/* ... *\/` comments (also across lines) are replaced by
+ *   blanks, so columns stay those of the physical line; `//` inside a string
+ *   is not a comment;
+ * - string literals of every form (regular with escapes, character literals,
+ *   verbatim `@"..."` with `""`, interpolated `$"..."`, `$@"..."` / `@$"..."`,
+ *   raw `"""..."""` with any number of quotes and `$` / `$$` prefixes) are
+ *   kept in `text`, so rules can read SQL text or connection strings, and
+ *   blanked in `skeleton`, so `codeOnly` rules ignore them; the code in an
+ *   interpolation hole is code (`SKELETON_FIELD` in the skeleton);
+ * - a statement stays one unit while a `(` or `[` is open (not a `{`: a block
+ *   body is a list of statements), while a string or interpolation hole spans
+ *   lines, and across a line break next to a binary operator, `=`, `=>`, `.`
+ *   or `?:` (`"..." +` at the end of a line, `.Where(...)` at the start of the
+ *   next);
+ * - preprocessor lines (`#if`, `#region`, ...) are not code; every branch of
+ *   an `#if` starts from the bracket state at the `#if`.
+ *
+ * Like the Python lexer it FAILS OPEN: when the file ends inside a string, a
+ * comment or an open `(` / `[`, when a closing bracket does not match the open
+ * one, when a member declaration turns up inside an open `(`, when a regular
+ * string is not closed at the end of its line, or when a long multi-line
+ * string keeps looking like code, the region is added again as plain physical
+ * lines and recorded in `diagnostics.fallbacks`. Statements longer than
+ * `MAX_LOGICAL_LINE_SPAN` code lines or `MAX_LOGICAL_LINE_LENGTH` characters
+ * are matched in overlapping windows (`diagnostics.cuts`), and lines longer
+ * than `MAX_PATTERN_LINE_LENGTH` in windows (`overLong`). The lexer is one
+ * pass over the characters.
+ */
+export function csharpLogicalLines(
+  lines: string[],
+  overLong?: number[],
+  diagnostics?: LexDiagnostics,
+): LogicalLine[] {
+  const result: LogicalLine[] = [];
+  const windows: LogicalLine[] = [];
+  const stack: CsContext[] = [];
+  let brackets: CsBracket[] = [];
+  // Openers beyond CS_MAX_BRACKETS, counted but not tracked.
+  let bracketOverflow = 0;
+  // Bracket state at each open `#if`, restored at `#elif` / `#else`.
+  const conditionals: CsBracket[][] = [];
+  let conditionalDepth = 0;
+  // Line where the outermost open string or comment began.
+  let contextStart = -1;
+  // Long multi-line string: body lines and lines that look like statements.
+  let stringBodyLines = 0;
+  let stringCodeLike = 0;
+  let continued = false;
+
+  let parts: string[] = [];
+  let skeletonParts: string[] = [];
+  let softBreaks: boolean[] = [];
+  let start = 0;
+  let sawCode = false;
+  let unitCodeLines = 0;
+  let unitNewLength = 0;
+  let statementStart = 0;
+  let statementCut = false;
+  const MAX_UNIT_PARTS = 5000;
+
+  // Regions are merged and turned into plain-line units once, at the end, so
+  // overlapping regions cost nothing extra.
+  const fallbackRegions: Array<{ from: number; to: number; reason: string }> = [];
+  const addFallback = (from: number, to: number, reason: string): void => {
+    fallbackRegions.push({ from: Math.max(0, from), to: Math.min(to, lines.length - 1), reason });
+  };
+
+  const flush = (): void => {
+    if (parts.length === 0) return;
+    const offsets: number[] = [];
+    let offset = 0;
+    for (const part of parts) {
+      offsets.push(offset);
+      offset += part.length + 1;
+    }
+    let skeleton = "";
+    if (sawCode) {
+      for (let index = 0; index < skeletonParts.length; index += 1) {
+        skeleton += skeletonParts[index] as string;
+        if (index < skeletonParts.length - 1) skeleton += softBreaks[index] ? " " : "\n";
+      }
+    }
+    result.push({
+      start,
+      text: sawCode ? parts.join("\n") : "",
+      offsets,
+      declaration: false,
+      headerEnd: 0,
+      skeleton,
+    });
+    parts = [];
+    skeletonParts = [];
+    softBreaks = [];
+    sawCode = false;
+    unitCodeLines = 0;
+    unitNewLength = 0;
+  };
+
+  /** Flush a window of a statement that goes on, keeping half of it as overlap. */
+  const cut = (lineIndex: number): void => {
+    if (!statementCut) {
+      statementCut = true;
+      diagnostics?.cuts.push(statementStart);
+    }
+    let count = 0;
+    let codeLines = 0;
+    let length = 0;
+    while (count < parts.length && count < MAX_UNIT_PARTS / 2) {
+      const part = parts[parts.length - 1 - count] as string;
+      if (part.length > 0) {
+        if (codeLines >= MAX_LOGICAL_LINE_SPAN / 2) break;
+        if (length + part.length + 1 > MAX_LOGICAL_LINE_LENGTH / 2) break;
+        codeLines += 1;
+        length += part.length + 1;
+      }
+      count += 1;
+    }
+    const from = parts.length - count;
+    const tail = codeLines > 0
+      ? { parts: parts.slice(from), skeletons: skeletonParts.slice(from), soft: softBreaks.slice(from) }
+      : null;
+    const hadCode = sawCode;
+    flush();
+    if (tail !== null) {
+      parts = tail.parts;
+      skeletonParts = tail.skeletons;
+      softBreaks = tail.soft;
+      start = lineIndex + 1 - tail.parts.length;
+      sawCode = hadCode;
+    }
+  };
+
+  const innermostIsParen = (): boolean => {
+    const top = brackets[brackets.length - 1];
+    return top !== undefined && top.ch !== "{";
+  };
+
+  /** Close `ch`; an opener above the matching one was never closed. */
+  const closeBracket = (ch: string, lineIndex: number): void => {
+    if (bracketOverflow > 0) {
+      bracketOverflow -= 1;
+      return;
+    }
+    const want = ch === ")" ? "(" : ch === "]" ? "[" : "{";
+    let index = brackets.length - 1;
+    while (index >= 0 && (brackets[index] as CsBracket).ch !== want) index -= 1;
+    if (index < 0) return; // A stray closer changes nothing.
+    let unbalancedFrom = -1;
+    for (let above = index + 1; above < brackets.length; above += 1) {
+      const entry = brackets[above] as CsBracket;
+      if (entry.ch !== "{" && (unbalancedFrom < 0 || entry.line < unbalancedFrom)) {
+        unbalancedFrom = entry.line;
+      }
+    }
+    brackets.length = index;
+    if (unbalancedFrom >= 0 && unbalancedFrom < lineIndex) {
+      addFallback(unbalancedFrom, lineIndex, `a "${ch}" closes a bracket while an inner "(" or "[" is still open`);
+    }
+  };
+
+  /** Drop the `(` / `[` above the innermost `{`; returns the first line of them. */
+  const dropOpenParens = (): number => {
+    let first = -1;
+    while (brackets.length > 0 && (brackets[brackets.length - 1] as CsBracket).ch !== "{") {
+      first = (brackets.pop() as CsBracket).line;
+    }
+    return first;
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    const length = line.length;
+
+    if (stack.length > 0 && stack[0]?.kind === "string") {
+      stringBodyLines += 1;
+      if (line.length <= 500 && CS_STATEMENT_LIKE.test(line)) stringCodeLike += 1;
+    }
+
+    // Recovery: a member or type declaration cannot be inside an open ( or [.
+    if (stack.length === 0 && innermostIsParen() && length <= 1000 && CS_HARD_RESTART.test(line)) {
+      flush();
+      const first = dropOpenParens();
+      continued = false;
+      if (first >= 0 && first < lineIndex) {
+        addFallback(first, lineIndex - 1, "a declaration starts while a \"(\" or \"[\" is still open");
+      }
+    }
+
+    if (parts.length === 0) {
+      start = lineIndex;
+      if (!statementCut) statementStart = lineIndex;
+    }
+
+    let code = "";
+    let skeleton = "";
+    let regularOpenAtEnd = false;
+
+    // Preprocessor directive: not code, but it decides the bracket state.
+    const directive = stack.length === 0 ? /^\s*#\s*([a-z]+)/.exec(line) : null;
+    if (directive) {
+      const name = directive[1] as string;
+      if (name === "if") {
+        conditionalDepth += 1;
+        if (conditionalDepth <= CS_MAX_CONDITIONALS) conditionals.push(brackets.slice());
+      } else if (name === "elif" || name === "else") {
+        const saved = conditionalDepth <= CS_MAX_CONDITIONALS ? conditionals[conditionalDepth - 1] : undefined;
+        if (saved) {
+          brackets = saved.slice();
+          bracketOverflow = 0;
+        }
+      } else if (name === "endif" && conditionalDepth > 0) {
+        if (conditionalDepth <= CS_MAX_CONDITIONALS) conditionals.pop();
+        conditionalDepth -= 1;
+      }
+    } else {
+      let index = 0;
+      while (index < length) {
+        const ch = line[index] as string;
+        const top = stack[stack.length - 1];
+
+        if (top?.kind === "comment") {
+          const close = line.indexOf("*/", index);
+          const end = close < 0 ? length : close + 2;
+          code += " ".repeat(end - index);
+          skeleton += " ".repeat(end - index);
+          index = end;
+          if (close >= 0) stack.pop();
+          continue;
+        }
+
+        if (top?.kind === "string") {
+          let taken = 1;
+          let closes = false;
+          let opensHole = false;
+          if (top.form === "raw") {
+            if (ch === '"') {
+              let run = 1;
+              while (line[index + run] === '"') run += 1;
+              if (run >= top.quotes) {
+                // Extra quotes before the delimiter are content.
+                const content = run - top.quotes;
+                if (content > 0) {
+                  code += line.slice(index, index + content);
+                  skeleton += " ".repeat(content);
+                  index += content;
+                }
+                closes = true;
+                taken = top.quotes;
+              } else {
+                taken = run;
+              }
+            } else if (ch === "{" && top.dollars > 0) {
+              let run = 1;
+              while (line[index + run] === "{") run += 1;
+              taken = run;
+              opensHole = run >= top.dollars;
+            }
+          } else if (ch === "\\" && top.form === "regular") {
+            taken = index + 1 < length ? 2 : 1;
+          } else if (ch === '"') {
+            if (top.form === "verbatim" && line[index + 1] === '"') taken = 2;
+            else closes = true;
+          } else if (top.dollars > 0 && ch === "{") {
+            if (line[index + 1] === "{") taken = 2;
+            else opensHole = true;
+          } else if (top.dollars > 0 && ch === "}" && line[index + 1] === "}") {
+            taken = 2;
+          }
+          const chunk = line.slice(index, index + taken);
+          index += taken;
+          if (closes) {
+            stack.pop();
+            code += chunk;
+            skeleton += stack.length === 0 ? chunk : " ".repeat(chunk.length);
+          } else {
+            code += chunk;
+            skeleton += " ".repeat(chunk.length);
+            if (opensHole) stack.push({ kind: "hole", depth: 0, spec: false });
+          }
+          continue;
+        }
+
+        // Code: top level or inside an interpolation hole.
+        const hole = top?.kind === "hole" ? top : undefined;
+        if (hole?.spec) {
+          // Format string of a hole: literal text up to the closing brace.
+          if (ch === "}") {
+            stack.pop();
+            const parent = stack[stack.length - 1];
+            let taken = 1;
+            if (parent?.kind === "string" && parent.form === "raw") {
+              while (taken < parent.dollars && line[index + taken] === "}") taken += 1;
+            }
+            code += line.slice(index, index + taken);
+            skeleton += " ".repeat(taken);
+            index += taken;
+          } else if (ch === '"' && stack[stack.length - 2]?.kind === "string" &&
+            (stack[stack.length - 2] as CsStringContext).form !== "raw") {
+            // A quote cannot be part of the format of a non-raw string: it ends it.
+            stack.pop();
+          } else {
+            code += ch;
+            skeleton += " ";
+            index += 1;
+          }
+          continue;
+        }
+
+        if (!hole && ch === "/" && line[index + 1] === "/") {
+          code += " ".repeat(length - index);
+          skeleton += " ".repeat(length - index);
+          index = length;
+          continue;
+        }
+        if (ch === "/" && line[index + 1] === "*") {
+          if (stack.length === 0) contextStart = lineIndex;
+          stack.push({ kind: "comment" });
+          code += "  ";
+          skeleton += "  ";
+          index += 2;
+          continue;
+        }
+
+        // A run of $ / @ is tried once, at its first character.
+        const prefixRun = index > 0 && (line[index - 1] === "$" || line[index - 1] === "@");
+        if (ch === '"' || ((ch === "@" || ch === "$") && !prefixRun)) {
+          CS_STRING_START.lastIndex = index;
+          const opening = CS_STRING_START.exec(line);
+          const dollarsBefore = opening ? (opening[1] as string).length : 0;
+          const dollarsAfter = opening ? (opening[3] as string).length : 0;
+          if (
+            opening &&
+            (dollarsBefore === 0 || dollarsAfter === 0) &&
+            !(ch !== '"' && index > 0 && IDENTIFIER_CHAR.test(line[index - 1] as string))
+          ) {
+            const verbatim = opening[2] === "@";
+            const dollars = dollarsBefore + dollarsAfter;
+            const quoteRun = (opening[4] as string).length;
+            const prefix = opening[0].length - quoteRun;
+            let context: CsStringContext;
+            let taken: number;
+            if (!verbatim && quoteRun >= 3) {
+              context = { kind: "string", form: "raw", dollars, quotes: quoteRun };
+              taken = prefix + quoteRun;
+            } else {
+              context = {
+                kind: "string",
+                form: verbatim ? "verbatim" : "regular",
+                dollars: Math.min(dollars, 1),
+                quotes: 1,
+              };
+              taken = prefix + 1;
+            }
+            const chunk = line.slice(index, index + taken);
+            if (stack.length === 0) contextStart = lineIndex;
+            const topLevel = stack.length === 0;
+            stack.push(context);
+            code += chunk;
+            skeleton += topLevel ? chunk : " ".repeat(chunk.length);
+            index += taken;
+            continue;
+          }
+        }
+
+        if (ch === "'") {
+          CS_CHAR_LITERAL.lastIndex = index;
+          const literal = CS_CHAR_LITERAL.exec(line);
+          if (literal) {
+            const text = literal[0];
+            code += text;
+            skeleton += hole
+              ? " ".repeat(text.length)
+              : `'${" ".repeat(text.length - 2)}'`;
+            index += text.length;
+            continue;
+          }
+        }
+
+        if (hole) {
+          if (ch === "(" || ch === "[" || ch === "{") hole.depth += 1;
+          else if (ch === ")" || ch === "]") hole.depth = Math.max(0, hole.depth - 1);
+          else if (ch === "}") {
+            if (hole.depth > 0) hole.depth -= 1;
+            else {
+              stack.pop();
+              const parent = stack[stack.length - 1];
+              let taken = 1;
+              if (parent?.kind === "string" && parent.form === "raw") {
+                while (taken < parent.dollars && line[index + taken] === "}") taken += 1;
+              }
+              code += line.slice(index, index + taken);
+              skeleton += " ".repeat(taken);
+              index += taken;
+              continue;
+            }
+          } else if (ch === ":" && hole.depth === 0) {
+            if (line[index + 1] === ":") {
+              code += "::";
+              skeleton += SKELETON_FIELD.repeat(2);
+              index += 2;
+              continue;
+            }
+            hole.spec = true;
+            code += ch;
+            skeleton += " ";
+            index += 1;
+            continue;
+          }
+          if (!/\s/.test(ch)) sawCode = true;
+          code += ch;
+          skeleton += /\s/.test(ch) ? ch : SKELETON_FIELD;
+          index += 1;
+          continue;
+        }
+
+        if (ch === "(" || ch === "[" || ch === "{") {
+          if (brackets.length < CS_MAX_BRACKETS) brackets.push({ ch, line: lineIndex });
+          else bracketOverflow += 1;
+        }
+        else if (ch === ")" || ch === "]" || ch === "}") closeBracket(ch, lineIndex);
+        if (!/\s/.test(ch)) sawCode = true;
+        code += ch;
+        skeleton += ch;
+        index += 1;
+      }
+
+      // A regular string cannot span lines (only an interpolation hole of an
+      // interpolated one can, since C# 11): one that is open here was misread
+      // or the file is not valid C#. Close it and match the line as plain text.
+      const top = stack[stack.length - 1];
+      if (top?.kind === "string" && top.form === "regular") {
+        stack.pop();
+        regularOpenAtEnd = true;
+        // A hole of a regular string around it stays open: holes may span lines.
+      }
+      if (regularOpenAtEnd) {
+        addFallback(lineIndex, lineIndex, "a string is not closed at the end of its line");
+      }
+    }
+
+    const isCodeLine = code.trim().length > 0;
+    if (!isCodeLine) {
+      code = "";
+      skeleton = "";
+    } else {
+      sawCode = true;
+      if (code.length > MAX_PATTERN_LINE_LENGTH) {
+        overLong?.push(lineIndex);
+        diagnostics?.overLong.push(lineIndex);
+        for (const unit of windowUnits(lineIndex, code)) windows.push(unit);
+        code = code.slice(0, MAX_PATTERN_LINE_LENGTH);
+        skeleton = skeleton.slice(0, MAX_PATTERN_LINE_LENGTH);
+      }
+    }
+
+    // A comment never contains another context, so the bottom of the stack
+    // says whether a string or hole is open.
+    const inString = stack.length > 0 && (stack[0] as CsContext).kind !== "comment";
+    if (isCodeLine && !inString) {
+      continued =
+        stack.length === 0 &&
+        (CS_CONTINUES_AT_END.test(skeleton.trimEnd().slice(-4)) ||
+          (lineIndex + 1 < lines.length &&
+            CS_CONTINUES_AT_START.test((lines[lineIndex + 1] as string).slice(0, 200))));
+    }
+    parts.push(code);
+    skeletonParts.push(skeleton);
+    softBreaks.push(inString || continued);
+    if (isCodeLine) {
+      unitCodeLines += 1;
+      unitNewLength += code.length + 1;
+    }
+
+    // The outermost string or comment has ended: check a long string.
+    if (stack.length === 0 && contextStart >= 0) {
+      if (
+        stringBodyLines > CS_STRING_FALLBACK_MIN_LINES &&
+        stringCodeLike >= CS_STRING_FALLBACK_MIN_CODE_LINES
+      ) {
+        addFallback(
+          contextStart,
+          lineIndex,
+          `a string literal of ${stringBodyLines} lines contains ${stringCodeLike} lines that look like statements`,
+        );
+      }
+      contextStart = -1;
+      stringBodyLines = 0;
+      stringCodeLike = 0;
+    }
+
+    const open = inString || innermostIsParen() || continued;
+    if (!open) {
+      flush();
+      statementCut = false;
+    } else if (
+      unitCodeLines >= MAX_LOGICAL_LINE_SPAN ||
+      unitNewLength >= MAX_LOGICAL_LINE_LENGTH ||
+      parts.length >= MAX_UNIT_PARTS
+    ) {
+      cut(lineIndex);
+    }
+  }
+
+  const last = lines.length - 1;
+  flush();
+  if (stack.length > 0 && contextStart >= 0) {
+    addFallback(
+      contextStart,
+      last,
+      stack[0]?.kind === "comment"
+        ? "the file ends inside a block comment"
+        : "the file ends inside a string literal",
+    );
+  }
+  let firstOpenParen = -1;
+  for (const entry of brackets) {
+    if (entry.ch !== "{") {
+      firstOpenParen = entry.line;
+      break;
+    }
+  }
+  if (firstOpenParen >= 0) {
+    addFallback(firstOpenParen, last, "the file ends inside an open \"(\" or \"[\"");
+  }
+  // Overlapping regions are reported once, from the earliest line, and their
+  // lines are added once as plain-line units.
+  fallbackRegions.sort((left, right) => left.from - right.from);
+  const merged: Array<{ from: number; to: number; reason: string }> = [];
+  for (const region of fallbackRegions) {
+    const previous = merged[merged.length - 1];
+    if (previous && region.from <= previous.to + 1) previous.to = Math.max(previous.to, region.to);
+    else merged.push({ ...region });
+  }
+  for (const region of merged) {
+    diagnostics?.fallbacks.push({ ...region });
+    for (let index = region.from; index <= region.to; index += 1) {
+      const text = lines[index] ?? "";
+      if (text.trim().length === 0) continue;
+      windows.push({
+        start: index,
+        text: text.slice(0, MAX_PATTERN_LINE_LENGTH),
+        offsets: [0],
+        declaration: false,
+        headerEnd: 0,
+        extra: true,
+      });
+      if (text.length > MAX_PATTERN_LINE_LENGTH) {
+        for (const unit of windowUnits(index, text)) windows.push(unit);
+      }
+    }
+  }
+  for (const unit of windows) result.push(unit);
+  return result;
+}
+
 function plainLogicalLines(lines: string[], overLong: number[]): LogicalLine[] {
   const result: LogicalLine[] = [];
   const windows: LogicalLine[] = [];
@@ -1335,8 +1966,8 @@ function bracketDepths(skeleton: string): Int32Array {
  * `,` or enclosing close bracket. `notPattern` is tested against this span, and
  * hits of one rule group are merged when their spans overlap.
  *
- * Without a skeleton (languages other than Python) the span is the whole unit,
- * which is one physical line.
+ * Without a skeleton (languages other than Python and C#) the span is the
+ * whole unit, which is one physical line.
  */
 function matchSpan(
   unit: LogicalLine,
@@ -1487,9 +2118,9 @@ function listLines(indexes: number[]): string {
 
 /**
  * True when the match at `offset` starts inside the text of a string literal
- * (not in the code of an f-string replacement field). Only a unit the Python
- * lexer produced with a skeleton can say so; for any other unit the answer is
- * false, so nothing is ignored.
+ * (not in the code of an f-string replacement field or interpolation hole).
+ * Only a unit the Python or C# lexer produced with a skeleton can say so; for
+ * any other unit the answer is false, so nothing is ignored.
  */
 function startsInStringLiteral(unit: LogicalLine, offset: number): boolean {
   const skeleton = unit.skeleton;
@@ -1586,15 +2217,17 @@ export function scanRules(
       applicable,
     );
 
-    // Python is matched on logical lines with comments and docstrings removed
-    // (see pythonLogicalLines). Inline suppression still uses the original
-    // physical line.
+    // Python and C# are matched on logical lines with comments removed (see
+    // pythonLogicalLines and csharpLogicalLines). Inline suppression still
+    // uses the original physical line.
     const overLong: number[] = [];
     const diagnostics = emptyLexDiagnostics();
     const units =
       file.language === "python"
         ? pythonLogicalLines(lines, overLong, diagnostics)
-        : plainLogicalLines(lines, overLong);
+        : file.language === "csharp"
+          ? csharpLogicalLines(lines, overLong, diagnostics)
+          : plainLogicalLines(lines, overLong);
     if (overLong.length > 0) {
       const beyond = overLong.some(
         (index) => (lines[index] as string).length > MAX_LONG_LINE_MATCHED,
@@ -1608,7 +2241,7 @@ export function scanRules(
     }
     for (const fallback of diagnostics.fallbacks) {
       warnings.push(
-        `python lexer fallback in ${file.relPath} from line ${fallback.from + 1} to line ${fallback.to + 1}: ${fallback.reason}; these lines were also matched as plain text`,
+        `${file.language} lexer fallback in ${file.relPath} from line ${fallback.from + 1} to line ${fallback.to + 1}: ${fallback.reason}; these lines were also matched as plain text`,
       );
     }
     if (diagnostics.cuts.length > 0) {

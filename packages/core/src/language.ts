@@ -12,6 +12,8 @@ export type Language =
   | "yaml"
   | "json"
   | "markdown"
+  | "razor"
+  | "xml"
   | "unknown";
 
 export const SOURCE_LANGUAGES: readonly Language[] = [
@@ -24,6 +26,7 @@ export const SOURCE_LANGUAGES: readonly Language[] = [
   "c",
   "cpp",
   "rust",
+  "razor",
 ];
 
 const EXTENSION_LANGUAGE: Record<string, Language> = {
@@ -57,6 +60,11 @@ const EXTENSION_LANGUAGE: Record<string, Language> = {
   ".jsonc": "json",
   ".md": "markdown",
   ".mdx": "markdown",
+  // ASP.NET Razor views and components: matched as plain lines.
+  ".cshtml": "razor",
+  ".razor": "razor",
+  // .NET XML configuration (web.config, app.config, *.config).
+  ".config": "xml",
 };
 
 export function detectLanguage(filePath: string): Language {
@@ -87,6 +95,8 @@ export function languageDisplayName(language: Language | string): string {
     yaml: "YAML",
     json: "JSON",
     markdown: "Markdown",
+    razor: "Razor",
+    xml: "XML",
     unknown: "unknown",
   };
   return names[language] ?? language;

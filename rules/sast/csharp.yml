@@ -1,145 +1,172 @@
 version: 1
+# Built-in C# / .NET rules. Written for code-audit (Apache-2.0).
+#
+# Conventions:
+# - C# files are matched on logical lines (see csharpLogicalLines in
+#   packages/core/src/rules.ts): comments are removed, a statement that spans
+#   lines while a "(" or "[" is open, or across a line break next to "+", "=",
+#   "=>", "." or "?:", is one unit; string literals stay in the text (rules can
+#   read SQL text) and `codeOnly: true` ignores a match that starts inside one.
+# - `kind: finding` with confidence medium or high requires that the matched
+#   statement itself shows request data or a string built at runtime reaching
+#   the sink, or an option that is dangerous whatever the data. A sink whose
+#   argument is an unknown variable is a `kind: hotspot` with confidence low.
+# - Regex cost: whitespace is consumed by one quantifier at a time, gaps carry
+#   an upper bound, and no gap is placed right after a "\s*". rules.test.ts runs
+#   every pattern against pathological input.
+# - Rules that look at request data are case-sensitive (flags: '') so that a
+#   local variable called `request` (an outgoing HttpRequestMessage) is not
+#   taken for the incoming request.
+definitions:
+  TESTPATH: '(?:^|/)(?:[Tt]ests?|[Tt]esting|[Ss]pecs?)/|(?:^|/)[^/]{0,200}\.(?:[A-Za-z]{1,40}\.)?Tests?/|(?:^|/)[^/]{0,200}Tests?\.cs$'
+  SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:[Ee]xamples?|[Ss]amples?|[Dd]ocs?|[Dd]emos?)/'
+  # A value of the incoming HTTP request: ASP.NET Core (HttpRequest) and
+  # ASP.NET (System.Web). Request.Path and Request.Url are not included: they
+  # are mostly used for local redirects and logging.
+  REQ: '\bRequest\s*\.\s*(?:Query(?:String)?|Form|Headers|Cookies|Params|RouteValues|ServerVariables|Files)\b|\bRequest\s*\['
+  # ADO.NET command classes of the common providers.
+  DBCMD: '(?:Sql|SqlCe|OleDb|Odbc|Npgsql|MySql|Sqlite|SQLite|Oracle|DB2|Fb)Command'
+  # Where SQL text is handed to the database: a command constructor or
+  # data adapter, CommandText, EF Core raw-SQL APIs, Dapper-style Query*/Execute*
+  # methods. FromSqlInterpolated, FromSql($"...") and ExecuteSql($"...") turn
+  # interpolation holes into parameters and are not sinks.
+  SQLSINK: '\bnew\s+(?:{{DBCMD}}|(?:Sql|OleDb|Odbc|Npgsql|MySql|Sqlite|SQLite|Oracle)DataAdapter)\s*\(|\bCommandText\s*=(?!=)|\.(?:FromSqlRaw|ExecuteSqlRaw|ExecuteSqlRawAsync|SqlQueryRaw)\s*(?:<[^<>\n]{1,100}>\s*)?\(|\.(?:Query|Execute)(?:Async|First|FirstOrDefault|Single|SingleOrDefault|Multiple|Scalar|Reader|NonQuery){0,2}\s*(?:<[^<>\n]{1,200}>\s*)?\('
+  # A value placed into a SQL literal in value position (after =, <, >, LIKE,
+  # IN ( or VALUES (, or inside SQL quotes) by concatenation, an interpolation
+  # hole or a string.Format placeholder. Bound parameters never look like this.
+  SQLVALUECONCAT: '(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?"\s*\+|\x27%?"\s*\+\s*[\w(]|\b[Ss]tring\.Format\s*\(\s*@?"[^"\n]{0,600}?(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\(|\x27)\s*%?\{\d'
+  SQLVALUEHOLE: '(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?\{(?!\{|\d{1,3}\})[^{}"\n]{1,200}\}|\x27%?\{(?!\{|\d{1,3}\})[^{}"\n]{1,200}\}%?\x27'
+  SQLVALUE: '{{SQLVALUECONCAT}}|{{SQLVALUEHOLE}}'
+  # The text of a SQL statement.
+  SQLWORDS: '\b(?:SELECT\b[^;]{0,400}?\bFROM|INSERT\s+INTO|UPDATE\s+[\w."\[\]`]{1,100}\s+SET|DELETE\s+FROM|EXEC(?:UTE)?\s+[\w.\[\]@]{1,100})\b'
+  # A string built at runtime: a literal concatenated with something, an
+  # interpolated string with a hole, string.Format / string.Concat.
+  DYN: '(?:"\s*\+|\+\s*@?\$?"|(?:\$@?|@\$)"[^"\n]{0,400}?(?<!\{)\{(?!\{)|\b[Ss]tring\.(?:Format|Concat)\s*\()'
+  CMDSINK: '\bProcess\.Start\s*\(|\bnew\s+ProcessStartInfo\s*\('
+  # A literal naming a command shell, as an executable path or name.
+  SHELL: '@?"(?:[^"\n]{0,200}[/\\])?(?:cmd|powershell|pwsh|bash|sh|zsh)(?:\.exe)?"'
+  # The file name of an uploaded file (IFormFile, HttpPostedFile, FileUpload).
+  UPLOADNAME: '\b\w{0,40}(?:[Ff]ile|[Uu]pload\w{0,20}|[Pp]osted\w{0,20})\s*\.\s*FileName\b'
+  FILESINK: '\b(?:Path\.(?:Combine|Join|GetFullPath)|File\.(?:Open\w{0,20}|Read\w{0,20}|Write\w{0,20}|Create\w{0,20}|Delete|Copy|Move|Exists|Append\w{0,20}|Replace)|Directory\.\w{2,30}|PhysicalFile|Server\.MapPath|new\s+(?:FileStream|FileInfo|StreamReader|StreamWriter|DirectoryInfo))\s*\(|\.SaveAs\s*\('
 rules:
+  # ---- SQL injection ----
   - id: cs-sql-injection
-    title: C# SQL query built with string concatenation
-    title_zh: C# SQL 查询字符串拼接
+    title: C# SQL command with a value concatenated or interpolated into the SQL text
+    title_zh: C# SQL 命令的 SQL 文本中拼接或插值了值
     severity: critical
     confidence: high
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - csharp
-    pattern: new\s+SqlCommand\([^;]{0,600}\+
+    languages: [csharp]
+    codeOnly: true
+    patterns:
+      - '{{SQLSINK}}'
+      - '{{SQLVALUE}}'
+      # Generic sink names (Execute, Query) need SQL in the unit.
+      - '\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM|VALUES|JOIN)\b|\bEXEC(?:UTE)?\s+[\w.\[\]@]'
     group: cs-sql
-    message: User input is concatenated into SQL text, letting attackers change query semantics.
-    message_zh: 用户输入被拼接到 SQL 文本中，攻击者可改变查询语义。
-    remediation: Use SqlCommand parameters (@name) or stored procedures; never concatenate untrusted input.
-    remediation_zh: 使用 SqlCommand 参数（@name）或存储过程，禁止拼接不可信输入。
+    message: SQL text given to a command (ADO.NET, EF Core raw SQL or Dapper) has a value concatenated, interpolated or formatted into a value position; whoever controls the value can change the query.
+    message_zh: 交给数据库命令（ADO.NET、EF Core 原始 SQL 或 Dapper）的 SQL 文本在取值位置拼接、插值或格式化了值；控制该值的人可以改变查询语义。
+    remediation: Keep the SQL text constant and pass values as parameters (@name with SqlParameter, FromSqlInterpolated / FromSql($"...") in EF Core, an anonymous parameter object in Dapper).
+    remediation_zh: 保持 SQL 文本为常量，并以参数传值（SqlParameter 的 @name、EF Core 的 FromSqlInterpolated / FromSql($"...")、Dapper 的匿名参数对象）。
     references:
       - CWE-89
       - OWASP A03:2021
-  - id: cs-command-injection
-    title: C# process start with concatenated arguments
-    title_zh: C# 进程启动参数拼接
-    severity: critical
-    confidence: high
-    cwe: CWE-78
+  - id: cs-sql-string-built
+    title: C# SQL statement string built with a value in value position
+    title_zh: C# SQL 语句字符串在取值位置拼入了值
+    severity: high
+    confidence: medium
+    cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - csharp
-    pattern: Process\.Start\([^)]{0,600}\+
-    group: cs-command
-    message: Untrusted input reaches Process.Start arguments and may execute arbitrary commands.
-    message_zh: 外部输入进入 Process.Start 参数，可能执行任意命令。
-    remediation: Use ProcessStartInfo.ArgumentList, avoid shell string building, and allowlist inputs.
-    remediation_zh: 改用 ProcessStartInfo.ArgumentList 传参，避免 shell 拼接，并对输入做白名单校验。
-    references:
-      - CWE-78
-      - OWASP A03:2021
-  - id: cs-insecure-deserialization
-    title: C# BinaryFormatter deserialization
-    title_zh: C# BinaryFormatter 反序列化
-    severity: high
-    confidence: low
-    cwe: CWE-502
-    owasp: A08:2021
-    languages:
-      - csharp
-    pattern: new\s+BinaryFormatter\s*\(
-    message: BinaryFormatter can execute arbitrary code when it deserializes untrusted data.
-    message_zh: BinaryFormatter 反序列化不可信数据可导致远程代码执行。
-    remediation: Disable BinaryFormatter; use System.Text.Json and validate types against an allowlist.
-    remediation_zh: 禁用 BinaryFormatter，改用 System.Text.Json 等安全的序列化格式并校验类型白名单。
-    references:
-      - CWE-502
-      - OWASP A08:2021
-  - id: cs-path-traversal
-    title: C# file path built from untrusted input
-    title_zh: C# 路径拼接可能穿越目录
-    severity: high
-    confidence: high
-    cwe: CWE-22
-    owasp: A01:2021
-    languages:
-      - csharp
-    pattern: Path\.Combine\([^)]{0,600}(?:name|request|input|user|filename|args)
-    group: cs-path
-    message: Untrusted input participates in a file path and can escape the intended directory.
-    message_zh: 不可信输入参与路径拼接，未校验时可读写根目录外文件。
-    remediation: Normalize with Path.GetFileName and verify the resolved realpath stays inside the allowed directory.
-    remediation_zh: 使用 Path.GetFileName 规范化，并校验最终 realpath 位于允许目录内。
-    references:
-      - CWE-22
-      - OWASP A01:2021
-  - id: cs-weak-hash
-    title: C# weak hash algorithm (MD5/SHA1)
-    title_zh: C# 使用弱哈希算法
-    severity: medium
-    confidence: low
-    cwe: CWE-328
-    owasp: A02:2021
-    languages:
-      - csharp
-    pattern: (?:MD5|SHA1)\.Create\(
-    message: MD5/SHA1 are unsuitable for passwords, signatures, or integrity checks.
-    message_zh: MD5/SHA1 已不适合安全用途（口令、签名、完整性）。
-    remediation: Use SHA-256 or stronger; hash passwords with PBKDF2/bcrypt/Argon2 and a salt.
-    remediation_zh: 使用 SHA-256 及以上；口令使用 PBKDF2/bcrypt/Argon2 并加盐。
-    references:
-      - CWE-328
-      - OWASP A02:2021
-  - id: cs-weak-random
-    title: C# System.Random used for security-sensitive values
-    title_zh: C# 使用 System.Random 生成安全敏感值
-    severity: medium
-    confidence: low
-    cwe: CWE-338
-    owasp: A02:2021
-    languages:
-      - csharp
-    pattern: new\s+Random\s*\(\s*\)
-    message: System.Random is predictable and not cryptographically secure.
-    message_zh: System.Random 不是密码学安全的随机源，可预测。
-    remediation: Use RandomNumberGenerator (for example RandomNumberGenerator.GetBytes) for tokens and salts.
-    remediation_zh: 使用 RandomNumberGenerator 或 RandomNumberGenerator.GetBytes 生成令牌与盐。
-    references:
-      - CWE-338
-      - OWASP A02:2021
-  - id: cs-xxe
-    title: C# XML parser enables DTD processing
-    title_zh: C# XML 解析启用 DTD
-    severity: high
-    confidence: low
-    cwe: CWE-611
-    owasp: A05:2021
-    languages:
-      - csharp
-    pattern: DtdProcessing\s*=\s*DtdProcessing\.Parse
-    message: DTD processing can enable XML external entity (XXE) injection and file disclosure.
-    message_zh: 启用 DTD 解析可能导致 XML 外部实体（XXE）注入与文件读取。
-    remediation: Set DtdProcessing = DtdProcessing.Prohibit and disable XmlResolver.
-    remediation_zh: 设置 DtdProcessing = DtdProcessing.Prohibit，并禁用 XmlResolver。
-    references:
-      - CWE-611
-      - OWASP A05:2021
-  - id: cs-sql-api
-    title: C# SqlCommand constructed from a dynamic query
-    title_zh: C# 使用动态 SQL 文本构造 SqlCommand
+    languages: [csharp]
+    patterns:
+      - '{{SQLVALUECONCAT}}|(?<!\b(?:FromSql|FromSqlInterpolated|ExecuteSqlInterpolated|ExecuteSqlInterpolatedAsync|ExecuteSql|ExecuteSqlAsync|SqlQuery|Sql)\s{0,20}(?:<[^<>\n]{1,100}>)?\s{0,20}\(\s{0,20})(?:\$@?|@\$)"[^"]{0,800}?(?:(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?|\x27%?)\{(?!\{)'
+      - '{{SQLWORDS}}'
+    notPattern: '\bFormattableString\b|\b(?:FromSql|FromSqlInterpolated|ExecuteSqlInterpolated|ExecuteSqlInterpolatedAsync|ExecuteSql|ExecuteSqlAsync)\s*\(\s*\$'
+    group: cs-sql
+    message: A SQL statement is built with a value concatenated, interpolated or formatted into a value position. If the string is executed as SQL, the value can change the query.
+    message_zh: SQL 语句在取值位置拼接、插值或格式化了值。若该字符串被当作 SQL 执行，插入的值可以改变查询。
+    remediation: Keep the SQL text constant and bind the value as a parameter when executing it.
+    remediation_zh: 保持 SQL 文本为常量，执行时把值作为参数绑定。
+  - id: cs-sql-dynamic
+    title: C# SQL text assembled at runtime
+    title_zh: C# SQL 文本在运行时拼装
     severity: high
     confidence: low
     kind: hotspot
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - csharp
-    pattern: new\s+SqlCommand\s*\(
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    patterns:
+      - '(?:{{SQLSINK}})[^;]{0,600}?{{DYN}}'
+      - '{{SQLWORDS}}'
     group: cs-sql
-    message: SqlCommand is built from a query value; confirm the SQL text is not attacker-controlled.
-    message_zh: SqlCommand 的 SQL 文本来自运行时值；需确认不可被攻击者控制。
+    message: The SQL text of a command is assembled at runtime, but not visibly in value position (for example a table or column name). Confirm every interpolated part is a constant or an allowlisted identifier.
+    message_zh: 命令的 SQL 文本在运行时拼装，但插入位置看起来不是取值位置（例如表名或列名）。需确认每个插入部分都是常量或白名单内的标识符。
+    remediation: Bind values as parameters and take identifiers from a fixed allowlist.
+    remediation_zh: 值通过参数绑定，标识符取自固定白名单。
+  - id: cs-sql-api
+    title: C# database command constructed from a SQL value
+    title_zh: C# 使用 SQL 值构造数据库命令
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bnew\s+{{DBCMD}}\s*\('
+    notPattern: '\bnew\s+{{DBCMD}}\s*\(\s*(?:@?"[^"\n]{0,2000}"\s*)?[,)]'
+    group: cs-sql
+    message: A database command is built from a SQL value that is not a literal; confirm the SQL text is not attacker-controlled.
+    message_zh: 数据库命令由非字面量的 SQL 值构造；需确认 SQL 文本不可被攻击者控制。
     remediation: Use parameterized commands and keep SQL text constant.
     remediation_zh: 使用参数化命令并保持 SQL 文本为常量。
     references:
       - CWE-89
+      - OWASP A03:2021
+
+  # ---- Command execution ----
+  - id: cs-command-shell
+    title: C# command shell started with a command line built at runtime
+    title_zh: C# 以运行时拼装的命令行启动命令 shell
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '(?:{{CMDSINK}}){{SHELL}}\s*,\s*(?:(?:\$@?|@\$)"|@?"[^"\n]{0,200}"\s*\+|[\w.]{1,100}\s*\+|\b[Ss]tring\.Format\s*\()|\bArguments\s*=(?!=)\s*(?:(?:\$@?|@\$)"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))\s[^"\n]{0,400}?(?<!\{)\{(?!\{)|@?"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))\s[^"\n]{0,400}"\s*\+)'
+    filePattern: '{{SHELL}}'
+    group: cs-command
+    message: A command shell (cmd.exe /c, PowerShell -Command, sh -c) is started with a command line built at runtime; shell metacharacters in the value run further commands.
+    message_zh: 以运行时拼装的命令行启动命令 shell（cmd.exe /c、PowerShell -Command、sh -c）；值中的 shell 元字符会执行额外命令。
+    remediation: Do not go through a shell. Start the program itself and pass each argument through ProcessStartInfo.ArgumentList; allowlist the values.
+    remediation_zh: 不要经由 shell。直接启动目标程序，通过 ProcessStartInfo.ArgumentList 逐个传参，并对取值做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cs-command-injection
+    title: C# process started with a command line built at runtime
+    title_zh: C# 以运行时拼装的命令行启动进程
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '(?:{{CMDSINK}})[^;]{0,600}?(?:{{DYN}}|[\w)\]]\s*\+\s*[A-Za-z_(])'
+    group: cs-command
+    message: Process.Start or ProcessStartInfo gets a program or argument string built at runtime; a value that is not validated can run another program or inject arguments.
+    message_zh: Process.Start 或 ProcessStartInfo 接收运行时拼装的程序或参数字符串；未校验的值可能启动其他程序或注入参数。
+    remediation: Use a fixed executable, pass each argument through ProcessStartInfo.ArgumentList, and allowlist the values.
+    remediation_zh: 使用固定的可执行文件，通过 ProcessStartInfo.ArgumentList 逐个传参，并对取值做白名单校验。
+    references:
+      - CWE-78
       - OWASP A03:2021
   - id: cs-process-api
     title: C# Process.Start with dynamic arguments
@@ -149,9 +176,11 @@ rules:
     kind: hotspot
     cwe: CWE-78
     owasp: A03:2021
-    languages:
-      - csharp
-    pattern: Process\.Start\s*\(
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bProcess\.Start\s*\('
+    notPattern: '\bProcess\.Start\s*\(\s*@?"[^"\n]{0,400}"\s*(?:,\s*@?"[^"\n]{0,400}"\s*)?\)'
     group: cs-command
     message: A process is started from a runtime value; confirm the command and arguments are trusted.
     message_zh: 进程由运行时值启动；需确认命令与参数可信。
@@ -160,6 +189,623 @@ rules:
     references:
       - CWE-78
       - OWASP A03:2021
+
+  # ---- LDAP / XPath injection ----
+  - id: cs-ldap-injection
+    title: C# LDAP search filter built at runtime
+    title_zh: C# LDAP 查询过滤器在运行时拼装
+    severity: high
+    confidence: medium
+    cwe: CWE-90
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    filePattern: '\bDirectorySearcher\b|\bSystem\.DirectoryServices\b|\bLdapConnection\b|\bNovell\.Directory\.Ldap\b'
+    patterns:
+      - '\b(?:Filter\s*=(?!=)|new\s+DirectorySearcher\s*\(|new\s+SearchRequest\s*\()[^;]{0,400}?{{DYN}}'
+      - '\([A-Za-z][\w;-]{0,60}[~<>]?='
+    message: An LDAP search filter is concatenated or interpolated with a value; characters such as *, (, ) and \ in the value change the filter (LDAP injection).
+    message_zh: LDAP 查询过滤器拼接或插值了值；值中的 *、(、)、\ 等字符会改变过滤器语义（LDAP 注入）。
+    remediation: Escape every value with an LDAP filter encoder (RFC 4515) before it goes into the filter, or validate it against a strict allowlist.
+    remediation_zh: 值放入过滤器前先按 RFC 4515 做 LDAP 过滤器转义，或按严格白名单校验。
+  - id: cs-xpath-injection
+    title: C# XPath expression built at runtime
+    title_zh: C# XPath 表达式在运行时拼装
+    severity: high
+    confidence: medium
+    cwe: CWE-643
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    filePattern: '\bSystem\.Xml\b|\bXPathNavigator\b|\bXmlDocument\b|\bXmlNode\b|\bXDocument\b'
+    patterns:
+      - '\.(?:SelectNodes|SelectSingleNode|XPathSelectElements?|XPathEvaluate|Evaluate|Compile)\s*\([^;]{0,400}?{{DYN}}'
+      - '"[^"\n]{0,200}?(?:\[@|//|/@|=\s*\x27|::)'
+    message: An XPath query is concatenated or interpolated with a value; a quote in the value changes the query (XPath injection).
+    message_zh: XPath 查询拼接或插值了值；值中的引号会改变查询语义（XPath 注入）。
+    remediation: Use a precompiled XPath expression with variables (XsltArgumentList / a custom XsltContext) or validate the value against a strict allowlist.
+    remediation_zh: 使用带变量的预编译 XPath 表达式（XsltArgumentList / 自定义 XsltContext），或按严格白名单校验取值。
+
+  # ---- Deserialization ----
+  - id: cs-insecure-deserialization
+    title: C# insecure formatter (BinaryFormatter, SoapFormatter, NetDataContractSerializer, LosFormatter, ObjectStateFormatter)
+    title_zh: C# 使用不安全的格式化器（BinaryFormatter、SoapFormatter、NetDataContractSerializer、LosFormatter、ObjectStateFormatter）
+    severity: high
+    confidence: medium
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bnew\s+(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\s*\(|\b(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\s+\w+\s*=\s*new\s*\(\s*\)'
+    message: These formatters put type names in the payload and can execute arbitrary code when they deserialize data an attacker can influence; Microsoft documents that they cannot be made safe.
+    message_zh: 这些格式化器在载荷中携带类型名，反序列化攻击者可影响的数据时可执行任意代码；微软明确说明它们无法被安全使用。
+    remediation: Replace them with System.Text.Json or DataContractSerializer with a fixed set of known types.
+    remediation_zh: 改用 System.Text.Json，或使用只接受固定已知类型的 DataContractSerializer。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: cs-json-typenamehandling
+    title: Newtonsoft.Json TypeNameHandling other than None
+    title_zh: Newtonsoft.Json 的 TypeNameHandling 不是 None
+    severity: high
+    confidence: medium
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bTypeNameHandling\s*=\s*(?:Newtonsoft\.Json\.)?TypeNameHandling\.(?:All|Auto|Objects|Arrays)\b'
+    message: With TypeNameHandling enabled, the JSON decides which .NET type is created; a payload can name a gadget type and run code during deserialization.
+    message_zh: 启用 TypeNameHandling 后由 JSON 决定创建哪个 .NET 类型；载荷可以指定利用链类型并在反序列化时执行代码。
+    remediation: Keep TypeNameHandling.None for data from outside, or restrict types with a SerializationBinder that allowlists them.
+    remediation_zh: 对外部数据保持 TypeNameHandling.None，或用只放行白名单类型的 SerializationBinder 限制类型。
+  - id: cs-javascriptserializer-type-resolver
+    title: JavaScriptSerializer with SimpleTypeResolver
+    title_zh: JavaScriptSerializer 使用 SimpleTypeResolver
+    severity: high
+    confidence: high
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bnew\s+JavaScriptSerializer\s*\(\s*new\s+SimpleTypeResolver\b'
+    message: JavaScriptSerializer with SimpleTypeResolver creates whatever type the __type field names, which allows code execution through gadget types.
+    message_zh: 带 SimpleTypeResolver 的 JavaScriptSerializer 会创建 __type 字段指定的任意类型，可通过利用链类型执行代码。
+    remediation: Use JavaScriptSerializer without a type resolver, or System.Text.Json with fixed types.
+    remediation_zh: 使用不带类型解析器的 JavaScriptSerializer，或使用固定类型的 System.Text.Json。
+  - id: cs-deserialize-runtime-type
+    title: C# serializer created for a type named at runtime
+    title_zh: C# 为运行时指定的类型创建序列化器
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bnew\s+(?:XmlSerializer|DataContractSerializer|DataContractJsonSerializer)\s*\(\s*Type\.GetType\s*\('
+    message: The serializer type comes from Type.GetType; if the type name comes from the input, the attacker chooses what is deserialized.
+    message_zh: 序列化器的类型来自 Type.GetType；若类型名来自输入，攻击者可以决定被反序列化的类型。
+    remediation: Map the input to a fixed set of allowed types instead of resolving type names.
+    remediation_zh: 将输入映射到固定的允许类型集合，而不是解析类型名。
+  - id: cs-dataset-readxml
+    title: DataSet / DataTable ReadXml
+    title_zh: DataSet / DataTable 的 ReadXml
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    filePattern: '\bData(?:Set|Table)\b'
+    pattern: '\.ReadXml\s*\('
+    message: DataSet.ReadXml and DataTable.ReadXml can instantiate types named in the XML; confirm the XML is trusted.
+    message_zh: DataSet.ReadXml 和 DataTable.ReadXml 会按 XML 中的类型名实例化对象；需确认 XML 可信。
+    remediation: Do not read untrusted XML into a DataSet; deserialize into fixed types instead.
+    remediation_zh: 不要把不可信 XML 读入 DataSet，改为反序列化到固定类型。
+
+  # ---- XML external entities ----
+  - id: cs-xxe
+    title: C# XML parser enables DTD processing
+    title_zh: C# XML 解析启用 DTD
+    severity: high
+    confidence: low
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: 'DtdProcessing\s*=\s*DtdProcessing\.Parse'
+    message: DTD processing can enable XML external entity (XXE) injection and file disclosure.
+    message_zh: 启用 DTD 解析可能导致 XML 外部实体（XXE）注入与文件读取。
+    remediation: Set DtdProcessing = DtdProcessing.Prohibit and disable XmlResolver.
+    remediation_zh: 设置 DtdProcessing = DtdProcessing.Prohibit，并禁用 XmlResolver。
+    references:
+      - CWE-611
+      - OWASP A05:2021
+  - id: cs-xxe-url-resolver
+    title: C# XML parser resolves external entities (XmlUrlResolver)
+    title_zh: C# XML 解析器解析外部实体（XmlUrlResolver）
+    severity: high
+    confidence: high
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bXmlResolver\s*=\s*new\s+XmlUrlResolver\b'
+    message: An XmlUrlResolver lets the document load external entities and DTDs from files and URLs (XXE, SSRF, file disclosure).
+    message_zh: XmlUrlResolver 允许文档从文件和 URL 加载外部实体与 DTD（XXE、SSRF、文件泄露）。
+    remediation: Set XmlResolver = null (the default since .NET Framework 4.5.2) and DtdProcessing = DtdProcessing.Prohibit.
+    remediation_zh: 设置 XmlResolver = null（.NET Framework 4.5.2 起的默认值）并设置 DtdProcessing = DtdProcessing.Prohibit。
+  - id: cs-xxe-prohibit-dtd
+    title: C# XML parser with ProhibitDtd = false
+    title_zh: C# XML 解析器设置 ProhibitDtd = false
+    severity: high
+    confidence: high
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bProhibitDtd\s*=\s*false\b'
+    message: ProhibitDtd = false allows DTDs, and with them external entities and entity expansion (XXE, billion laughs).
+    message_zh: ProhibitDtd = false 允许 DTD，从而允许外部实体和实体扩展（XXE、billion laughs）。
+    remediation: Use XmlReaderSettings with DtdProcessing = DtdProcessing.Prohibit and XmlResolver = null.
+    remediation_zh: 使用 XmlReaderSettings 并设置 DtdProcessing = DtdProcessing.Prohibit、XmlResolver = null。
+  - id: cs-xmltextreader
+    title: C# XmlTextReader created directly
+    title_zh: C# 直接创建 XmlTextReader
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bnew\s+XmlTextReader\s*\('
+    message: On .NET Framework before 4.5.2, XmlTextReader processes DTDs and resolves external entities by default; confirm the target framework and the input.
+    message_zh: 在 .NET Framework 4.5.2 之前，XmlTextReader 默认处理 DTD 并解析外部实体；需确认目标框架和输入来源。
+    remediation: Use XmlReader.Create with XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }.
+    remediation_zh: 使用 XmlReader.Create 并传入 XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }。
+
+  # ---- Cryptography ----
+  - id: cs-weak-hash
+    title: C# weak hash algorithm (MD5/SHA1)
+    title_zh: C# 使用弱哈希算法
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\b(?:MD5|SHA1)\.(?:Create|HashData|HashDataAsync|TryHashData)\s*\(|\bnew\s+(?:MD5CryptoServiceProvider|SHA1CryptoServiceProvider|SHA1Managed|MD5Cng|SHA1Cng)\s*\(|\bHashAlgorithm\.Create\s*\(\s*"(?:MD5|SHA1)"'
+    message: MD5/SHA1 are unsuitable for passwords, signatures, or integrity checks.
+    message_zh: MD5/SHA1 已不适合安全用途（口令、签名、完整性）。
+    remediation: Use SHA-256 or stronger; hash passwords with PBKDF2/bcrypt/Argon2 and a salt.
+    remediation_zh: 使用 SHA-256 及以上；口令使用 PBKDF2/bcrypt/Argon2 并加盐。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: cs-weak-hmac
+    title: C# HMAC with MD5 or SHA1
+    title_zh: C# 使用 MD5 或 SHA1 的 HMAC
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bnew\s+HMAC(?:MD5|SHA1)\s*\(|\bHMAC(?:MD5|SHA1)\.(?:HashData|TryHashData|HashDataAsync)\s*\('
+    message: HMAC-MD5 and HMAC-SHA1 are not broken as MACs but are deprecated; confirm a protocol requires them (TOTP does) before keeping them.
+    message_zh: HMAC-MD5 和 HMAC-SHA1 作为 MAC 尚未被攻破但已不推荐；需确认确有协议要求（例如 TOTP）后再保留。
+    remediation: Use HMACSHA256 or stronger unless a protocol mandates the older algorithm.
+    remediation_zh: 除非协议强制要求旧算法，否则使用 HMACSHA256 或更强的算法。
+  - id: cs-weak-random
+    title: C# System.Random used for security-sensitive values
+    title_zh: C# 使用 System.Random 生成安全敏感值
+    severity: medium
+    confidence: low
+    cwe: CWE-338
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: 'new\s+Random\s*\(\s*\)'
+    message: System.Random is predictable and not cryptographically secure.
+    message_zh: System.Random 不是密码学安全的随机源，可预测。
+    remediation: Use RandomNumberGenerator (for example RandomNumberGenerator.GetBytes) for tokens and salts.
+    remediation_zh: 使用 RandomNumberGenerator 或 RandomNumberGenerator.GetBytes 生成令牌与盐。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: cs-weak-cipher
+    title: C# broken or legacy cipher (DES, TripleDES, RC2, RC4)
+    title_zh: C# 使用已被攻破或过时的加密算法（DES、TripleDES、RC2、RC4）
+    severity: high
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\b(?:DES|TripleDES|RC2)\.Create\s*\(|\bnew\s+(?:DES|TripleDES|RC2)CryptoServiceProvider\s*\(|\bnew\s+(?:TripleDESCng|RC4\w{0,30})\s*\(|\bSymmetricAlgorithm\.Create\s*\(\s*"(?:DES|TripleDES|3DES|RC2)"'
+    message: DES and RC2 can be brute-forced, RC4 has biased output, and TripleDES has a 64-bit block that leaks data in long sessions (Sweet32).
+    message_zh: DES 和 RC2 可被暴力破解，RC4 输出有偏差，TripleDES 的 64 位分组在长会话中会泄露数据（Sweet32）。
+    remediation: Use AES-GCM (AesGcm) or ChaCha20-Poly1305.
+    remediation_zh: 改用 AES-GCM（AesGcm）或 ChaCha20-Poly1305。
+  - id: cs-ecb-mode
+    title: C# block cipher in ECB mode
+    title_zh: C# 分组密码使用 ECB 模式
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bCipherMode\.ECB\b|\.(?:EncryptEcb|DecryptEcb)\s*\('
+    message: ECB encrypts equal plaintext blocks to equal ciphertext blocks, which reveals patterns in the data and allows blocks to be swapped.
+    message_zh: ECB 模式下相同明文块加密为相同密文块，会暴露数据模式并允许替换密文块。
+    remediation: Use an authenticated mode (AesGcm) with a random nonce per message.
+    remediation_zh: 使用认证加密模式（AesGcm），每条消息使用随机 nonce。
+  - id: cs-pbkdf2-weak
+    title: C# PBKDF2 with SHA1 defaults or a low iteration count
+    title_zh: C# PBKDF2 使用 SHA1 默认值或迭代次数过低
+    severity: medium
+    confidence: high
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bnew\s+Rfc2898DeriveBytes\s*\((?![^;]{0,400}?HashAlgorithmName)|\b(?:new\s+Rfc2898DeriveBytes|Rfc2898DeriveBytes\.Pbkdf2)\s*\([^;]{0,400}?,\s*[1-9]\d{0,3}\s*,\s*HashAlgorithmName\b'
+    message: Rfc2898DeriveBytes without a HashAlgorithmName uses SHA1 and, unless set, 1000 iterations (obsolete as SYSLIB0041); an iteration count below 10000 makes password guessing cheap.
+    message_zh: 未指定 HashAlgorithmName 的 Rfc2898DeriveBytes 使用 SHA1，且默认只迭代 1000 次（已标记为过时 SYSLIB0041）；低于 10000 的迭代次数使口令猜测代价很低。
+    remediation: Use Rfc2898DeriveBytes.Pbkdf2 with HashAlgorithmName.SHA256 or SHA512 and at least 600000 iterations (OWASP), or a dedicated password hasher.
+    remediation_zh: 使用 Rfc2898DeriveBytes.Pbkdf2 并指定 HashAlgorithmName.SHA256 或 SHA512、至少 600000 次迭代（OWASP 建议），或使用专门的口令哈希器。
+  - id: cs-hardcoded-crypto-key
+    title: Literal key or IV given to a C# cipher
+    title_zh: 向 C# 加密算法传入字面量密钥或 IV
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-321
+    owasp: A02:2021
+    languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:Key|IV)\s*=\s*(?:Encoding\.\w{1,20}\.GetBytes|Convert\.From(?:Base64|Hex)String)\s*\(\s*@?"[^"\n]{4,400}"|\b(?:Key|IV)\s*=\s*new\s+byte\s*\[\s*(?:\d{1,4}\s*)?\]\s*\{\s*(?:0x)?[0-9A-Fa-f]{1,3}\s*,|\.Create(?:En|De)cryptor\s*\(\s*(?:Encoding\.\w{1,20}\.GetBytes|Convert\.From(?:Base64|Hex)String)\s*\(\s*@?"'
+    redactEvidence: true
+    message: A symmetric key or IV is a literal in the source; anyone with the code can decrypt, and a fixed IV makes equal messages encrypt equally.
+    message_zh: 对称密钥或 IV 是源码中的字面量；拿到代码的人都能解密，固定 IV 还会使相同消息得到相同密文。
+    remediation: Load keys from a key store (Azure Key Vault, DPAPI, environment) and generate a random IV per message.
+    remediation_zh: 从密钥存储（Azure Key Vault、DPAPI、环境变量）加载密钥，每条消息生成随机 IV。
+  - id: cs-rsa-pkcs1-encryption
+    title: C# RSA encryption with PKCS#1 v1.5 padding
+    title_zh: C# RSA 加密使用 PKCS#1 v1.5 填充
+    severity: low
+    confidence: medium
+    cwe: CWE-780
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bRSAEncryptionPadding\.Pkcs1\b'
+    message: RSA encryption with PKCS#1 v1.5 padding is open to padding-oracle attacks (Bleichenbacher) when decryption errors can be observed.
+    message_zh: 使用 PKCS#1 v1.5 填充的 RSA 加密在解密错误可被观察时易受填充预言攻击（Bleichenbacher）。
+    remediation: Use RSAEncryptionPadding.OaepSHA256.
+    remediation_zh: 改用 RSAEncryptionPadding.OaepSHA256。
+
+  # ---- TLS ----
+  - id: cs-tls-cert-validation-disabled
+    title: C# TLS certificate validation disabled
+    title_zh: C# 关闭了 TLS 证书校验
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A07:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:ServerCertificate(?:Custom)?ValidationCallback|RemoteCertificateValidationCallback)\s*\+?=\s*(?:delegate\s*(?:\([^)\n]{0,300}\)\s*)?\{\s*return\s+true\b|(?:\([^)\n]{0,300}\)|[A-Za-z_]\w{0,60})\s*=>\s*(?:true\b|\{\s*return\s+true\b))|\bnew\s+RemoteCertificateValidationCallback\s*\(\s*(?:delegate\s*(?:\([^)\n]{0,300}\)\s*)?\{\s*return\s+true\b|(?:\([^)\n]{0,300}\)|[A-Za-z_]\w{0,60})\s*=>\s*true\b)|\bDangerousAcceptAnyServerCertificateValidator\b'
+    message: The certificate callback accepts every certificate, so anyone on the network path can impersonate the server and read or change the traffic.
+    message_zh: 证书回调接受任何证书，网络路径上的任何人都能冒充服务器，读取或篡改流量。
+    remediation: Remove the callback; to trust a private CA or pinned certificate, check the chain or thumbprint in the callback and return false otherwise.
+    remediation_zh: 删除该回调；如需信任私有 CA 或固定证书，在回调中校验证书链或指纹，其他情况返回 false。
+  - id: cs-tls-weak-protocol
+    title: C# SSL 3.0 / TLS 1.0 / TLS 1.1 enabled
+    title_zh: C# 启用了 SSL 3.0 / TLS 1.0 / TLS 1.1
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bSecurityProtocolType\.(?:Ssl3|Tls|Tls11)\b|\bSslProtocols\.(?:Ssl2|Ssl3|Tls|Tls11)\b'
+    # Removing or comparing a protocol is not enabling it.
+    notPattern: '~\s*(?:\(\s*)?(?:System\.Net\.)?(?:SecurityProtocolType|SslProtocols)\.|[!=]=\s*(?:SecurityProtocolType|SslProtocols)\.|(?:SecurityProtocolType|SslProtocols)\.\w{1,20}\s*[!=]=|\bcase\s|\.HasFlag\s*\('
+    message: SSL 3.0, TLS 1.0 and TLS 1.1 are deprecated (RFC 8996) and allow downgrade and known protocol attacks.
+    message_zh: SSL 3.0、TLS 1.0 和 TLS 1.1 已被废弃（RFC 8996），存在降级和已知协议攻击。
+    remediation: Leave the protocol choice to the operating system (SecurityProtocolType.SystemDefault / SslProtocols.None) or require TLS 1.2 and 1.3.
+    remediation_zh: 由操作系统选择协议（SecurityProtocolType.SystemDefault / SslProtocols.None），或只允许 TLS 1.2 和 1.3。
+  - id: cs-tls-revocation-check-disabled
+    title: C# certificate revocation check disabled
+    title_zh: C# 关闭了证书吊销检查
+    severity: low
+    confidence: medium
+    cwe: CWE-299
+    owasp: A07:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bCheckCertificateRevocationList\s*=\s*false\b|\bRevocationMode\s*=\s*X509RevocationMode\.NoCheck\b'
+    message: Revocation is explicitly not checked, so a revoked (for example stolen) certificate is still accepted.
+    message_zh: 显式关闭了吊销检查，已被吊销（例如被盗）的证书仍会被接受。
+    remediation: Set CheckCertificateRevocationList = true / X509RevocationMode.Online where the revocation endpoints are reachable.
+    remediation_zh: 在可访问吊销端点的环境中设置 CheckCertificateRevocationList = true / X509RevocationMode.Online。
+
+  # ---- Authentication: JWT and OpenID Connect ----
+  - id: cs-jwt-unsigned-tokens
+    title: C# JWT validation accepts unsigned tokens
+    title_zh: C# JWT 校验接受未签名的令牌
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A07:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bRequireSignedTokens\s*=\s*false\b|\bSignatureValidator\s*=\s*(?:\([^)\n]{0,200}\)|\w{1,60})\s*=>\s*new\s+(?:JwtSecurityToken|JsonWebToken)\s*\('
+    message: The token validation accepts tokens without a (checked) signature, so anyone can forge a token with any claims.
+    message_zh: 令牌校验接受没有（经校验的）签名的令牌，任何人都能伪造带任意声明的令牌。
+    remediation: Keep RequireSignedTokens = true and let the handler validate signatures against the issuer keys.
+    remediation_zh: 保持 RequireSignedTokens = true，由处理器根据颁发者密钥校验签名。
+  - id: cs-jwt-lifetime-disabled
+    title: C# JWT validation ignores token expiry
+    title_zh: C# JWT 校验忽略令牌过期
+    severity: medium
+    confidence: medium
+    cwe: CWE-613
+    owasp: A07:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:ValidateLifetime|RequireExpirationTime)\s*=\s*false\b'
+    message: Tokens are accepted after they expire (or without an expiry), so a leaked token stays valid forever. (Reading the claims of an expired token in a refresh flow is the one legitimate use; such a handler must never authenticate requests.)
+    message_zh: 令牌过期后（或没有过期时间时）仍被接受，泄露的令牌将永久有效。（在刷新流程中读取过期令牌的声明是唯一合理的用途；此类处理器绝不能用于认证请求。）
+    remediation: Keep ValidateLifetime and RequireExpirationTime at true and issue short-lived tokens.
+    remediation_zh: 保持 ValidateLifetime 和 RequireExpirationTime 为 true，并签发短期令牌。
+  - id: cs-jwt-claims-validation-disabled
+    title: C# JWT validation skips issuer, audience or signing-key checks
+    title_zh: C# JWT 校验跳过颁发者、受众或签名密钥检查
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-287
+    owasp: A07:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:ValidateIssuer|ValidateAudience|ValidateIssuerSigningKey)\s*=\s*false\b'
+    message: Issuer, audience or signing-key validation is off; confirm that a token issued for another service or by another issuer cannot be replayed here.
+    message_zh: 关闭了颁发者、受众或签名密钥校验；需确认颁发给其他服务或由其他颁发者签发的令牌不能在此重放。
+    remediation: Validate issuer and audience (ValidIssuer / ValidAudience) unless the deployment really has one issuer and one audience.
+    remediation_zh: 除非部署确实只有一个颁发者和一个受众，否则校验颁发者和受众（ValidIssuer / ValidAudience）。
+  - id: cs-jwt-https-metadata-disabled
+    title: C# OpenID Connect / JWT metadata allowed over HTTP
+    title_zh: C# OpenID Connect / JWT 元数据允许通过 HTTP 获取
+    severity: medium
+    confidence: medium
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bRequireHttpsMetadata\s*=\s*false\b'
+    message: Discovery documents and signing keys may be fetched over plain HTTP; an attacker on the path can substitute their own keys and forge tokens.
+    message_zh: 发现文档和签名密钥可能通过明文 HTTP 获取；路径上的攻击者可以替换为自己的密钥并伪造令牌。
+    remediation: Keep RequireHttpsMetadata = true, or set it from the environment so that only local development turns it off.
+    remediation_zh: 保持 RequireHttpsMetadata = true，或根据环境设置，只在本地开发时关闭。
+  - id: cs-jwt-hardcoded-key
+    title: C# JWT signing key is a literal
+    title_zh: C# JWT 签名密钥是字面量
+    severity: high
+    confidence: high
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [csharp]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '\bnew\s+SymmetricSecurityKey\s*\(\s*(?:Encoding\.\w{1,20}\.GetBytes|Convert\.FromBase64String)\s*\(\s*@?"(?<secret>[^"\n]{1,400})"'
+    redactEvidence: true
+    message: The symmetric key that signs or validates tokens is a literal in the source; anyone with the code can issue valid tokens.
+    message_zh: 签名或校验令牌的对称密钥是源码中的字面量；拿到代码的人都能签发有效令牌。
+    remediation: Load the signing key from configuration backed by a secret store and rotate the committed value.
+    remediation_zh: 从由密钥存储支持的配置中加载签名密钥，并轮换已提交的值。
+
+  # ---- ASP.NET Core / MVC configuration ----
+  - id: cs-cors-any-origin-credentials
+    title: C# CORS policy allows any origin with credentials
+    title_zh: C# CORS 策略允许任意来源携带凭据
+    severity: high
+    confidence: high
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    patterns:
+      - '\bSetIsOriginAllowed\s*\(\s*(?:\(\s*(?:\w{1,60}\s*)?\)|\w{1,60})\s*=>\s*true\s*\)|\bAllowAnyOrigin\s*\(\s*\)'
+      - '\bAllowCredentials\s*\(\s*\)'
+    message: The CORS policy lets any web site send credentialed requests and read the responses (SetIsOriginAllowed(_ => true) reflects every origin; AllowAnyOrigin with AllowCredentials did on older ASP.NET Core and is rejected at startup by newer versions).
+    message_zh: 该 CORS 策略允许任意网站发送携带凭据的请求并读取响应（SetIsOriginAllowed(_ => true) 会反射所有来源；AllowAnyOrigin 加 AllowCredentials 在旧版 ASP.NET Core 中同样如此，新版本会在启动时拒绝）。
+    remediation: List the allowed origins with WithOrigins(...) or check them against an allowlist in SetIsOriginAllowed.
+    remediation_zh: 使用 WithOrigins(...) 列出允许的来源，或在 SetIsOriginAllowed 中按白名单校验。
+  - id: cs-cookie-insecure
+    title: C# cookie explicitly without HttpOnly or Secure
+    title_zh: C# Cookie 被显式设为不带 HttpOnly 或 Secure
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    filePattern: 'Cookie'
+    pattern: '\bHttpOnly\s*=\s*false\b|\bSecure\s*=\s*false\b|\bCookieSecurePolicy\.None\b'
+    message: The cookie is sent over plain HTTP (Secure off) or can be read by scripts (HttpOnly off); session and authentication cookies need both.
+    message_zh: 该 Cookie 可经明文 HTTP 发送（未设 Secure）或可被脚本读取（未设 HttpOnly）；会话和认证 Cookie 两者都需要。
+    remediation: Set HttpOnly = true and Secure = true (CookieSecurePolicy.Always) on session and authentication cookies.
+    remediation_zh: 为会话和认证 Cookie 设置 HttpOnly = true 和 Secure = true（CookieSecurePolicy.Always）。
+  - id: cs-cookie-samesite-none
+    title: C# cookie with SameSite=None
+    title_zh: C# Cookie 设置 SameSite=None
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1275
+    owasp: A01:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:SameSite|MinimumSameSitePolicy)\s*=\s*SameSiteMode\.None\b'
+    message: SameSite=None sends the cookie on cross-site requests; confirm the cookie needs that (for example an OpenID Connect correlation cookie), is Secure, and that state-changing requests are protected against CSRF.
+    message_zh: SameSite=None 会在跨站请求中发送 Cookie；需确认确有需要（例如 OpenID Connect 关联 Cookie）、已设置 Secure，且修改状态的请求有 CSRF 防护。
+    remediation: Use SameSite=Lax or Strict unless cross-site delivery is required.
+    remediation_zh: 除非必须跨站发送，否则使用 SameSite=Lax 或 Strict。
+  - id: cs-developer-exception-page
+    title: ASP.NET Core developer exception page not limited to development
+    title_zh: ASP.NET Core 开发者异常页未限制在开发环境
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-209
+    owasp: A05:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    fileAbsentPattern: '\bIs(?:Development|Environment)\s*\('
+    pattern: '\bUseDeveloperExceptionPage\s*\('
+    message: The developer exception page shows stack traces, source lines and request details; the file has no IsDevelopment() check, so confirm it never runs in production.
+    message_zh: 开发者异常页会显示堆栈、源码行和请求详情；该文件中没有 IsDevelopment() 检查，需确认它不会在生产环境运行。
+    remediation: Call UseDeveloperExceptionPage only inside if (env.IsDevelopment()) and use UseExceptionHandler elsewhere.
+    remediation_zh: 只在 if (env.IsDevelopment()) 中调用 UseDeveloperExceptionPage，其他环境使用 UseExceptionHandler。
+  - id: cs-open-redirect
+    title: C# redirect to a URL from the request or a return-URL parameter
+    title_zh: C# 重定向到来自请求或回跳参数的 URL
+    severity: medium
+    confidence: medium
+    cwe: CWE-601
+    owasp: A01:2021
+    languages: [csharp]
+    flags: ''
+    codeOnly: true
+    fileAbsentPattern: '\bIsLocalUrl\s*\(|\bLocalRedirect\w{0,20}\s*\(|\bIsUrlLocalToHost\b'
+    pattern: '(?<![\w.])(?:(?:Response|this|Context\.Response|HttpContext\.Response)\s*\.\s*)?(?:Redirect(?:Permanent)?(?:PreserveMethod)?|new\s+RedirectResult)\s*\(\s*(?:{{REQ}}|(?:[Rr]eturn|[Rr]edirect|[Nn]ext|[Tt]arget|[Cc]allback|[Cc]ontinue)_?(?:[Uu]rl|URL|[Uu]ri|URI|[Tt]o|[Pp]ath)\b)'
+    message: The redirect target comes from the request (or a returnUrl-style parameter) and the file never checks that it is local, so the site can be used to send users to a phishing page.
+    message_zh: 重定向目标来自请求（或 returnUrl 类参数），且文件中从未校验它是否为本站地址，网站可被利用把用户送往钓鱼页面。
+    remediation: Use LocalRedirect / Url.IsLocalUrl, or map the parameter to a fixed set of destinations.
+    remediation_zh: 使用 LocalRedirect / Url.IsLocalUrl，或把参数映射到固定的目标集合。
+  - id: cs-request-validation-disabled
+    title: ASP.NET request validation disabled ([ValidateInput(false)], [AllowHtml])
+    title_zh: ASP.NET 关闭了请求校验（[ValidateInput(false)]、[AllowHtml]）
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pattern: '\bValidateInput\s*\(\s*false\s*\)|\[\s*(?:[\w.]{1,100}\s*(?:\([^)\n]{0,200}\)\s*)?,\s*){0,5}AllowHtml\s*[\],(]'
+    message: Request validation is off for this action or property, so HTML and script reach the code; confirm every place that renders the value encodes it.
+    message_zh: 该动作或属性关闭了请求校验，HTML 和脚本可进入代码；需确认所有输出该值的地方都做了编码。
+    remediation: Keep request validation on, or sanitize the HTML with an allowlist sanitizer and encode it on output.
+    remediation_zh: 保持请求校验开启，或用白名单清洗器清洗 HTML，并在输出时编码。
+  - id: cs-antiforgery-disabled
+    title: ASP.NET Core antiforgery validation disabled
+    title_zh: ASP.NET Core 关闭了防伪令牌校验
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-352
+    owasp: A01:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bIgnoreAntiforgeryToken(?:Attribute)?\b'
+    message: Antiforgery validation is switched off; confirm the endpoint does not rely on cookie authentication (token-authenticated APIs and webhooks are fine).
+    message_zh: 关闭了防伪令牌校验；需确认该端点不依赖 Cookie 认证（令牌认证的 API 和 Webhook 没有问题）。
+    remediation: Keep [ValidateAntiForgeryToken] / AutoValidateAntiforgeryToken for cookie-authenticated, state-changing endpoints.
+    remediation_zh: 对使用 Cookie 认证且修改状态的端点保留 [ValidateAntiForgeryToken] / AutoValidateAntiforgeryToken。
+
+  # ---- Cross-site scripting ----
+  - id: cs-xss-raw-request
+    title: Request data written as raw HTML
+    title_zh: 请求数据被作为原始 HTML 输出
+    severity: high
+    confidence: high
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [csharp, razor]
+    flags: ''
+    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString)|Response\.Write)\s*\([^;\n]{0,200}?(?:{{REQ}})'
+    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|HtmlEncoder\.\w{1,20}\.Encode)\s*\('
+    group: cs-xss
+    message: A value of the request is written to the page without HTML encoding (reflected cross-site scripting).
+    message_zh: 请求中的值未经 HTML 编码就写入页面（反射型跨站脚本）。
+    remediation: Let Razor encode the value (@value), or HtmlEncoder.Default.Encode it before writing.
+    remediation_zh: 交由 Razor 编码输出（@value），或在写出前使用 HtmlEncoder.Default.Encode 编码。
+  - id: cs-xss-raw-html
+    title: Non-literal value written as raw HTML (Html.Raw, HtmlString, MarkupString)
+    title_zh: 非字面量值被作为原始 HTML 输出（Html.Raw、HtmlString、MarkupString）
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [csharp, razor]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString))\s*\((?!\s*@?"[^"\n]{0,400}"\s*\))|\(\s*MarkupString\s*\)\s*(?!@?")[\w(@]'
+    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|HtmlEncoder\.\w{1,20}\.Encode)\s*\('
+    group: cs-xss
+    message: The value bypasses HTML encoding; confirm it cannot contain markup from users (or is sanitized).
+    message_zh: 该值绕过了 HTML 编码；需确认它不会包含来自用户的标记（或已清洗）。
+    remediation: Render the value with Razor encoding, or sanitize it with an allowlist HTML sanitizer first.
+    remediation_zh: 用 Razor 编码输出该值，或先用白名单 HTML 清洗器清洗。
+
+  # ---- Files ----
+  - id: cs-path-traversal
+    title: C# file path built from request data or an upload file name
+    title_zh: C# 文件路径由请求数据或上传文件名构造
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [csharp]
+    flags: ''
+    codeOnly: true
+    pattern: '(?:{{FILESINK}})[^;]{0,400}?(?:{{REQ}}|{{UPLOADNAME}})'
+    notPattern: '\bPath\.GetFileName(?:WithoutExtension)?\s*\('
+    group: cs-path
+    message: A request value or the client-supplied name of an uploaded file is used in a file path; "../" or an absolute name in it reaches files outside the intended directory.
+    message_zh: 请求值或客户端提供的上传文件名被用于文件路径；其中的 "../" 或绝对路径可访问目标目录之外的文件。
+    remediation: Generate the stored file name yourself (or use Path.GetFileName on it), and verify that Path.GetFullPath of the result stays inside the allowed directory.
+    remediation_zh: 自行生成存储文件名（或对其使用 Path.GetFileName），并校验结果经 Path.GetFullPath 后仍位于允许目录内。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: cs-zip-slip
+    title: C# archive entry name used as an extraction path (Zip Slip)
+    title_zh: C# 压缩包条目名被用作解压路径（Zip Slip）
+    severity: high
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [csharp]
+    flags: ''
+    codeOnly: true
+    fileAbsentPattern: '\bGetFullPath\s*\('
+    pattern: '\b(?:Path\.(?:Combine|Join)|ExtractToFile|File\.\w{2,30}|new\s+FileStream|Directory\.CreateDirectory)\s*\([^;]{0,300}?\b\w{0,40}[Ee]ntry\s*\.\s*(?:FullName|Key)\b'
+    group: cs-path
+    message: The path of an archive entry is joined to the extraction directory without a check; an entry named "../../x" is written outside it (Zip Slip).
+    message_zh: 压缩包条目路径未经检查就与解压目录拼接；名为 "../../x" 的条目会被写到目录之外（Zip Slip）。
+    remediation: Compute Path.GetFullPath of the destination and reject the entry unless it starts with the full path of the extraction directory.
+    remediation_zh: 计算目标的 Path.GetFullPath，若其不以解压目录的完整路径开头则拒绝该条目。
   - id: cs-path-api
     title: C# Path.Combine with a runtime path segment
     title_zh: C# Path.Combine 使用运行时路径片段
@@ -168,9 +814,11 @@ rules:
     kind: hotspot
     cwe: CWE-22
     owasp: A01:2021
-    languages:
-      - csharp
-    pattern: Path\.Combine\s*\(
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: 'Path\.Combine\s*\('
+    notPattern: 'Path\.Combine\s*\(\s*(?:@?"[^"\n]{0,400}"\s*,\s*){1,10}@?"[^"\n]{0,400}"\s*\)'
     group: cs-path
     message: A path is combined from runtime segments; confirm the segments are trusted and normalized inside the allowed directory.
     message_zh: 路径由运行时片段拼接；需确认片段可信且规范化后仍在允许目录内。
@@ -179,3 +827,37 @@ rules:
     references:
       - CWE-22
       - OWASP A01:2021
+
+  # ---- Code loading ----
+  - id: cs-type-from-request
+    title: C# type or assembly loaded by a name from the request
+    title_zh: C# 按请求中的名称加载类型或程序集
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-470
+    owasp: A03:2021
+    languages: [csharp]
+    flags: ''
+    codeOnly: true
+    pattern: '\b(?:Type\.GetType|Activator\.CreateInstance|Assembly\.(?:Load|LoadFrom|LoadFile|UnsafeLoadFrom))\s*\([^;]{0,200}?(?:{{REQ}})'
+    message: A type or assembly is chosen by a request value; confirm the name is checked against a fixed allowlist, or the caller decides which code runs.
+    message_zh: 类型或程序集由请求值选择；需确认名称经过固定白名单校验，否则调用方可以决定运行哪些代码。
+    remediation: Map request values to a fixed dictionary of allowed types instead of resolving names.
+    remediation_zh: 将请求值映射到固定的允许类型字典，而不是解析名称。
+  - id: cs-dynamic-code
+    title: C# code compiled or evaluated at runtime
+    title_zh: C# 在运行时编译或执行代码
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bCSharpScript\.(?:EvaluateAsync|RunAsync|Create|Evaluate)\b|\.CompileAssemblyFromSource\s*\('
+    message: C# source is compiled or evaluated at runtime; confirm no part of it comes from users, or they can run arbitrary code.
+    message_zh: 在运行时编译或执行 C# 源码；需确认其中没有来自用户的部分，否则用户可以执行任意代码。
+    remediation: Do not evaluate user-supplied code; offer a fixed set of operations or a sandboxed expression language instead.
+    remediation_zh: 不要执行用户提供的代码；改为提供固定的操作集合或沙箱化的表达式语言。

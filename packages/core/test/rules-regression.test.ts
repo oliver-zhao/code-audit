@@ -201,3 +201,280 @@ describe("defect 5 rule regressions", () => {
     expect(issues[0]?.line).toBe(1);
   });
 });
+
+describe("C# rule precision", () => {
+  const ruleSet = loadRules(RULES_DIR);
+  let counter = 0;
+
+  /** `rule:line:kind` for every C# rule hit in a project made of `files`. */
+  function csharpHits(files: Record<string, string[]>): string[] {
+    counter += 1;
+    const root = path.join(temp, `csharp-${counter}`);
+    for (const [file, lines] of Object.entries(files)) {
+      writeFile(root, file, [...lines, ""].join("\n"));
+    }
+    return scanRules(inventory(root).files, ruleSet)
+      .hits.filter((hit) => hit.rule.id.startsWith("cs-"))
+      .map((hit) => `${hit.rule.id}:${hit.line}:${hit.rule.kind}`)
+      .sort();
+  }
+
+  /** The same for one C# file wrapped in a class and method (body starts at line 3). */
+  function body(lines: string[]): string[] {
+    return csharpHits({
+      "App.cs": ["public class App {", "  public void M(string id, string sort, string cmd) {", ...lines, "  }", "}"],
+    });
+  }
+
+  it("ignores dangerous APIs in comments, doc comments and string literals", () => {
+    expect(
+      body([
+        '    // Process.Start("cmd.exe", "/c " + cmd);',
+        "    /// new SqlCommand(\"SELECT * FROM T WHERE id = '\" + id + \"'\");",
+        "    /* var f = new BinaryFormatter();",
+        "       options.RequireHttpsMetadata = false; */",
+        '    var help = "Never write Process.Start(\\"sh\\", \\"-c \\" + cmd) or new BinaryFormatter()";',
+        '    var raw = """',
+        "        ServerCertificateCustomValidationCallback = (a, b, c, d) => true;",
+        '        """;',
+      ]),
+    ).toEqual([]);
+  });
+
+  it("reports SQL values in value position but not parameters, EF Core interpolation or identifiers", () => {
+    expect(
+      body([
+        '    var a = db.Users.FromSqlInterpolated($"SELECT * FROM Users WHERE Id = {id}");',
+        '    var b = db.Users.FromSql($"SELECT * FROM Users WHERE Name = {id}");',
+        '    db.Database.ExecuteSql($"DELETE FROM Carts WHERE Owner = {id}");',
+        '    var c = db.Database.SqlQuery<int>($"SELECT Count FROM T WHERE Id = {id}");',
+        '    FormattableString q = $"SELECT * FROM T WHERE Id = {id}";',
+        '    db.Database.ExecuteSqlRaw("DELETE FROM Carts WHERE Owner = {0}", id);',
+        '    var d = conn.Query<User>("SELECT * FROM Users WHERE Id = @Id", new { Id = id });',
+        '    cmd.CommandText = "SELECT * FROM Users WHERE Name = @name";',
+        '    var label = "Total = " + id;',
+        '    var e = new SqlCommand("SELECT * FROM Users WHERE Id = @id", conn);',
+      ]),
+    ).toEqual([]);
+    expect(
+      body([
+        '    cmd.CommandText = "SELECT * FROM " + sort + " WHERE Id = @id";',
+        '    var f = db.Users.FromSqlRaw($"SELECT * FROM Users ORDER BY {sort}");',
+        "    var g = new SqlCommand(query, conn);",
+      ]),
+    ).toEqual(["cs-sql-api:5:hotspot", "cs-sql-dynamic:3:hotspot", "cs-sql-dynamic:4:hotspot"]);
+    expect(
+      body([
+        '    var h = db.Users.FromSqlRaw("SELECT * FROM Users WHERE Id = " + id);',
+        "    var sql = string.Format(\"SELECT * FROM T WHERE Name = '{0}'\", id);",
+        "    var i = $\"SELECT * FROM T WHERE Name LIKE '%{id}%'\";",
+      ]),
+    ).toEqual([
+      "cs-sql-injection:3:finding",
+      "cs-sql-string-built:4:finding",
+      "cs-sql-string-built:5:finding",
+    ]);
+  });
+
+  it("separates shell command lines, built argument strings and argument lists", () => {
+    expect(
+      body([
+        '    var psi = new ProcessStartInfo("git");',
+        "    psi.ArgumentList.Add(cmd);",
+        '    Process.Start("notepad.exe");',
+        '    Process.Start("explorer.exe", "/select,C:\\\\temp");',
+      ]),
+    ).toEqual([]);
+    expect(
+      body([
+        "    Process.Start(psi);",
+        '    Process.Start("/bin/sh", $"-c {cmd}");',
+        '    Process.Start("git", "log " + sort);',
+        '    var p = new ProcessStartInfo { FileName = "cmd.exe", Arguments = "/c " + cmd };',
+      ]),
+    ).toEqual([
+      "cs-command-injection:5:finding",
+      "cs-command-shell:4:finding",
+      "cs-command-shell:6:finding",
+      "cs-process-api:3:hotspot",
+    ]);
+  });
+
+  it("reports file paths from uploads and requests, not from variables named like input", () => {
+    expect(
+      body([
+        "    var name = id;",
+        '    var a = Path.Combine("/data", "static.txt");',
+        '    var b = Path.Combine("/data", Path.GetFileName(file.FileName));',
+        "    var c = Path.Combine(root, name);",
+        "    using var s = File.OpenRead(Path.Combine(root, userInput));",
+      ]),
+    ).toEqual(["cs-path-api:5:hotspot", "cs-path-api:6:hotspot", "cs-path-api:7:hotspot"]);
+    expect(
+      csharpHits({
+        "Upload.cs": [
+          "public class Upload {",
+          "  public void Save(IFormFile formFile) {",
+          '    var a = Path.Combine("/srv", formFile.FileName);',
+          '    File.Delete(Path.Combine("/srv", Request.Query["name"]));',
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual(["cs-path-traversal:3:finding", "cs-path-traversal:4:finding"]);
+  });
+
+  it("does not report a checked archive extraction or a local redirect", () => {
+    expect(
+      csharpHits({
+        "Zip.cs": [
+          "public class Zip {",
+          "  public void Extract(ZipArchive zip, string root) {",
+          "    foreach (var entry in zip.Entries) {",
+          "      var target = Path.GetFullPath(Path.Combine(root, entry.FullName));",
+          "      if (!target.StartsWith(root)) continue;",
+          "      entry.ExtractToFile(target);",
+          "    }",
+          "  }",
+          "}",
+        ],
+        "Account.cs": [
+          "public class Account : Controller {",
+          "  public IActionResult Login(string returnUrl) {",
+          "    if (Url.IsLocalUrl(returnUrl)) return Redirect(returnUrl);",
+          '    return Redirect("/");',
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual(["cs-path-api:4:hotspot"]);
+  });
+
+  it("reports CORS only for any origin with credentials", () => {
+    expect(
+      body([
+        "    app.UseCors(b => b.AllowAnyOrigin().AllowAnyHeader());",
+        "    app.UseCors(b => b.SetIsOriginAllowed(IsAllowed).AllowCredentials());",
+        '    app.UseCors(b => b.WithOrigins("https://a.example").AllowCredentials());',
+      ]),
+    ).toEqual([]);
+    expect(
+      body([
+        '    services.AddCors(o => o.AddPolicy("x", b => b.AllowAnyOrigin()',
+        "        .AllowAnyMethod()",
+        "        .AllowCredentials()));",
+      ]),
+    ).toEqual(["cs-cors-any-origin-credentials:3:finding"]);
+  });
+
+  it("reports certificate callbacks that accept everything, not real checks", () => {
+    expect(
+      body([
+        "    handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => e == SslPolicyErrors.None;",
+        "    client.ServerCertificateValidationCallback = ValidateServerCertificate;",
+        "    var ok = Validate((a, b) => true);",
+      ]),
+    ).toEqual([]);
+    expect(
+      body([
+        "    ServicePointManager.ServerCertificateValidationCallback += delegate { return true; };",
+        "    handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;",
+      ]),
+    ).toEqual(["cs-tls-cert-validation-disabled:3:finding", "cs-tls-cert-validation-disabled:4:finding"]);
+  });
+
+  it("keeps safe authentication, cookie, crypto and TLS settings quiet", () => {
+    expect(
+      body([
+        "    options.RequireHttpsMetadata = !env.IsDevelopment();",
+        "    p.ValidateLifetime = true; p.ValidateIssuer = true; p.RequireSignedTokens = true;",
+        '    p.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"]));',
+        "    options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.Always;",
+        "    options.Cookie.SameSite = SameSiteMode.Strict;",
+        "    handler.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;",
+        "    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;",
+        "    handler.CheckCertificateRevocationList = true;",
+        "    ServicePointManager.SecurityProtocol &= ~SecurityProtocolType.Ssl3;",
+        "    if (protocol == SslProtocols.Tls) Warn();",
+        '    policy.Execute(() => Log("count = " + id));',
+        "    var key = Rfc2898DeriveBytes.Pbkdf2(cmd, salt, 600000, HashAlgorithmName.SHA256, 32);",
+        "    using var kdf = new Rfc2898DeriveBytes(cmd, salt, 210000, HashAlgorithmName.SHA512);",
+        "    var settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.None };",
+        "    var hash = SHA256.HashData(data);",
+        "    aes.Key = keyVault.GetKey();",
+        '    var raw = Html.Raw("<br/>");',
+      ]),
+    ).toEqual([]);
+    // "Secure = false" outside a file about cookies is not a cookie setting.
+    expect(body(["    var smtp = new SmtpOptions { Secure = false };"])).toEqual([]);
+  });
+
+  it("reports the developer exception page only when the file has no environment check", () => {
+    const guarded = [
+      "public class Startup {",
+      "  public void Configure(IApplicationBuilder app, IWebHostEnvironment env) {",
+      "    if (env.IsDevelopment())",
+      "    {",
+      "      app.UseDeveloperExceptionPage();",
+      "    }",
+      "  }",
+      "}",
+    ];
+    expect(csharpHits({ "Startup.cs": guarded })).toEqual([]);
+    expect(
+      csharpHits({ "Startup.cs": guarded.filter((line) => !line.includes("IsDevelopment")) }),
+    ).toEqual(["cs-developer-exception-page:4:hotspot"]);
+  });
+
+  it("encodes before writing request data, and keeps test code out of broad hotspots", () => {
+    expect(
+      body([
+        '    Response.Write(HttpUtility.HtmlEncode(Request.QueryString["q"]));',
+        '    var safe = new HtmlString(HtmlEncoder.Default.Encode(Request.Query["q"]));',
+      ]),
+    ).toEqual([]);
+    expect(
+      csharpHits({
+        "tests/Api.Tests/Fixture.cs": [
+          "public class Fixture {",
+          "  public void M() {",
+          "    handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => true;",
+          "    Process.Start(psi);",
+          "    var p = Path.Combine(root, name);",
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("matches web.config and appsettings only in the settings that matter", () => {
+    expect(
+      csharpHits({
+        "Web.config": [
+          "<configuration><system.web>",
+          '  <compilation debug="false" />',
+          '  <customErrors mode="RemoteOnly" />',
+          '  <trace enabled="true" localOnly="true" />',
+          '  <machineKey validationKey="AutoGenerate,IsolateApps" />',
+          "</system.web></configuration>",
+        ],
+        "Web.Debug.config": ['<compilation debug="true" />'],
+        "appsettings.Development.json": ['{ "DetailedErrors": true, "RequireHttpsMetadata": false }'],
+        "appsettings.json": ['{ "DetailedErrors": false }'],
+        "Views/Home/Index.cshtml": ["<p>@Model.Name</p>", '@Html.Raw("<hr/>")'],
+      }),
+    ).toEqual([]);
+    expect(
+      csharpHits({
+        "App.config": ['  <system.web><compilation debug="true" /></system.web>'],
+        "appsettings.Production.json": ['{ "DetailedErrors": true }'],
+        "Views/Home/Index.cshtml": ["<p>@Html.Raw(Model.Bio)</p>"],
+      }),
+    ).toEqual([
+      "cs-appsettings-insecure:1:finding",
+      "cs-config-debug-compilation:1:finding",
+      "cs-xss-raw-html:1:hotspot",
+    ]);
+  });
+});

@@ -1,0 +1,7 @@
+@model VulnerableShop.OrderViewModel
+@{
+    ViewData["Title"] = "Order";
+}
+<h1>@Model.Title</h1>
+<div class="notes">@Html.Raw(Model.NotesHtml)</div>
+<div class="echo">@Html.Raw(Context.Request.Query["message"])</div>
