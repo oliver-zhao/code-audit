@@ -42,10 +42,15 @@ const CASES: Case[] = [
       'HttpResponse("Hello " + request.GET["name"])',
       'make_response(f"<p>{request.args[\'who\']}</p>")',
       'HTMLResponse(content="<b>" + request.query_params["q"])',
+      'Response("<h1>" + request.args["n"] + "</h1>")',
     ],
     good: [
       'HttpResponse("Hello " + escape(request.GET["name"]))',
       'HttpResponse(request.GET["name"], content_type="text/plain")',
+      // Review item 7: positional content type.
+      'HttpResponse("Hi " + request.GET["name"], "text/plain")',
+      // A bare Response(request.data) is the Django REST framework JSON echo.
+      "Response(request.data)",
       'HttpResponse(json.dumps(request.GET.dict()))',
       'HttpResponseRedirect("/" + request.GET["next"])',
       'make_response(redirect(request.args["next"]))',
@@ -67,6 +72,13 @@ const CASES: Case[] = [
     ],
   },
   {
+    // Review item 2: FastAPI encodes a returned str as JSON.
+    rule: "py-xss-return-html",
+    header: ["from fastapi import FastAPI, Request"],
+    bad: [],
+    good: ['return "<h1>Hello " + request.query_params["name"] + "</h1>"'],
+  },
+  {
     rule: "py-html-response-dynamic",
     bad: ['return HTMLResponse(f"<h2>{title}</h2>")'],
     good: [
@@ -82,7 +94,11 @@ const CASES: Case[] = [
       'format_html("<b>%s</b>" % name)',
       'format_html("<b>{}</b>".format(name))',
     ],
-    good: ['format_html("<a href=\'{}\'>{}</a>", url, label)'],
+    good: [
+      'format_html("<a href=\'{}\'>{}</a>", url, label)',
+      // Review item 4: two literals joined with + are constant.
+      'format_html("<b>{}</b>" + "<i>{}</i>", a, b)',
+    ],
   },
   {
     rule: "py-ssrf-host-request",
@@ -91,6 +107,10 @@ const CASES: Case[] = [
       'requests.get(f"http://{request.args[\'host\']}/status", timeout=5)',
       'requests.post(url=f"{request.form[\'target\']}/hook", timeout=5)',
       'urllib.request.urlopen("http://" + request.args["host"])',
+      'requests.get("http://%s/status" % request.args["host"], timeout=5)',
+      'requests.get("http://{}/status".format(request.args["host"]), timeout=5)',
+      'httpx.Client().get(f"https://{request.args[\'host\']}/x")',
+      'requests.Session().get(f"https://{request.args[\'host\']}/x", timeout=5)',
     ],
     good: [
       'requests.get(f"https://api.example.com/items/{request.args[\'id\']}", timeout=5)',
@@ -127,6 +147,8 @@ const CASES: Case[] = [
       'db.users.find_one({"name": str(body["name"])})',
       'db.users.find_one({"name": request.form["name"]})',
       'request.args.get("q", "").find("x")',
+      // Review item 8: str.find on a local name.
+      'name.find(request.args.get("q", ""))',
     ],
   },
   {
@@ -156,7 +178,12 @@ const CASES: Case[] = [
       "Order.objects.create(owner=user, **request.POST.dict())",
       "Product.objects.filter(**request.GET.dict())",
     ],
-    good: ['User(name=request.json["name"])', "User(**cleaned)"],
+    good: [
+      'User(name=request.json["name"])',
+      "User(**cleaned)",
+      'urlencode({**request.GET, "page": 2})',
+      "handler(**request.match_info)",
+    ],
   },
   {
     rule: "py-cors-credentials-default-origin",
@@ -168,10 +195,18 @@ const CASES: Case[] = [
     ],
   },
   {
+    // Review item 5: origins configured through init_app in the same file.
+    rule: "py-cors-credentials-default-origin",
+    header: ['cors.init_app(app, origins=["https://app.example.com"])'],
+    bad: [],
+    good: ["cors = CORS(supports_credentials=True)"],
+  },
+  {
     rule: "py-cors-regex-any",
     bad: [
       'app.add_middleware(CORSMiddleware, allow_origin_regex=".*", allow_credentials=True)',
       'CORS(app, origins=r"^.*$", supports_credentials=True)',
+      'CORS(app, origins=r"https?://.*", supports_credentials=True)',
     ],
     good: [
       'app.add_middleware(CORSMiddleware, allow_origin_regex=r"https://.*\\.example\\.com", allow_credentials=True)',
@@ -183,6 +218,11 @@ const CASES: Case[] = [
     bad: ['PASSWORD_HASHERS = ["django.contrib.auth.hashers.UnsaltedMD5PasswordHasher"]'],
     good: [
       'PASSWORD_HASHERS = ["django.contrib.auth.hashers.PBKDF2PasswordHasher", "django.contrib.auth.hashers.MD5PasswordHasher"]',
+      // Review item 3: test-only settings.
+      'if TESTING: PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]',
+      "if TESTING:",
+      '    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]',
+      'settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]',
     ],
   },
   {
@@ -224,6 +264,8 @@ const CASES: Case[] = [
       "rsa.generate_private_key(65537, 512)",
       "RSA.generate(1024)",
       "ec.generate_private_key(ec.SECP192R1())",
+      "paramiko.RSAKey.generate(1024)",
+      "key.generate_key(crypto.TYPE_RSA, 1024)",
     ],
     good: [
       "rsa.generate_private_key(public_exponent=65537, key_size=2048)",
@@ -258,6 +300,9 @@ const CASES: Case[] = [
       "return self.signature == other.signature",
       "if sha256(data).hexdigest() != expected_sha256: pass",
       "if len(signature) == 64: pass",
+      "if alg == signature.algorithm: pass",
+      "if digestmod == HMAC_SHA256_MAC: pass",
+      "if hashlib.sha256(blob).hexdigest() == expected: pass",
     ],
   },
   {
@@ -269,13 +314,20 @@ const CASES: Case[] = [
   {
     rule: "py-paramiko-exec-dynamic",
     header: ["import paramiko"],
-    bad: ['client.exec_command(f"rm -rf {directory}")', 'client.exec_command("cat " + name)'],
+    bad: [
+      'client.exec_command(f"rm -rf {directory}")',
+      'client.exec_command("cat " + name)',
+      'client.exec_command(command="cat " + name)',
+    ],
     good: ['client.exec_command("uptime")', 'client.exec_command("cat " + shlex.quote(name))'],
   },
   {
     rule: "py-xmlrpc-dotted-names",
-    bad: ["server.register_instance(api, allow_dotted_names=True)"],
-    good: ["server.register_instance(api)"],
+    bad: [
+      "server.register_instance(api, allow_dotted_names=True)",
+      "server.register_instance(api, True)",
+    ],
+    good: ["server.register_instance(api)", "server.register_instance(api, False)"],
   },
   {
     rule: "py-mako-autoescape-missing",
@@ -321,6 +373,8 @@ const CASES: Case[] = [
     good: [
       "PALChain.from_math_prompt(llm)",
       'note = "allow_dangerous_code=True is never set"',
+      // Review item 6: an upper-case setting name is not the LangChain option.
+      "ALLOW_DANGEROUS_REQUESTS = True",
     ],
   },
   {
@@ -330,17 +384,37 @@ const CASES: Case[] = [
   },
   {
     rule: "py-llm-output-exec",
-    bad: [
-      "exec(completion.choices[0].message.content)",
-      "eval(llm_output)",
-      "subprocess.run(generated_command, shell=True)",
-    ],
+    bad: ["exec(completion.choices[0].message.content)", "eval(llm_output)"],
     good: [
       "exec(compile(source, path, 'exec'))",
       "action = ACTIONS.get(completion.choices[0].message.content)",
     ],
   },
+  {
+    rule: "py-llm-output-shell",
+    bad: ["os.system(llm_output)", "subprocess.run(generated_command)"],
+    // With shell=True py-subprocess-shell reports it as a finding instead.
+    good: ["subprocess.run(generated_command, shell=True)", "os.system(cmd)"],
+  },
+  {
+    rule: "py-hf-trust-remote-code-default",
+    bad: [
+      "def load(name, trust_remote_code: bool = True): return name",
+      "async def load2(name, trust_remote_code=True): return name",
+    ],
+    good: [
+      "def load(name, trust_remote_code: bool = False): return name",
+      "def load3(name, trust_remote_code=None): return name",
+    ],
+  },
   // Widened patterns of existing rules.
+  {
+    // A numeric-only LDAP filter (clean taint fixture) is not injectable.
+    rule: "py-ldap-injection",
+    header: ["import ldap"],
+    bad: ['conn.search_s(base, 2, "(uid=%s)" % uid)'],
+    good: ['conn.search_s(base, 2, "(uidNumber=%d)" % number)'],
+  },
   {
     rule: "py-session-cookie-insecure",
     bad: [
@@ -363,6 +437,12 @@ const CASES: Case[] = [
     rule: "py-chmod-777",
     bad: ["os.chmod(path, stat.S_IRWXU | stat.S_IRWXO)", "os.chmod(path, 0o777)"],
     good: ["os.chmod(path, mode & ~stat.S_IWOTH)", "os.chmod(path, 0o640)"],
+  },
+  {
+    // Review: "~" in a path must not hide a world-writable mode.
+    rule: "py-chmod-777",
+    bad: ['os.chmod(os.path.expanduser("~/shared"), 0o777)'],
+    good: [],
   },
 ];
 
@@ -393,11 +473,38 @@ describe("python-extra rules: positive and negative cases", () => {
       "py-timing-unsafe-compare", "py-cleartext-protocol", "py-paramiko-exec-dynamic",
       "py-xmlrpc-dotted-names", "py-mako-autoescape-missing", "py-unpack-archive",
       "py-lxml-parse-default", "py-hf-trust-remote-code", "py-langchain-dangerous-option",
-      "py-llm-code-tool", "py-llm-output-exec",
+      "py-llm-code-tool", "py-llm-output-exec", "py-llm-output-shell",
+      "py-hf-trust-remote-code-default",
     ];
     for (const id of own) {
       expect(extra).toContain(id);
       expect(covered.has(id), id).toBe(true);
+    }
+  });
+});
+
+describe("python-extra rules: regex cost", () => {
+  // Review item 1: an unbounded string-literal body inside a repeated gap made
+  // py-hf-trust-remote-code quadratic on input such as a("\' repeated.
+  it("runs py-hf-trust-remote-code and the call-located rules in linear time on hostile input", () => {
+    const ids = ["py-hf-trust-remote-code", "py-mass-assignment", "py-hf-trust-remote-code-default"];
+    for (const id of ids) {
+      const rule = ruleSet.rules.find((candidate) => candidate.id === id);
+      const locator = rule?.compiled.locator;
+      expect(locator, id).toBeDefined();
+      if (!locator) continue;
+      for (const unit of ['a("\\\'', "a(", 'a("x" ', "f(**", "def f("]) {
+        const time = (length: number): number => {
+          const text = unit.repeat(Math.ceil(length / unit.length));
+          const regex = new RegExp(locator.source, locator.flags);
+          const start = performance.now();
+          for (const match of text.matchAll(regex)) void match;
+          return performance.now() - start;
+        };
+        time(1_000);
+        const large = time(100_000);
+        expect(large, `${id} on ${JSON.stringify(unit)}`).toBeLessThan(400);
+      }
     }
   });
 });

@@ -6,6 +6,7 @@ rules must report nothing in this file.
 
 import html
 import json
+import ldap
 import subprocess
 from typing import Optional
 
@@ -93,7 +94,7 @@ async def hello(name: str):
 @app.post("/orders/search")
 async def order_search(request: Request):
     criteria = await request.json()
-    order = await orders.find_one({"customer": str(criteria.get("customer", ""))})
+    order = await db.orders.find_one({"customer": str(criteria.get("customer", ""))})
     return {"id": str(order["_id"])}
 
 

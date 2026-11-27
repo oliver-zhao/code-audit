@@ -564,16 +564,33 @@ rules:
       - pattern: django.shortcuts.get_object_or_404(...)
       - pattern: django.shortcuts.get_list_or_404(...)
       - pattern: $MODEL.objects.$QUERY(...)
+      # Rendering methods escape what they insert (template.render_to_string,
+      # Django's ExceptionReporter.get_traceback_html).
+      - patterns:
+          - pattern: $OBJ.$RENDER(...)
+          - metavariable-regex:
+              metavariable: $RENDER
+              regex: ^(render\w*|get_\w*html)$
+      # Output of a command or an outbound HTTP call is not request text.
+      - pattern: subprocess.$RUN(...)
+      - pattern: os.popen(...)
+      - pattern: requests.$VERB(...)
+      - pattern: httpx.$VERB(...)
+      - pattern: urllib.request.urlopen(...)
     pattern-sinks:
-      # Only the body argument is a sink. A body that is itself a call
-      # (str(rows), ", ".join(...), template.render(...)) is not reported: the
-      # rule targets request text formatted into markup, and taint also flows
-      # through database and template calls whose output is not request text.
-      # A response with an explicit content type, media type or mimetype is
-      # not reported either. mark_safe() / Markup() are left to the built-in
-      # rules: on Django the source definition treats every parameter of a
-      # helper shaped like a view as request data, and mark_safe(obj.field)
-      # on such a helper was the main false positive on the Django sources.
+      # Only the body argument is a sink.
+      # - A body that is a str()/repr()/len() conversion or a "sep".join(...)
+      #   is not reported: taint also flows through database, deserialization
+      #   and HTTP calls whose output is not request text, and these wrappers
+      #   are how such values are written out. Other calls (value.strip(),
+      #   "<p>{}</p>".format(value), helpers) are reported.
+      # - A response whose content type, media type or mimetype is given and is
+      #   not text/html is not reported (Django's second positional argument
+      #   is the content type).
+      # - mark_safe() / Markup() are left to the built-in rules: on Django the
+      #   source definition treats every parameter of a helper shaped like a
+      #   view as request data, and mark_safe(obj.field) on such a helper was
+      #   the main false positive on the Django sources.
       - patterns:
           - pattern-either:
               - pattern: django.http.HttpResponse($BODY, ...)
@@ -583,14 +600,32 @@ rules:
               - pattern: django.http.HttpResponseForbidden($BODY, ...)
               - pattern: flask.make_response($BODY, ...)
               - pattern: flask.Response($BODY, ...)
+              - pattern: flask.Response(response=$BODY, ...)
               - pattern: starlette.responses.HTMLResponse($BODY, ...)
               - pattern: starlette.responses.HTMLResponse(content=$BODY, ...)
               - pattern: fastapi.responses.HTMLResponse($BODY, ...)
               - pattern: fastapi.responses.HTMLResponse(content=$BODY, ...)
-          - pattern-not: $RESP($FN(...), ...)
-          - pattern-not: $RESP(..., content_type=$CT, ...)
-          - pattern-not: $RESP(..., mimetype=$CT, ...)
-          - pattern-not: $RESP(..., media_type=$CT, ...)
+          - pattern-either:
+              # No content type given.
+              - patterns:
+                  - pattern: $RESP(...)
+                  - pattern-not: $RESP(..., content_type=$CT, ...)
+                  - pattern-not: $RESP(..., mimetype=$CT, ...)
+                  - pattern-not: $RESP(..., media_type=$CT, ...)
+                  - pattern-not: django.http.HttpResponse($B, $CT, ...)
+              # An explicit HTML content type.
+              - patterns:
+                  - pattern-either:
+                      - pattern: $RESP(..., content_type=$CT, ...)
+                      - pattern: $RESP(..., mimetype=$CT, ...)
+                      - pattern: $RESP(..., media_type=$CT, ...)
+                      - pattern: django.http.HttpResponse($B, $CT, ...)
+                  - metavariable-regex:
+                      metavariable: $CT
+                      regex: ^[rbu]?["']text/html
+          - metavariable-regex:
+              metavariable: $BODY
+              regex: ^(?!(str|repr|len|ascii|redirect|send_file|send_from_directory|jsonify)\(|[rbu]?["'][^"']*["']\.join\()
           - focus-metavariable: $BODY
 
   - id: py-taint-nosql
@@ -613,17 +648,28 @@ rules:
       - pattern: bson.ObjectId(...)
       - pattern: bson.objectid.ObjectId(...)
     pattern-sinks:
-      # The filter (first argument) when it is not a dict literal written at
-      # the call site: a literal {"name": value} is the normal form, and only
-      # the whole document lets the caller inject operators reliably.
+      # The filter (first argument) of a collection method when it is not a
+      # dict or list literal written at the call site: a literal
+      # {"name": value} is the normal form, and only the whole document lets
+      # the caller inject operators reliably. The receiver must be an
+      # attribute or item of a database object (db.users, db["users"]), which
+      # keeps cache.delete_many(...) and Django QuerySet.aggregate(...) out.
       - patterns:
           - pattern-either:
-              - pattern: $COLL.$METHOD($FILTER, ...)
-              - pattern: $DB.$NAME.find($FILTER, ...)
-              - pattern: $DB[$NAME].find($FILTER, ...)
-          - metavariable-regex:
-              metavariable: $METHOD
-              regex: ^(find_one|find_one_and_update|find_one_and_delete|find_one_and_replace|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate)$
+              - patterns:
+                  - pattern-either:
+                      - pattern: $DB.$NAME.$METHOD($FILTER, ...)
+                      - pattern: $DB[$NAME].$METHOD($FILTER, ...)
+                  # Not a function of an imported module: for
+                  # `from django.contrib.staticfiles import finders`,
+                  # finders.find(...) matches with $DB and $NAME both bound to
+                  # the module name.
+                  - metavariable-comparison:
+                      comparison: str($DB) != str($NAME)
+                  - metavariable-regex:
+                      metavariable: $METHOD
+                      regex: ^(find|find_one|find_one_and_update|find_one_and_delete|find_one_and_replace|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate)$
+          - pattern-not: $X.objects.$M(...)
           - pattern-not: $X.$M({...}, ...)
           - pattern-not: $X.$M([...], ...)
           - focus-metavariable: $FILTER
@@ -652,7 +698,35 @@ rules:
       - pattern: ldap3.utils.conv.escape_filter_chars(...)
       - pattern: escape_filter_chars(...)
     pattern-sinks:
+      # Only in modules that import python-ldap or ldap3: a search(base, x)
+      # method of another client (Meilisearch, Elasticsearch, a regex) is not
+      # an LDAP filter.
       - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  import ldap
+                  ...
+              - pattern-inside: |
+                  import ldap3
+                  ...
+              - pattern-inside: |
+                  from ldap import $X
+                  ...
+              - pattern-inside: |
+                  from ldap3 import $X
+                  ...
+              - pattern-inside: |
+                  from ldap3 import $X, $Y
+                  ...
+              - pattern-inside: |
+                  import ldap.filter
+                  ...
+              - pattern-inside: |
+                  from ldap.filter import $X
+                  ...
+              - pattern-inside: |
+                  from ldap3.utils.conv import $X
+                  ...
           - pattern-either:
               # python-ldap: search*(base, scope, filterstr, ...)
               - pattern: $CONN.search_s($BASE, $SCOPE, $FILTER, ...)

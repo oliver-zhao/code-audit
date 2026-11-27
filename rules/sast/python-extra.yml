@@ -9,16 +9,22 @@ definitions:
   REQ: '\brequest\.(?:args|form|forms|values|json|data|files|cookies|headers|GET|POST|COOKIES|META|FILES|body|query|query_params|path_params|get_json|params|query_string|view_args|match_info|get_data)\b|\bself\.get_(?:query_|body_)?arguments?\('
   FIRSTREQ: '(?:\s*[\w.]{1,100}\(){0,4}[^,()]{0,200}?(?:{{REQ}})'
   STARTREQ: '(?:\s*[\w.]{1,100}\(){0,4}\s*(?:{{REQ}})'
-  STR: '[rbu]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27)'
+  # Plain string literal; the body is bounded (unlike python.yml) because
+  # py-hf-trust-remote-code tries it at every position of a call.
+  STR: '[rbu]{0,2}(?:"(?:[^"\\\n]|\\.){0,200}"|\x27(?:[^\x27\\\n]|\\.){0,200}\x27)'
   FSTR: '(?:f|fr|rf)(?:"(?:"")?[^"\n]{0,400}\{|\x27(?:\x27\x27)?[^\x27\n]{0,400}\{)'
-  DYN: '(?:(?:{{STR}}\s*){0,20}{{FSTR}}|(?:{{STR}}\s*){1,20}(?:\+|%\s*[\w(\[{]|\.format\()|[\w.\[\]]{1,200}\s*(?:\+\s*[rbuf]{0,2}["\x27]|%\s*[\w(]|\.format\())'
+  DYN: '(?:(?:{{STR}}\s*){0,20}{{FSTR}}|(?:{{STR}}\s*){1,20}(?:\+(?!\s*[rbu]{0,2}["\x27])|%\s*[\w(\[{]|\.format\()|[\w.\[\]]{1,200}\s*(?:\+\s*[rbuf]{0,2}["\x27]|%\s*[\w(]|\.format\())'
   DYNARG: '(?:\s*(?:{{DYN}})|{{FIRSTREQ}})'
   TESTPATH: '(?:^|/)(?:tests?|testing)/|(?:^|/)(?:test_[^/]*|[^/]*_tests?|conftest)\.py$'
   SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:examples?|samples?|docs?|tutorials?|demos?)/'
   # A module that defines web views (the request object is in scope).
   WEBFILE: '^\s*(?:from|import)\s+(?:flask|django|fastapi|starlette|aiohttp\.web|tornado\.web|bottle|quart|sanic)\b'
+  # Frameworks that send a returned str as text/html (FastAPI encodes it as JSON).
+  STRHTMLFILE: '^\s*(?:from|import)\s+(?:flask|quart|bottle)\b'
   # An outbound HTTP call by module function.
-  HTTPCALL: '(?:\b(?:requests|httpx|aiohttp|urllib3)\.(?:get|post|put|delete|patch|head|options|request)|\b(?:urllib\.request\.|urllib2\.|urllib\.)?urlopen|\burllib\.request\.Request)\s*\('
+  HTTPCALL: '(?:\b(?:requests|httpx|aiohttp|urllib3)\.(?:get|post|put|delete|patch|head|options|request)|\b(?:requests\.Session|httpx\.(?:Async)?Client)\(\s*\)\.(?:get|post|put|delete|patch|head|options|request)|\b(?:urllib\.request\.|urllib2\.|urllib\.)?urlopen|\burllib\.request\.Request)\s*\('
+  # A value that holds text produced by a language model (first argument).
+  LLMOUT: '\s*(?:[\w.\[\]]{0,120}\.choices\[\s*0\s*\]\.(?:message\.content|text)|(?:[a-z_]\w{0,40}\.)?\w{0,30}(?:llm|gpt|completion|generated|assistant|agent|ai|model)_(?:output|response|result|reply|answer|code|text|content|cmd|command)\b|(?:[a-z_]\w{0,40}\.)?(?:completion|chat_completion|llm_response|ai_message)\.(?:content|text|output_text)\b)'
   # Django response classes that send HTML by default (not redirects).
   HTMLRESP: '(?<![\w.])(?:HttpResponse(?:BadRequest|NotFound|Forbidden|ServerError|Gone)?|HTMLResponse|make_response)\s*\('
 rules:
@@ -34,9 +40,9 @@ rules:
     languages: [python]
     flags: ''
     patterns:
-      - '{{HTMLRESP}}(?:\s*content\s*=)?{{DYNARG}}'
+      - '(?:{{HTMLRESP}}(?:\s*content\s*=)?{{DYNARG}}|(?<![\w.])Response\s*\(\s*{{DYN}})'
       - '{{REQ}}'
-    notPattern: '\b(?:mimetype|content_type|media_type)\s*=\s*["\x27](?!text/html)|\b(?:json\.dumps|jsonify|\w{0,20}escape|quote|bleach\.clean|format_html|redirect|url_for|send_file|send_from_directory|render_template|render)\s*\('
+    notPattern: '\b(?:mimetype|content_type|media_type)\s*=\s*["\x27](?!text/html)|,\s*["\x27](?!text/html)[a-z]{2,20}/[\w.+-]{1,60}["\x27]|\b(?:json\.dumps|jsonify|\w{0,20}escape|quote|bleach\.clean|format_html|redirect|url_for|send_file|send_from_directory|render_template|render)\s*\('
     group: py-xss
     message: A request value is written into the body of an HTML response (Django HttpResponse, Starlette/FastAPI HTMLResponse, Flask make_response) without escaping, which allows reflected cross-site scripting.
     message_zh: 请求值未经转义写入 HTML 响应体（Django HttpResponse、Starlette/FastAPI HTMLResponse、Flask make_response），可造成反射型跨站脚本。
@@ -50,7 +56,7 @@ rules:
     cwe: CWE-79
     owasp: A03:2021
     languages: [python]
-    filePattern: '{{WEBFILE}}'
+    filePattern: '{{STRHTMLFILE}}'
     patterns:
       - '^\s*return\s+(?:\(\s*)?{{DYN}}'
       - '{{REQ}}'
@@ -74,7 +80,7 @@ rules:
     flags: ''
     pathExclude: '{{TESTPATH}}'
     patterns:
-      - '{{HTMLRESP}}(?:\s*content\s*=)?\s*{{DYN}}'
+      - '(?:{{HTMLRESP}}|(?<![\w.])Response\s*\()(?:\s*content\s*=)?\s*{{DYN}}'
       - '<[a-zA-Z!][\w-]{0,20}'
     notPattern: '\b(?:\w{0,20}escape|html\.escape|bleach\.clean|format_html)\s*\('
     group: py-xss
@@ -108,7 +114,7 @@ rules:
     cwe: CWE-918
     owasp: A10:2021
     languages: [python]
-    pattern: '{{HTTPCALL}}\s*(?:["\x27][A-Za-z]{3,7}["\x27]\s*,\s*)?(?:url\s*=\s*)?(?:(?:f|fr|rf)["\x27](?:[a-z][a-z0-9+.-]{0,15}://)?\{[^}\n]{0,200}?(?:{{REQ}})|[rbu]{0,2}["\x27][a-z][a-z0-9+.-]{0,15}://["\x27]\s*\+\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}}))'
+    pattern: '{{HTTPCALL}}\s*(?:["\x27][A-Za-z]{3,7}["\x27]\s*,\s*)?(?:url\s*=\s*)?(?:(?:f|fr|rf)["\x27](?:[a-z][a-z0-9+.-]{0,15}://)?\{[^}\n]{0,200}?(?:{{REQ}})|[rbu]{0,2}["\x27][a-z][a-z0-9+.-]{0,15}://["\x27]\s*\+\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}})|[rbu]{0,2}["\x27](?:[a-z][a-z0-9+.-]{0,15}://)?(?:%s|\{\w{0,40}\})[^"\x27\n]{0,200}["\x27]\s*(?:%\s*\(?|\.format\()\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}}))'
     group: py-ssrf
     message: The scheme or host of an outbound HTTP call is formatted from a request value, so a caller can make the server reach internal addresses.
     message_zh: 出站 HTTP 调用的协议或主机由请求值格式化而来，调用方可让服务器访问内部地址。
@@ -157,7 +163,9 @@ rules:
     owasp: A03:2021
     languages: [python]
     filePattern: '\b(?:pymongo|motor|mongoengine|MongoClient|PyMongo|mongomock)\b'
-    pattern: '\.(?:find|find_one|find_one_and_(?:update|delete|replace)|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate|distinct)\s*\((?:{{STARTREQ}}|\s*\{(?:[^(){}]|\([^(){}]{0,100}\)){0,400}?\brequest\.(?:json|get_json)\b)'
+    # find() only on an attribute or item receiver (db.users.find, db["users"].find):
+    # name.find(...) is str.find.
+    pattern: '(?:(?:\.\w+|\])\.find|\.(?:find_one|find_one_and_(?:update|delete|replace)|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate|distinct))\s*\((?:{{STARTREQ}}|\s*\{(?:[^(){}]|\([^(){}]{0,100}\)){0,400}?\brequest\.(?:json|get_json)\b)'
     message: 'A MongoDB filter is the request body itself, or contains values taken from request JSON. JSON can carry objects such as {"$ne": null}, so the caller can change the query (operator injection, for example a login bypass).'
     message_zh: 'MongoDB 过滤条件就是请求体本身，或包含取自请求 JSON 的值。JSON 可携带 {"$ne": null} 之类的对象，调用方可改变查询（操作符注入，例如绕过登录）。'
     remediation: Build the filter from fixed keys and check that each value is a string (or the expected scalar type) before querying.
@@ -204,7 +212,10 @@ rules:
     cwe: CWE-915
     owasp: A08:2021
     languages: [python]
-    pattern: '[(,]\s*\*\*\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}})'
+    # Located at the call: `**` inside a dict display ({**request.GET}) is a copy,
+    # not keyword arguments, and aiohttp match_info holds route parameters.
+    pattern: '[\w.]{1,100}\((?:(?:[^(){}]|\([^(){}]{0,100}\)){0,300}?,)?\s*\*\*\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}})'
+    notPattern: '\*\*\s*request\.match_info\b|\burlencode\s*\('
     message: Every field of the request is passed as keyword arguments (Model(**request.json), objects.create(**request.POST.dict()), filter(**request.GET.dict())), so a caller can set fields such as is_admin or query on fields it should not see.
     message_zh: 请求的所有字段被作为关键字参数传入（Model(**request.json)、objects.create(**request.POST.dict())、filter(**request.GET.dict())），调用方可设置 is_admin 等字段，或按不应可见的字段查询。
     remediation: Copy an explicit list of allowed fields, or validate the body with a form or schema that declares them.
@@ -221,7 +232,7 @@ rules:
     owasp: A05:2021
     languages: [python]
     flags: ''
-    fileAbsentPattern: '\bCORS_(?:ORIGINS|RESOURCES)\b'
+    fileAbsentPattern: '\bCORS_(?:ORIGINS|RESOURCES)\b|\binit_app\s*\([^)]{0,600}\b(?:origins|resources)\s*='
     pattern: '(?<![\w.])CORS\s*\([^)]{0,600}\bsupports_credentials\s*=\s*True\b'
     notPattern: '\b(?:origins|resources)\s*='
     group: py-cors
@@ -239,7 +250,7 @@ rules:
     owasp: A05:2021
     languages: [python]
     patterns:
-      - '\b(?:allow_origin_regex|origins)\s*=\s*(?:\[\s*)?r?["\x27]\^?(?:https?://)?\.[*+]\$?["\x27]'
+      - '\b(?:allow_origin_regex|origins)\s*=\s*(?:\[\s*)?r?["\x27]\^?(?:https?\??:(?:\\?/){2})?\.[*+]\$?["\x27]'
       - '\b(?:supports_credentials|allow_credentials)\s*=\s*True\b'
     group: py-cors
     message: The allowed-origin regular expression matches every origin and credentials are allowed, so any site can read authenticated responses.
@@ -256,7 +267,7 @@ rules:
     languages: [python]
     flags: ''
     pathExclude: '{{SAMPLEPATH}}|(?:^|/)(?:test|tests|testing|ci)[^/]*\.py$|(?:^|/)settings/(?:test|ci)[^/]*\.py$'
-    pattern: '\bPASSWORD_HASHERS\s*=\s*[\[(]\s*["\x27]django\.contrib\.auth\.hashers\.(?:(?:Unsalted)?(?:MD5|SHA1)|Crypt)PasswordHasher["\x27]'
+    pattern: '^PASSWORD_HASHERS\s*=\s*[\[(]\s*["\x27]django\.contrib\.auth\.hashers\.(?:(?:Unsalted)?(?:MD5|SHA1)|Crypt)PasswordHasher["\x27]'
     message: The first entry of PASSWORD_HASHERS hashes every new or changed password; MD5, SHA1, unsalted and crypt hashers are fast to brute-force.
     message_zh: PASSWORD_HASHERS 的第一项用于哈希所有新设置或修改的口令；MD5、SHA1、无盐和 crypt 哈希器很容易被暴力破解。
     remediation: Put Argon2PasswordHasher, PBKDF2PasswordHasher or ScryptPasswordHasher first; keep weak hashers only after them for upgrading old hashes.
@@ -324,7 +335,7 @@ rules:
     languages: [python]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:rsa|dsa)\.generate_private_key\s*\((?:(?:[^()]|\([^()]{0,200}\)){0,300}?\bkey_size\s*=\s*|\s*(?:public_exponent\s*=\s*)?\d{1,6}\s*,\s*)(?:256|384|512|768|1024|1536)\b|\b(?:RSA|DSA)\.generate\s*\(\s*(?:bits\s*=\s*)?(?:256|384|512|768|1024|1536)\b|\brsa\.newkeys\s*\(\s*(?:256|384|512|768|1024|1536)\b|\bec\.(?:SECP192R1|SECT163K1|SECT163R2)\s*\('
+    pattern: '\b(?:rsa|dsa)\.generate_private_key\s*\((?:(?:[^()]|\([^()]{0,200}\)){0,300}?\bkey_size\s*=\s*|\s*(?:public_exponent\s*=\s*)?\d{1,6}\s*,\s*)(?:256|384|512|768|1024|1536)\b|\b(?:RSA|DSA)\.generate\s*\(\s*(?:bits\s*=\s*)?(?:256|384|512|768|1024|1536)\b|\brsa\.newkeys\s*\(\s*(?:256|384|512|768|1024|1536)\b|\b(?:RSAKey|DSSKey)\.generate\s*\(\s*(?:bits\s*=\s*)?(?:256|384|512|768|1024|1536)\b|\.generate_key\s*\(\s*(?:[\w.]{0,40}\.)?TYPE_(?:RSA|DSA)\s*,\s*(?:256|384|512|768|1024|1536)\b|\bec\.(?:SECP192R1|SECT163K1|SECT163R2)\s*\('
     message: The generated key is too short (RSA/DSA below 2048 bits) or uses a curve below 224 bits and can be broken with current resources.
     message_zh: 生成的密钥过短（RSA/DSA 低于 2048 位）或使用低于 224 位的曲线，可被当前计算资源破解。
     remediation: Use RSA keys of at least 2048 bits (3072 for long-term use), or Ed25519 / P-256.
@@ -355,8 +366,8 @@ rules:
     owasp: A02:2021
     languages: [python]
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:(?<![\w.])[\w.]{0,60}(?:signature|_sig|\bsig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)|\.(?:hex)?digest\s*\(\s*\))\s*[!=]=\s*(?!(?:None|True|False|0|1)\b|[rbuf]{0,2}["\x27]|[\[{(]|len\b)[A-Za-z_]|(?<![\w.])[A-Za-z_][\w.]{0,80}\s*[!=]=\s*(?:[\w.]{0,60}(?:signature|_sig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)\b|[\w.]{1,80}\.(?:hex)?digest\s*\(\s*\))'
-    notPattern: '\bcompare_digest\b|\bconstant_time_compare\b|\bother\.|(?:_type|_kind|_name|_len|_length|_count|_id|_index|_version|_algorithm|_alg|_size|_method|_format|_field|_header|_class|_mode|_url|_path|_file)\s*[!=]=|[!=]=\s*[\w.]{0,60}(?:sha\d{0,3}|md5|checksum|crc\d{0,2}|_hash)\b|(?:sha\d{0,3}|md5|checksum|_hash)\s*[!=]='
+    pattern: '(?:(?<![\w.])[\w.]{0,60}(?:signature|_sig|\bsig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)|\.(?:hex)?digest\s*\(\s*\))\s*[!=]=\s*(?!(?:None|True|False|0|1)\b|[rbuf]{0,2}["\x27]|[\[{(]|len\b)[A-Za-z_]|(?<![\w.])[A-Za-z_][\w.]{0,80}\s*[!=]=\s*(?:[\w.]{0,60}(?:signature|_sig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)(?![\w.])|[\w.]{1,80}\.(?:hex)?digest\s*\(\s*\))'
+    notPattern: '\bcompare_digest\b|\bconstant_time_compare\b|\bother\.|(?:_type|_kind|_name|_len|_length|_count|_id|_index|_version|_algorithm|_alg|_size|_method|_format|_field|_header|_class|_mode|_url|_path|_file)\s*[!=]=|[!=]=\s*[\w.]{0,60}(?:sha\d{0,3}|md5|checksum|crc\d{0,2}|_hash)\b|(?:sha\d{0,3}|md5|checksum|_hash)\s*[!=]=|\b(?:sha\d{1,3}|md5|blake2[bs]|crc32)\s*\([^)\n]{0,200}\)\s*\.(?:hex)?digest\s*\(\s*\)|\b[A-Z][A-Z0-9_]{0,60}_MAC\b'
     message: A signature, HMAC digest, token or secret is compared with == or !=, which returns as soon as a byte differs; the timing can reveal how much of a guessed value is right.
     message_zh: 签名、HMAC 摘要、令牌或密钥使用 == 或 != 比较，遇到第一个不同字节即返回；耗时差异可泄露猜测值正确的部分。
     remediation: Compare with hmac.compare_digest (or secrets.compare_digest / Django constant_time_compare).
@@ -391,7 +402,7 @@ rules:
     owasp: A03:2021
     languages: [python]
     filePattern: '\bparamiko\b'
-    pattern: '\.exec_command\s*\({{DYNARG}}'
+    pattern: '\.exec_command\s*\((?:\s*command\s*=)?{{DYNARG}}'
     notPattern: '\bshlex\.quote\s*\(|\bquote\s*\('
     message: The command run on the remote host is built with an f-string, concatenation, % or .format() (or taken from the request); the remote shell parses metacharacters in the value.
     message_zh: 在远程主机执行的命令由 f-string、拼接、% 或 .format() 构造（或来自请求）；远程 shell 会解析值中的元字符。
@@ -406,7 +417,7 @@ rules:
     cwe: CWE-749
     owasp: A04:2021
     languages: [python]
-    pattern: '\bregister_instance\s*\([^)]{0,300}\ballow_dotted_names\s*=\s*True\b'
+    pattern: '\bregister_instance\s*\((?:[^)]{0,300}\ballow_dotted_names\s*=\s*True\b|\s*[^,()]{1,200},\s*True\s*\))'
     message: allow_dotted_names lets clients walk attributes of the registered object and reach module globals, which can lead to code execution.
     message_zh: allow_dotted_names 允许客户端遍历已注册对象的属性并访问模块全局对象，可导致代码执行。
     remediation: Leave allow_dotted_names off and register explicit functions.
@@ -503,6 +514,7 @@ rules:
     cwe: CWE-94
     owasp: A03:2021
     languages: [python]
+    flags: ''
     pathExclude: '{{TESTPATH}}'
     pattern: '\ballow_dangerous_(?:code|requests|deserialization)\s*=\s*True\b'
     message: allow_dangerous_code / allow_dangerous_requests / allow_dangerous_deserialization let model output (or a loaded file) run Python code, reach arbitrary URLs or unpickle data.
@@ -528,17 +540,51 @@ rules:
     remediation_zh: 在无机密信息的隔离沙箱中运行该工具，或改用范围窄且经过校验的函数。
   - id: py-llm-output-exec
     codeOnly: true
-    title: Model output executed as code or a command
-    title_zh: 模型输出被作为代码或命令执行
+    title: Model output executed as Python code
+    title_zh: 模型输出被作为 Python 代码执行
     severity: critical
     confidence: low
     kind: hotspot
     cwe: CWE-94
     owasp: A03:2021
     languages: [python]
-    pattern: '(?:(?<![\w.])(?:eval|exec)|\bos\.(?:system|popen)|\bsubprocess\.(?:run|call|Popen|check_output|check_call|getoutput))\s*\(\s*(?:[\w.\[\]]{0,120}\.choices\[\s*0\s*\]\.(?:message\.content|text)|(?:[a-z_]\w{0,40}\.)?\w{0,30}(?:llm|gpt|completion|generated|assistant|agent|ai|model)_(?:output|response|result|reply|answer|code|text|content|cmd|command)\b|(?:[a-z_]\w{0,40}\.)?(?:completion|chat_completion|llm_response|ai_message)\.(?:content|text|output_text)\b)'
+    pattern: '(?<![\w.])(?:eval|exec)\s*\({{LLMOUT}}'
     group: py-eval
-    message: Text produced by a language model is executed as Python code or a shell command; anything that can steer the model (prompt injection) controls what runs.
-    message_zh: 语言模型生成的文本被作为 Python 代码或 shell 命令执行；任何能左右模型的内容（提示注入）都能控制执行内容。
+    message: Text produced by a language model is executed as Python code; anything that can steer the model (prompt injection) controls what runs.
+    message_zh: 语言模型生成的文本被作为 Python 代码执行；任何能左右模型的内容（提示注入）都能控制执行内容。
     remediation: Do not execute model output; map it to a fixed set of actions, or run it in an isolated sandbox.
     remediation_zh: 不要执行模型输出；把它映射到固定操作集合，或在隔离沙箱中运行。
+  - id: py-llm-output-shell
+    codeOnly: true
+    title: Model output run as a shell command
+    title_zh: 模型输出被作为 shell 命令执行
+    severity: critical
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [python]
+    # With shell=True the subprocess call is already a py-subprocess-shell finding.
+    pattern: '(?:\bos\.(?:system|popen)|\bsubprocess\.(?:getoutput|getstatusoutput|run|call|Popen|check_output|check_call))\s*\({{LLMOUT}}'
+    notPattern: '\bshell\s*=\s*True\b'
+    group: py-command
+    message: Text produced by a language model is run as a command; anything that can steer the model (prompt injection) controls what runs.
+    message_zh: 语言模型生成的文本被作为命令执行；任何能左右模型的内容（提示注入）都能控制执行内容。
+    remediation: Do not run model output; map it to a fixed set of commands with validated arguments, or run it in an isolated sandbox.
+    remediation_zh: 不要执行模型输出；把它映射到固定命令集合并校验参数，或在隔离沙箱中运行。
+  - id: py-hf-trust-remote-code-default
+    title: Function defaults trust_remote_code to True
+    title_zh: 函数参数 trust_remote_code 默认为 True
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A08:2021
+    languages: [python]
+    matchDeclarations: true
+    pathExclude: '{{SAMPLEPATH}}|(?:^|/)(?:scripts?|benchmarks?|notebooks?)/|(?:^|/)convert_[^/]*\.py$'
+    pattern: '^\s*(?:async\s+)?def\s+\w+\s*\((?:[^()]|\([^()]{0,100}\)){0,600}?(?<![\w.])trust_remote_code\s*(?::\s*[\w.\[\] ]{1,40})?=\s*True\b'
+    message: A function parameter defaults trust_remote_code to True, so every caller that does not pass it runs Python code from the model repository it names.
+    message_zh: 函数参数 trust_remote_code 默认为 True，凡未显式传入该参数的调用都会运行其所指模型仓库中的 Python 代码。
+    remediation: Default trust_remote_code to False and let callers opt in for reviewed, pinned repositories.
+    remediation_zh: 将 trust_remote_code 默认设为 False，由调用方针对已审查并固定版本的仓库显式开启。

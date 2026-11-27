@@ -576,6 +576,20 @@
       "kind": "finding"
     },
     {
+      "file": "python/rules_extra_misc.py",
+      "line": 87,
+      "ruleId": "py-llm-output-shell",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 90,
+      "ruleId": "py-hf-trust-remote-code-default",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
       "file": "python/rules_extra_web.py",
       "line": 16,
       "ruleId": "py-cors-credentials-default-origin",
@@ -1727,373 +1741,397 @@
     },
     {
       "file": "python/taint_app.py",
-      "line": 40,
+      "line": 41,
       "ruleId": "py-taint-sql",
       "confidence": "high"
     },
     {
       "file": "python/taint_app.py",
-      "line": 46,
+      "line": 47,
       "ruleId": "py-taint-sql",
       "confidence": "high"
     },
     {
       "file": "python/taint_app.py",
-      "line": 64,
+      "line": 65,
       "ruleId": "py-taint-sql",
       "confidence": "high"
     },
     {
       "file": "python/taint_app.py",
-      "line": 71,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 77,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 84,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 96,
-      "ruleId": "py-taint-command",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 107,
-      "ruleId": "py-taint-command",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 116,
-      "ruleId": "py-taint-command",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 127,
-      "ruleId": "py-taint-command",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 139,
-      "ruleId": "py-taint-path",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 145,
-      "ruleId": "py-taint-path",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 152,
-      "ruleId": "py-taint-path",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 163,
-      "ruleId": "py-taint-path",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 174,
-      "ruleId": "py-taint-ssrf",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 179,
-      "ruleId": "py-taint-ssrf",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 191,
-      "ruleId": "py-taint-ssrf",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 201,
-      "ruleId": "py-taint-template",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 205,
-      "ruleId": "py-taint-template",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 221,
-      "ruleId": "py-taint-redirect",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 225,
-      "ruleId": "py-taint-redirect",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 240,
-      "ruleId": "py-opengrep-pickle-loads",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 240,
-      "ruleId": "py-taint-deserialization",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 244,
-      "ruleId": "py-taint-deserialization",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 256,
-      "ruleId": "py-taint-deserialization",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 266,
-      "ruleId": "py-opengrep-eval",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 266,
-      "ruleId": "py-taint-eval",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 271,
-      "ruleId": "py-taint-eval",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 288,
-      "ruleId": "py-taint-xss",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 297,
-      "ruleId": "py-taint-nosql",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_app.py",
-      "line": 308,
-      "ruleId": "py-taint-ldap",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 29,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 36,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 42,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 48,
-      "ruleId": "py-taint-sql",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 55,
-      "ruleId": "py-taint-command",
-      "confidence": "high"
-    },
-    {
-      "file": "python/taint_django.py",
-      "line": 67,
-      "ruleId": "py-taint-path",
-      "confidence": "medium"
-    },
-    {
-      "file": "python/taint_django.py",
       "line": 72,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 78,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 85,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 97,
+      "ruleId": "py-taint-command",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 108,
+      "ruleId": "py-taint-command",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 117,
+      "ruleId": "py-taint-command",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 128,
+      "ruleId": "py-taint-command",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 140,
+      "ruleId": "py-taint-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 146,
+      "ruleId": "py-taint-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 153,
+      "ruleId": "py-taint-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 164,
+      "ruleId": "py-taint-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 175,
+      "ruleId": "py-taint-ssrf",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 180,
+      "ruleId": "py-taint-ssrf",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 192,
+      "ruleId": "py-taint-ssrf",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 202,
+      "ruleId": "py-taint-template",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 206,
+      "ruleId": "py-taint-template",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 222,
+      "ruleId": "py-taint-redirect",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 226,
+      "ruleId": "py-taint-redirect",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 241,
+      "ruleId": "py-opengrep-pickle-loads",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 241,
+      "ruleId": "py-taint-deserialization",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 245,
+      "ruleId": "py-taint-deserialization",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 257,
+      "ruleId": "py-taint-deserialization",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 267,
+      "ruleId": "py-opengrep-eval",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 267,
+      "ruleId": "py-taint-eval",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 272,
+      "ruleId": "py-taint-eval",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 289,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 298,
+      "ruleId": "py-taint-nosql",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 309,
+      "ruleId": "py-taint-ldap",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 316,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 317,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 30,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 37,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 43,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 49,
+      "ruleId": "py-taint-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 56,
+      "ruleId": "py-taint-command",
+      "confidence": "high"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 68,
+      "ruleId": "py-taint-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 73,
       "ruleId": "py-taint-ssrf",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 78,
+      "line": 79,
       "ruleId": "py-taint-template",
       "confidence": "high"
     },
     {
       "file": "python/taint_django.py",
-      "line": 84,
+      "line": 85,
       "ruleId": "py-taint-redirect",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 89,
+      "line": 90,
       "ruleId": "py-taint-redirect",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 94,
+      "line": 95,
       "ruleId": "py-opengrep-pickle-loads",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 94,
+      "line": 95,
       "ruleId": "py-taint-deserialization",
       "confidence": "high"
     },
     {
       "file": "python/taint_django.py",
-      "line": 100,
+      "line": 101,
       "ruleId": "py-opengrep-eval",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 100,
+      "line": 101,
       "ruleId": "py-taint-eval",
       "confidence": "high"
     },
     {
       "file": "python/taint_django.py",
-      "line": 106,
+      "line": 107,
       "ruleId": "py-taint-xss",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 112,
+      "line": 113,
       "ruleId": "py-taint-nosql",
       "confidence": "medium"
     },
     {
       "file": "python/taint_django.py",
-      "line": 118,
+      "line": 119,
       "ruleId": "py-taint-ldap",
       "confidence": "medium"
     },
     {
+      "file": "python/taint_django.py",
+      "line": 124,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 128,
+      "ruleId": "py-taint-nosql",
+      "confidence": "medium"
+    },
+    {
       "file": "python/taint_fastapi.py",
-      "line": 27,
+      "line": 28,
       "ruleId": "py-taint-sql",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 36,
+      "line": 37,
       "ruleId": "py-taint-sql",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 43,
+      "line": 44,
       "ruleId": "py-taint-command",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 50,
+      "line": 51,
       "ruleId": "py-taint-path",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 56,
+      "line": 57,
       "ruleId": "py-taint-ssrf",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 62,
+      "line": 63,
       "ruleId": "py-taint-template",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 68,
+      "line": 69,
       "ruleId": "py-taint-redirect",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 74,
+      "line": 75,
       "ruleId": "py-opengrep-pickle-loads",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 74,
+      "line": 75,
       "ruleId": "py-taint-deserialization",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 80,
+      "line": 81,
       "ruleId": "py-taint-deserialization",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 85,
+      "line": 86,
       "ruleId": "py-taint-eval",
       "confidence": "high"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 91,
+      "line": 92,
       "ruleId": "py-taint-xss",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 97,
+      "line": 98,
       "ruleId": "py-taint-nosql",
       "confidence": "medium"
     },
     {
       "file": "python/taint_fastapi.py",
-      "line": 103,
+      "line": 104,
       "ruleId": "py-taint-ldap",
       "confidence": "medium"
     }

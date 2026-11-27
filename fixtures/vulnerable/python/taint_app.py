@@ -9,6 +9,7 @@ sink, which a line-based matcher cannot follow.
 """
 
 import base64
+import ldap
 import os
 import pickle
 import sqlite3
@@ -17,7 +18,7 @@ import urllib.request
 
 import requests
 import yaml
-from flask import Flask, make_response, redirect, render_template_string, request, send_file
+from flask import Flask, Response, make_response, redirect, render_template_string, request, send_file
 from jinja2 import Template
 from sqlalchemy import text
 
@@ -307,3 +308,10 @@ def ldap_filter_chain():
     query = "(&(uid=%s)(objectClass=person))" % uid
     entries = directory.search_s("dc=example,dc=com", 2, query)  # expect: py-taint-ldap
     return {"count": len(entries)}
+
+
+@app.route("/card")
+def xss_format_and_html_mimetype():
+    name = request.args.get("name", "")
+    card = make_response("<p>{}</p>".format(name))  # expect: py-taint-xss
+    return card, Response(name.strip(), mimetype="text/html")  # expect: py-taint-xss
