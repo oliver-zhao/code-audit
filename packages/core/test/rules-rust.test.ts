@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { inventory } from "../src/inventory.js";
+import { classifyPath } from "../src/pathContext.js";
 import { SOURCE_LANGUAGES, detectLanguage, languageDisplayName } from "../src/language.js";
 import { RULE_LANGUAGES, loadRules, scanRules } from "../src/rules.js";
 import { scanProject } from "../src/scan.js";
@@ -151,7 +152,7 @@ describe("Rust rules: safe variants and paths stay silent", () => {
       "3:rs-sql-injection",
       "4:rs-sql-built-string",
       "5:rs-sql-built-string",
-      "6:rs-sql-injection",
+      "6:rs-sql-built-string",
     ]);
   });
 
@@ -277,4 +278,161 @@ describe("Rust rules: safe variants and paths stay silent", () => {
   it.todo("rs-cors-any-origin-credentials: credentials enabled in another file than the any-origin policy");
   it.todo("rs-path-traversal: Path(name) extractor bound in the signature and used on a later line (needs data flow)");
   it.todo("all rules: matches inside /* */ block comments and string literals (fixed by the lexer)");
+});
+
+describe("Rust rules: review fixes", () => {
+  it("classifies Rust test, bench and fuzz paths as test context", () => {
+    for (const file of ["src/parser_test.rs", "src/tests.rs", "benches/parse.rs", "fuzz/fuzz_targets/a.rs", "tests/it.rs"]) {
+      expect([file, classifyPath(file)]).toEqual([file, "test"]);
+    }
+    expect(classifyPath("src/fuzzy/match.rs")).toBeUndefined();
+    expect(classifyPath("src/testing_utils.rs")).toBeUndefined();
+  });
+
+  it("excludes fuzz directories by whole segment only", () => {
+    const line = "let c = reqwest::Client::builder().danger_accept_invalid_certs(true).build()?;";
+    expect(rustHits("src/fuzzy/client.rs", [line])).toEqual(["1:rs-tls-accept-invalid"]);
+    expect(rustHits("fuzz-targets/client.rs", [line])).toEqual([]);
+    expect(rustHits("rustls-fuzzing-provider/src/lib.rs", [line])).toEqual([]);
+  });
+
+  it("reports SQL whose interpolations are identifiers as built-string hotspots, values as findings", () => {
+    const hits = rustHits("src/db.rs", [
+      "use sqlx;",
+      'let stmt = tx.prepare_cached(&format!("SELECT id FROM {table_name} WHERE x = $1"))?;',
+      'diesel::sql_query(format!("LISTEN {CHANNEL}")).execute(conn)?;',
+      'sqlx::query(&format!("SET statement_timeout = {TIMEOUT_MS}")).execute(&pool).await?;',
+      'conn.execute(&format!("DROP TABLE {}", name), [])?;',
+      'conn.execute(&format!("vacuum main into \'{filename}\'"), [])?;',
+      'sqlx::query(&format!("SELECT * FROM {schema}.{table}")).fetch_all(&p).await?;',
+      'sqlx::query(&format!("SELECT * FROM {table} WHERE id = {id}")).fetch_all(&p).await?;',
+      'let q = sql::<Bool>(&format!("name = \'{}\'", name));',
+      'let e = Expr::cust(&format!("lower(name) = \'{}\'", n));',
+      'sqlx::query(&format!("SELECT {{x}} FROM t WHERE a = {a}")).fetch_all(&p).await?;',
+    ]);
+    expect(hits).toEqual([
+      "2:rs-sql-built-string",
+      "3:rs-sql-built-string",
+      "4:rs-sql-built-string",
+      "5:rs-sql-built-string",
+      "6:rs-sql-injection",
+      "7:rs-sql-built-string",
+      "8:rs-sql-injection",
+      "9:rs-sql-injection",
+      "10:rs-sql-injection",
+      "11:rs-sql-injection",
+    ]);
+    // Vectors of statements are not SQL builders.
+    expect(rustHits("src/gen.rs", ["stmts.push(buf);", "statements.push(stmt);", "query.push_str(&param);"])).toEqual([]);
+    expect(ids(rustHits("src/gen.rs", ["sql.push_str(&filter);", "query_builder.push(name);"]))).toEqual([
+      "rs-sql-built-string",
+      "rs-sql-built-string",
+    ]);
+  });
+
+  it("keeps non-secret constants out of rs-hardcoded-secret and still finds real ones", () => {
+    expect(
+      rustHits("src/k.rs", [
+        'const TOKEN_ROUTE: &str = "/api/v3/configure/token";',
+        'const API_TOKEN_BIND_ADDR: &str = "127.0.0.1:8080";',
+        'const TOKEN_SERVER: &str = "auth.local:8443";',
+        'const TOKEN: &str = "__NODE_VERSION__";',
+        'const EXAMPLE_TOKEN: &str = "abcdefgh12345678";',
+        'const TEST_SECRET: &str = "abcdefgh12345678";',
+        'const NON_SEPARATOR_TOKENS_KEY: &str = "non-separator-tokens";',
+        'const MEILI_MASTER_KEY: &str = "MEILI_MASTER_KEY";',
+        'const DB_PASSWORD: &str = "password";',
+        'const SECRET_STORE: &str = "https://vault.internal/v1";',
+      ]),
+    ).toEqual([]);
+    expect(
+      rustHits("src/k.rs", [
+        'const JWT_SECRET: &str = "my_super_secret_key";',
+        'const API_TOKEN: &str = "supersecrettoken";',
+        'const AES_KEY: [u8; 16] = *b"0123456789abcdef";',
+      ]),
+    ).toEqual(["1:rs-hardcoded-secret", "2:rs-hardcoded-secret", "3:rs-hardcoded-secret"]);
+  });
+
+  it("matches ECB constructions, not ECB types", () => {
+    expect(rustHits("src/c.rs", ["enum Mode { Aes128Ecb(Box<ecb::Encryptor<aes::Aes128>>) }"])).toEqual([]);
+    expect(ids(rustHits("src/c.rs", ["let enc = ecb::Encryptor::<aes::Aes128>::new(key.into());"]))).toEqual(["rs-weak-cipher"]);
+  });
+
+  it("separates deliberate deterministic RNGs and word fragments from secret RNG use", () => {
+    expect(
+      rustHits("src/r.rs", [
+        "let mut rng = ChaCha20Rng::from_seed(stable_hash(&input)); let key = rng.gen::<u64>();",
+        "let footprint = SmallRng::seed_from_u64(1).gen::<u32>();",
+        "let hotplug = fastrand::u64(..);",
+      ]),
+    ).toEqual([]);
+    expect(
+      ids(
+        rustHits("src/r.rs", [
+          "let mut rng = ChaCha20Rng::from_seed([0u8; 32]); let api_key = rng.gen::<u128>();",
+          "let session_token: String = std::iter::repeat_with(fastrand::alphanumeric).take(32).collect();",
+          "let otp = Pcg64::seed_from_u64(now).gen_range(0..999999);",
+        ]),
+      ),
+    ).toEqual(["rs-insecure-rng-secret", "rs-insecure-rng-secret", "rs-insecure-rng-secret"]);
+  });
+
+  it("covers the session-middleware, struct and alternative-API forms", () => {
+    expect(
+      rustHits("src/w.rs", [
+        "use tower_sessions::SessionManagerLayer;",
+        "let layer = SessionManagerLayer::new(store).with_secure(false);",
+        "let mw = SessionMiddleware::builder(store, key).cookie_http_only(false).build();",
+        "let v = Validation { validate_exp: false, ..Default::default() };",
+        "validation.required_spec_claims.clear();",
+        'let k = DecodingKey::from_base64_secret("c2VjcmV0c2VjcmV0").unwrap();',
+        "config.set_verify_hostname(false);",
+        "return Redirect::temporary(&q.return_to);",
+        "return Redirect::to(uri!(index));",
+      ]),
+    ).toEqual([
+      "2:rs-cookie-insecure",
+      "3:rs-cookie-insecure",
+      "4:rs-jwt-exp-disabled",
+      "5:rs-jwt-exp-disabled",
+      "6:rs-jwt-hardcoded-secret",
+      "7:rs-tls-accept-invalid",
+      "8:rs-open-redirect",
+    ]);
+  });
+
+  it("finds shell injection with -lc / -ec flags, &*cmd and the (shell, flag) idiom", () => {
+    expect(
+      rustHits("src/sh.rs", [
+        "use std::process::Command;",
+        'fn a() { Command::new("bash").args(["-lc", &script]).status(); }',
+        'fn b() { Command::new("bash").arg("-ec").arg(&*cmd).status(); }',
+        'fn c() { let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") }; }',
+        "fn d() { Command::new(shell).arg(flag).arg(&cmd).status(); }",
+      ]),
+    ).toEqual(["2:rs-command-shell-injection", "3:rs-command-shell-injection", "5:rs-command-shell-injection"]);
+  });
+
+  it("follows common extractor bindings into file paths", () => {
+    expect(
+      rustHits("src/h.rs", [
+        "use axum::extract::{Json, Query};",
+        'async fn a(Query(q): Query<P>) { let f = File::open(format!("data/{}", q.name)); }',
+        'async fn b(Json(body): Json<P>) { let p = PathBuf::from(format!("uploads/{}", body.file)); }',
+        "async fn c(Json(body): Json<P>) { items.push(body.item); }",
+      ]),
+    ).toEqual(["2:rs-path-traversal", "3:rs-path-traversal"]);
+  });
+
+  it("does not treat send_wildcard or method hashes as findings", () => {
+    expect(
+      rustHits("src/m.rs", [
+        "use bcrypt::verify;",
+        "let cors = Cors::default().send_wildcard().supports_credentials();",
+        "let h = argon2::hash(password, 4);",
+        "value.hash(&mut hasher, 4);",
+      ]),
+    ).toEqual([]);
+  });
 });

@@ -14,9 +14,10 @@ version: 1
 # - Test, bench, example and fuzz trees are excluded (TESTPATH). Unit tests in
 #   `#[cfg(test)] mod tests` inside a source file cannot be told apart by path.
 definitions:
-  # tests/, benches/, examples/, fuzz targets, crates named *-tests / *-bench /
-  # *fuzz*, and test_*.rs / *_test.rs / tests.rs files.
-  TESTPATH: '(?:^|/)(?:tests?|benches|benchmarks?|examples?|fuzz|testing|test[-_]utils?)/|(?:^|/)[^/]{0,80}(?:[-_]tests?|[-_]bench(?:es|mark|marks)?|fuzz[^/]{0,40})/|(?:^|/)(?:tests?|[^/]{0,80}_tests?|test_[^/]{0,80})\.rs$'
+  # tests/, benches/, examples/, fuzz/ and fuzz-* directories, crates named
+  # *-tests / *-bench / *-fuzz*, and test_*.rs / *_test.rs / tests.rs files.
+  # A directory that merely starts with "fuzz" (src/fuzzy/) is source.
+  TESTPATH: '(?:^|/)(?:tests?|benches|benchmarks?|examples?|testing|test[-_]utils?)/|(?:^|/)fuzz(?:[-_][\w-]{1,40})?/|(?:^|/)[\w.-]{1,80}(?:[-_]tests?|[-_]bench(?:es|mark|marks)?|[-_]fuzz(?:ing|er)?(?:[-_][\w-]{1,40})?)/|(?:^|/)(?:tests?|[^/]{0,80}_tests?|test_[^/]{0,80})\.rs$'
   COMMENT: '^\s*//'
   # The SQL keyword a statement starts with.
   SQLKW: '(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|TRUNCATE|REPLACE|MERGE|PRAGMA|GRANT|REVOKE|EXPLAIN|VACUUM|ATTACH|COPY|UPSERT)\b'
@@ -24,11 +25,29 @@ definitions:
   FMTARG: 'format!\s*\(\s*r?#{0,3}"[^"\n]{0,400}\{'
   # Turbofish after a function name: query_as::<_, User>
   TURBO: '(?:::<[^()\n]{0,200}>)?'
+  # Case-sensitive variants for rs-sql-injection (flags ''), which must tell
+  # an ALL_CAPS constant from a value.
+  SQLKWCI: '(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Ii][Nn][Ss][Ee][Rr][Tt]|[Uu][Pp][Dd][Aa][Tt][Ee]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Ww][Ii][Tt][Hh]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Dd][Rr][Oo][Pp]|[Aa][Ll][Tt][Ee][Rr]|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee]|[Mm][Ee][Rr][Gg][Ee]|[Pp][Rr][Aa][Gg][Mm][Aa]|[Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee]|[Ee][Xx][Pp][Ll][Aa][Ii][Nn]|[Vv][Aa][Cc][Uu][Uu][Mm]|[Aa][Tt][Tt][Aa][Cc][Hh]|[Cc][Oo][Pp][Yy]|[Uu][Pp][Ss][Ee][Rr][Tt])\b'
+  # An interpolation that is a value: not an escaped {{, not an ALL_CAPS
+  # constant ({CHANNEL}), not right after a keyword that takes an identifier
+  # (FROM {table}, INTO `{t}`, TABLE \"{t}\") and not after "{schema}.".
+  # A ' before it makes it a value again: INTO '{filename}'.
+  VALINTERP: '(?<!\{)(?<!\b(?:[Ff][Rr][Oo][Mm]|[Ii][Nn][Tt][Oo]|[Tt][Aa][Bb][Ll][Ee]|[Uu][Pp][Dd][Aa][Tt][Ee]|[Jj][Oo][Ii][Nn]|[Ll][Ii][Ss][Tt][Ee][Nn]|[Nn][Oo][Tt][Ii][Ff][Yy]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ee][Xx][Ii][Ss][Tt][Ss]|[Vv][Ii][Ee][Ww]|[Ii][Nn][Dd][Ee][Xx])\s{1,5}(?:\\"|[`\[])?)(?<!\}\.(?:\\"|`)?)\{(?!\{)(?![A-Z][A-Z0-9_]{0,60}(?::[^}"\n]{0,20})?\})'
+  # Rest of a format! literal that holds at least one value interpolation.
+  FMTREST: '(?:[^"\\\n]|\\.){0,400}?{{VALINTERP}}'
+  # SQL-specific entry points: sqlx, diesel (sql_query, dsl::sql::<T>), sea-query Expr::cust.
+  SQLSINK: '(?:\bsqlx::(?:query|query_as|query_scalar|query_with|query_as_with|query_scalar_with|raw_sql){{TURBO}}|(?<![.\w])(?:query_as|query_scalar|raw_sql|sql_query){{TURBO}}|\bdiesel::(?:dsl::)?sql(?:_query)?{{TURBO}}|(?<![.\w:])sql::<[^()\n]{0,200}>|\bExpr::cust(?:_with_values|_with_exprs)?)'
+  # Generic driver methods (rusqlite, tokio-postgres, sqlx executors): SQL text must follow.
+  SQLMETHOD: '(?:\.(?:query|query_one|query_opt|query_raw|query_row|query_map|execute|execute_batch|batch_execute|simple_query|prepare|prepare_cached)|(?<![.\w])query)'
+  SQLCONCAT: 'r?#{0,3}"[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+'
   # Start of the first argument: optional & / &* and an opening parenthesis.
   ARGPFX: '(?:&\s*(?:\*\s*)?)?(?:\(\s*)?'
   SHELL: '"(?:/usr/bin/|/bin/)?(?:sh|bash|zsh|dash|ksh|fish|cmd|cmd\.exe|powershell|powershell\.exe|pwsh)"'
+  # The flag that makes a shell run its next argument: -c, -lc, -ec, -xc, /C, -Command.
+  SHFLAG: '(?:-[a-z]{0,3}c|/[Cc]|-Command)'
   # Values that an actix / axum / rocket handler received from the request.
-  REQVAL: '(?:\.into_inner\(\)|\bmatch_info\(\)|\b(?:query|params|form|payload)\.\w|\bpath\.0\b|\breq\.(?:uri|path|query_string)\(\))'
+  # (Common names of Query / Json / Form / Path extractor bindings.)
+  REQVAL: '(?:\.into_inner\(\)|\bmatch_info\(\)|\b(?:query|params|form|payload|body|input|json|q|req_body|request_body|upload)\.\w|\bpath\.0\b|\breq\.(?:uri|path|query_string)\(\))'
   WEBFILE: '\b(?:actix_web|axum|rocket|warp|poem|salvo|tide)\b'
 rules:
   # ---- SQL injection ----
@@ -41,10 +60,14 @@ rules:
     owasp: A03:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    # SQL-specific entry points (sqlx, diesel, sea-orm) accept any runtime
-    # string; generic method names (.query / .execute / .prepare of rusqlite,
-    # tokio-postgres and sqlx executors) need SQL text after the quote.
-    pattern: '(?:\bsqlx::(?:query|query_as|query_scalar|query_with|query_as_with|query_scalar_with|raw_sql){{TURBO}}|(?<![.\w])(?:query_as|query_scalar|raw_sql|sql_query){{TURBO}})\s*\(\s*{{ARGPFX}}(?:{{FMTARG}}|r?#{0,3}"[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)|(?:\.(?:query|query_one|query_opt|query_raw|query_row|query_map|execute|execute_batch|batch_execute|simple_query|prepare|prepare_cached)|(?<![.\w])query)\s*\(\s*{{ARGPFX}}(?:format!\s*\(\s*r?#{0,3}"\s*{{SQLKW}}[^"\n]{0,400}\{|r?#{0,3}"\s*{{SQLKW}}[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)|\bStatement::from_(?:string|sql_and_values)\s*\(\s*[^,;\n]{1,120},\s*(?:&\s*)?(?:{{FMTARG}}|r?#{0,3}"[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)'
+    # SQL-specific entry points (sqlx, diesel, sea-orm, sea-query) accept any
+    # runtime string; generic method names (.query / .execute / .prepare of
+    # rusqlite, tokio-postgres and sqlx executors) need SQL text after the
+    # quote. A format! whose interpolations all look like identifiers
+    # (ALL_CAPS constants, or right after FROM / INTO / TABLE / JOIN / LISTEN)
+    # is left to rs-sql-built-string.
+    flags: ''
+    pattern: '{{SQLSINK}}\s*\(\s*{{ARGPFX}}(?:format!\s*\(\s*r?#{0,3}"{{FMTREST}}|{{SQLCONCAT}})|{{SQLMETHOD}}\s*\(\s*{{ARGPFX}}(?:format!\s*\(\s*r?#{0,3}"\s*{{SQLKWCI}}{{FMTREST}}|r?#{0,3}"\s*{{SQLKWCI}}[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)|\bStatement::from_(?:string|sql_and_values)\s*\(\s*[^,;\n]{1,120},\s*(?:&\s*)?(?:format!\s*\(\s*r?#{0,3}"{{FMTREST}}|{{SQLCONCAT}})'
     notPattern: '{{COMMENT}}|\bquote_ident\w{0,20}\s*\(|\bescape_\w{0,30}\s*\('
     group: rs-sql
     message: A runtime value is formatted or concatenated into SQL text passed to the database driver; if any part comes from a user this is SQL injection.
@@ -65,9 +88,11 @@ rules:
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
     # A format! whose literal is a SQL statement with an interpolation, a SQL
-    # literal concatenated with a value, or a non-literal pushed onto a
-    # variable that holds SQL (String::push_str, sqlx QueryBuilder::push).
-    pattern: 'format!\s*\(\s*r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b|ALTER\s+TABLE\b|TRUNCATE\s+TABLE\b)[^"\n]{0,300}\{|format!\s*\(\s*r?#{0,3}"\s*(?:CREATE|DROP)\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|USER|ROLE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?[`\x27\[]?\{|r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b)[^"\n]{0,300}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+\s*&?\s*[A-Za-z_]|\b(?:sql|stmt|statement|where_clause|qb|query_builder)\w{0,20}\.push(?:_str)?\s*\(\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,60}\s*\))'
+    # literal concatenated with a value, a non-literal pushed onto a variable
+    # that holds SQL (String::push_str, sqlx QueryBuilder::push), or a format!
+    # passed to a SQL entry point whose interpolations look like identifiers
+    # (the cases rs-sql-injection leaves out).
+    pattern: 'format!\s*\(\s*r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b|ALTER\s+TABLE\b|TRUNCATE\s+TABLE\b)[^"\n]{0,300}\{|format!\s*\(\s*r?#{0,3}"\s*(?:CREATE|DROP)\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|USER|ROLE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?[`\x27\[]?\{|r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b)[^"\n]{0,300}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+\s*&?\s*[A-Za-z_]|\b(?:sql|sql_\w{1,20}|\w{1,20}_sql|where_clause)\.push_str\s*\(\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,60}\s*\))|\b(?:qb|query_builder|\w{1,20}_builder)\.push\s*\(\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,60}\s*\))|{{SQLSINK}}\s*\(\s*{{ARGPFX}}format!\s*\(|{{SQLMETHOD}}\s*\(\s*{{ARGPFX}}format!\s*\(\s*r?#{0,3}"\s*{{SQLKW}}'
     notPattern: '{{COMMENT}}|\bquote_ident\w{0,20}\s*\(|\bescape_\w{0,30}\s*\(|\.push_bind\s*\('
     group: rs-sql
     message: SQL text is assembled from runtime values; check where every interpolated value comes from before it reaches a query.
@@ -90,9 +115,13 @@ rules:
     pathExclude: '{{TESTPATH}}'
     # .arg("-c").arg(x) / .args(["-c", x]) / .args(&["/C", &x]) with x not a
     # string literal, in a file that starts a shell.
-    pattern: '\.args?\s*\(\s*(?:&\s*)?(?:vec!\s*)?(?:\[\s*)?"(?:-c|/C|/c|-Command)"\s*(?:,|\]?\s*\)\s*\.args?\s*\((?:\s*&)?(?:\s*\[)?)\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,80}(?:\(\))?\s*[,\])])'
+    # Also bash -lc / -ec / -xc, &*cmd, and the portable idiom
+    #   let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    #   Command::new(shell).arg(flag).arg(cmd)
+    # when the file holds such a (shell, flag) pair.
+    pattern: '\.args?\s*\(\s*(?:&\s*)?(?:vec!\s*)?(?:\[\s*)?"{{SHFLAG}}"\s*(?:,|\]?\s*\)\s*\.args?\s*\((?:\s*&)?(?:\s*\[)?)\s*(?:&\s*(?:\*\s*)?)?(?:format!\s*\(|[A-Za-z_][\w.]{0,80}(?:\(\))?\s*[,\])])|\bCommand::new\(\s*(?:&\s*)?\w{0,20}(?:shell|sh)\w{0,10}\s*\)\s*\.args?\s*\(\s*(?:&\s*)?\w{0,20}(?:flag|arg|opt)\w{0,10}\s*\)\s*\.args?\s*\(\s*(?:&\s*(?:\*\s*)?)?(?:format!\s*\(|[A-Za-z_])'
     notPattern: '{{COMMENT}}|Command::new\(\s*"(?:git|ssh|python3?|node)"'
-    filePattern: 'Command::new\(\s*{{SHELL}}\s*\)'
+    filePattern: 'Command::new\(\s*{{SHELL}}\s*\)|\(\s*{{SHELL}}\s*,\s*"{{SHFLAG}}"\s*\)'
     group: rs-command
     message: A command string that is not a literal is passed to a shell with -c (or cmd /C); shell metacharacters in it run arbitrary commands.
     message_zh: 非字面量的命令字符串通过 -c（或 cmd /C）交给 shell 执行；其中的 shell 元字符可执行任意命令。
@@ -147,7 +176,7 @@ rules:
     owasp: A01:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:\bFile::(?:open|create)|\b(?:tokio::)?fs::(?:read|read_to_string|read_dir|write|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|copy|rename|metadata|canonicalize)|\bNamedFile::open(?:_async)?|\bServeFile::new|(?:\b\w{0,30}(?:path|dir|file|base|root|dest|folder|upload|static)\w{0,20}|\bPath(?:Buf)?::(?:new|from)\s*\([^()\n]{0,200}\))\.(?:join|push))\s*\([^;\n]{0,300}{{REQVAL}}|\blet\s+(?:mut\s+)?\w{1,40}\s*:\s*PathBuf\s*=\s*[^;\n]{0,200}{{REQVAL}}'
+    pattern: '(?:\bFile::(?:open|create)|\b(?:tokio::)?fs::(?:read|read_to_string|read_dir|write|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|copy|rename|metadata|canonicalize)|\bNamedFile::open(?:_async)?|\bServeFile::new|\bPathBuf::from|\bPath::new|(?:\b\w{0,30}(?:path|dir|file|base|root|dest|folder|upload|static)\w{0,20}|\bPath(?:Buf)?::(?:new|from)\s*\([^()\n]{0,200}\))\.(?:join|push))\s*\([^;\n]{0,300}{{REQVAL}}|\blet\s+(?:mut\s+)?\w{1,40}\s*:\s*PathBuf\s*=\s*[^;\n]{0,200}{{REQVAL}}'
     notPattern: '{{COMMENT}}|\.enclosed_name\(\)|\bsanitize\w{0,20}\s*\('
     filePattern: '{{WEBFILE}}'
     message: A value taken from the request (path segment, query or form) is used to build a file path; "../" or an absolute path can reach files outside the intended directory.
@@ -201,10 +230,10 @@ rules:
     owasp: A02:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)'
+    pattern: '\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)|\.set_verify_hostname\s*\(\s*false\s*\)'
     notPattern: '{{COMMENT}}'
-    message: danger_accept_invalid_certs(true) / danger_accept_invalid_hostnames(true) turns off TLS verification, so anyone on the network path can read and change the traffic.
-    message_zh: danger_accept_invalid_certs(true) / danger_accept_invalid_hostnames(true) 会关闭 TLS 校验，网络路径上的任何人都能读取并篡改流量。
+    message: danger_accept_invalid_certs(true), danger_accept_invalid_hostnames(true) or OpenSSL set_verify_hostname(false) turns off TLS verification, so anyone on the network path can read and change the traffic.
+    message_zh: danger_accept_invalid_certs(true)、danger_accept_invalid_hostnames(true) 或 OpenSSL 的 set_verify_hostname(false) 会关闭 TLS 校验，网络路径上的任何人都能读取并篡改流量。
     remediation: Remove the call; to trust a private CA add it with add_root_certificate().
     remediation_zh: 删除该调用；如需信任私有 CA，请用 add_root_certificate() 添加。
     references:
@@ -293,7 +322,7 @@ rules:
     owasp: A02:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:Des|TdesEde[23]|TdesEee[23]|Rc4|Blowfish|BlowfishLE)(?:::<[^()\n]{0,80}>)?::new(?:_from_slices?)?\s*\(|\bCipher::(?:des_\w{1,20}|rc4|rc4_40|bf_\w{1,10}|aes_\d{3}_ecb)\s*\(\)|\becb::(?:Encryptor|Decryptor)\s*(?:::|<)|\bEcb\s*<'
+    pattern: '\b(?:Des|TdesEde[23]|TdesEee[23]|Rc4|Blowfish|BlowfishLE)(?:::<[^()\n]{0,80}>)?::new(?:_from_slices?)?\s*\(|\bCipher::(?:des_\w{1,20}|rc4|rc4_40|bf_\w{1,10}|aes_\d{3}_ecb)\s*\(\)|\becb::(?:Encryptor|Decryptor)(?:::<[^()\n]{0,120}>)?::new(?:_from_slices?)?\s*\(|\bEcb(?:::<[^()\n]{0,120}>)?::new(?:_from_slices?|_var)?\s*\('
     notPattern: '{{COMMENT}}'
     message: DES, 3DES, RC4 and Blowfish are broken or have too small a block or key size, and ECB mode leaks patterns of the plaintext.
     message_zh: DES、3DES、RC4 和 Blowfish 已被攻破或分组/密钥长度过小，ECB 模式会泄露明文的模式。
@@ -328,10 +357,12 @@ rules:
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
     # thread_rng(), rand::rng() and OsRng are cryptographically secure and are
-    # not matched.
+    # not matched. A ChaCha/StdRng seeded from a derived value (from_seed of a
+    # hash) is a deliberate deterministic stream and is not matched either;
+    # seed_from_u64 and literal seeds are.
     patterns:
-      - '\bSmallRng::(?:seed_from_u64|from_seed|from_entropy|from_rng|from_os_rng)\s*\(|\b(?:StdRng|ChaCha\d{0,2}Rng|Pcg\w{0,10}|XorShiftRng|Xoshiro\w{0,10})::(?:seed_from_u64|from_seed)\s*\('
-      - '(?:token|secret|passw|api_?key|session|nonce|salt|otp|csrf|\bkey\b|_key\b|\bkey_)'
+      - '\b(?:SmallRng|Pcg\w{0,10}|XorShiftRng|Xorshift\w{0,10}|Xoshiro\w{0,10}|WyRand)::(?:seed_from_u64|from_seed|from_entropy|from_rng|from_os_rng|new)\s*\(|\b(?:StdRng|ChaCha\d{0,2}Rng)::(?:seed_from_u64\s*\(|from_seed\s*\(\s*(?:\*?\s*b"|&?\s*\[))|\bfastrand::(?:alphanumeric|lowercase|uppercase|digit|char|u8|u16|u32|u64|u128|i32|i64|usize|fill|Rng::(?:new|with_seed))\b'
+      - '\b(?:\w{1,20}_)?(?:token|secret|password|passwd|passphrase|api_?key|apikey|session|nonce|salt|otp|csrf|key)(?:_\w{1,20})?s?\b'
     notPattern: '{{COMMENT}}'
     message: A token, key or other secret is drawn from a non-cryptographic or fixed-seed RNG; its values can be predicted.
     message_zh: 令牌、密钥等秘密值来自非密码学或固定种子的随机数生成器，其取值可被预测。
@@ -350,8 +381,12 @@ rules:
     languages: [rust]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:const|static)\s+[A-Z0-9_]{0,40}(?:SECRET|PRIVATE_KEY|API_KEY|APIKEY|PASSWORD|PASSWD|TOKEN|JWT_KEY|SIGNING_KEY|ENCRYPTION_KEY|HMAC_KEY|AES_KEY|MASTER_KEY)[A-Z0-9_]{0,40}\s*:\s*&(?:''static\s+)?(?:str|\[u8(?:\s*;\s*\d{1,4})?\])\s*=\s*b?"(?<secret>[^"\s]{8,200})"'
-    notPattern: '{{COMMENT}}|_(?:NAME|HEADER|PREFIX|ENV|VAR|PATH|FILE|URL|FIELD|PARAM|COOKIE|LEN|LENGTH|SIZE|TYPE|KIND|ID|LABEL|KEY_ID|SCOPE)\s*:|=\s*b?"[A-Z][A-Z0-9_]{0,200}"|=\s*b?"[a-z]{1,40}(?:[-_.:][a-z]{1,40}){0,10}"|"[^"\n]{0,200}(?:[Ee]xample|EXAMPLE|[Cc]hange_?[Mm]e|CHANGE_?ME|[Dd]ummy|DUMMY|[Pp]laceholder|PLACEHOLDER|xxxx|XXXX|[Yy]our[-_]|YOUR[-_]|TODO|[Ss]ample|SAMPLE|[Rr]eplace|REPLACE|\{\{|\$\{)[^"\n]{0,200}"'
+    pattern: '\b(?:const|static)\s+[A-Z0-9_]{0,40}(?:SECRET|PRIVATE_KEY|API_KEY|APIKEY|PASSWORD|PASSWD|TOKEN|JWT_KEY|SIGNING_KEY|ENCRYPTION_KEY|HMAC_KEY|AES_KEY|MASTER_KEY)[A-Z0-9_]{0,40}\s*:\s*(?:&(?:''static\s+)?(?:str|\[u8(?:\s*;\s*\d{1,4})?\])|\[u8\s*;\s*\d{1,4}\])\s*=\s*\*?b?"(?<secret>[^"\s]{8,200})"'
+    # Not a secret: names of headers, variables, paths, addresses and the like;
+    # example/test names; values that are paths, URLs, host:port pairs,
+    # ALL_CAPS names (also with a leading _), kebab-case or dotted keys, a
+    # field name such as "password", or placeholders.
+    notPattern: '{{COMMENT}}|_(?:NAME|HEADER|PREFIX|ENV|VAR|PATH|FILE|URL|URI|FIELD|PARAM|COOKIE|LEN|LENGTH|SIZE|TYPE|KIND|ID|LABEL|KEY_ID|SCOPE|ADDR|ADDRESS|ROUTE|ENDPOINT|DIR|HOST|PORT)\s*:|(?:const|static)\s+[A-Z0-9_]{0,40}(?:EXAMPLE|TEST|DUMMY|FAKE|SAMPLE|MOCK)|=\s*\*?b?"(?:/|\w{2,10}://|[A-Z_][A-Z0-9_]{0,200}"|[a-z]{1,40}(?:[-.:][a-z]{1,40}){1,10}"|(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?"|[\w.-]{1,100}:\d{2,5}"|(?:password|passwd|pwd|token|secret|api_?key|apikey|access_token|refresh_token|id_token|auth_token|client_secret|private_key|secret_key|session_id|authorization|csrf_token)")|"[^"\n]{0,200}(?:[Ee]xample|EXAMPLE|[Cc]hange_?[Mm]e|CHANGE_?ME|[Dd]ummy|DUMMY|[Pp]laceholder|PLACEHOLDER|xxxx|XXXX|[Yy]our[-_]|YOUR[-_]|TODO|[Ss]ample|SAMPLE|[Rr]eplace|REPLACE|\{\{|\$\{)[^"\n]{0,200}"'
     redactEvidence: true
     message: A secret, password, token or key is a literal in the source; anyone with the code or the binary has it.
     message_zh: 秘密、口令、令牌或密钥以字面量写在源码中；任何拿到代码或二进制的人都能获得它。
@@ -390,7 +425,7 @@ rules:
     owasp: A07:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.validate_exp\s*=\s*false\b'
+    pattern: '\.validate_exp\s*=\s*false\b|\bvalidate_exp\s*:\s*false\b|\.required_spec_claims\s*\.\s*clear\s*\(\s*\)'
     notPattern: '{{COMMENT}}'
     message: validate_exp = false makes jsonwebtoken accept expired tokens; check that the expiry is enforced elsewhere, or a leaked token never stops working.
     message_zh: validate_exp = false 会让 jsonwebtoken 接受已过期的令牌；需确认过期时间在别处得到校验，否则泄露的令牌将永久有效。
@@ -421,7 +456,7 @@ rules:
     owasp: A07:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:Encoding|Decoding)Key::from_secret\s*\(\s*(?:&\s*)?b?"(?<secret>[^"\n]{1,200})"'
+    pattern: '\b(?:Encoding|Decoding)Key::from_(?:secret|base64_secret)\s*\(\s*(?:&\s*)?b?"(?<secret>[^"\n]{1,200})"'
     notPattern: '{{COMMENT}}'
     redactEvidence: true
     message: The HMAC key that signs or verifies tokens is a literal in the source; anyone with the code can mint valid tokens.
@@ -440,9 +475,11 @@ rules:
     owasp: A02:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:bcrypt::)?(?:hash|hash_with_salt|hash_with_result)\s*\(\s*[^,;\n]{1,200},\s*0*[1-9]\s*[,)]'
+    # bcrypt::hash(..) or a bare hash(..) in a file that imports from bcrypt;
+    # method calls (.hash) and other paths (argon2::hash) are not matched.
+    pattern: '(?:\bbcrypt::|(?<![.\w:]))(?:hash|hash_with_salt|hash_with_result)\s*\(\s*[^,;\n]{1,200},\s*0*[1-9]\s*[,)]'
     notPattern: '{{COMMENT}}'
-    filePattern: '\bbcrypt\b'
+    filePattern: '\bbcrypt::'
     message: A bcrypt cost below 10 makes password hashes cheap to brute-force.
     message_zh: bcrypt 成本因子低于 10，口令哈希容易被暴力破解。
     remediation: Use bcrypt::DEFAULT_COST (12) or higher, or argon2.
@@ -587,7 +624,8 @@ rules:
     owasp: A05:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.allow_any_origin\s*\(\)|\.send_wildcard\s*\(\)|\bAllowOrigin::mirror_request\s*\(\)|\.allowed_origin_fn\s*\(\s*\|[^|\n]{0,80}\|\s*true\b|\bAllowOrigin::predicate\s*\(\s*\|[^|\n]{0,80}\|\s*true\b'
+    # send_wildcard() with credentials is rejected by actix-cors and is not matched.
+    pattern: '\.allow_any_origin\s*\(\)|\bAllowOrigin::mirror_request\s*\(\)|\.allowed_origin_fn\s*\(\s*\|[^|\n]{0,80}\|\s*true\b|\bAllowOrigin::predicate\s*\(\s*\|[^|\n]{0,80}\|\s*true\b'
     notPattern: '{{COMMENT}}'
     filePattern: '\.supports_credentials\s*\(\)|\.allow_credentials\s*\(\s*true\s*\)'
     group: rs-cors
@@ -607,9 +645,9 @@ rules:
     owasp: A05:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.(?:set_)?(?:secure|http_only)\s*\(\s*false\s*\)'
+    pattern: '\.(?:set_|with_|cookie_)?(?:secure|http_only)\s*\(\s*false\s*\)'
     notPattern: '{{COMMENT}}'
-    filePattern: '\bCookie\b|\bcookie::|SessionMiddleware|CookieSessionStore'
+    filePattern: 'cookie|session'
     message: The cookie is sent over plain HTTP (secure(false)) or readable by scripts (http_only(false)); a session cookie set this way can be stolen.
     message_zh: Cookie 会经明文 HTTP 发送（secure(false)）或可被脚本读取（http_only(false)）；以此设置的会话 Cookie 可能被窃取。
     remediation: Set secure(true) and http_only(true) on session and authentication cookies.
@@ -640,7 +678,7 @@ rules:
     owasp: A01:2021
     languages: [rust]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\bRedirect::(?:to|temporary|permanent|see_other|found|moved)\s*\(\s*(?![\s"])[^;\n]{0,200}(?<!\.)\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|uri|target|callback|location|dest\w{0,20})\b|(?:\bheader::LOCATION|"Location")\s*,\s*(?![\s"])[^;\n]{0,200}(?<!\.)\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback)\b'
+    pattern: '\bRedirect::(?:to|temporary|permanent|see_other|found|moved)\s*\(\s*(?![\s"])[^;\n]{0,200}\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback|location|dest\w{0,20})\b(?!\s*[(!])|(?:\bheader::LOCATION|"Location")\s*,\s*(?![\s"])[^;\n]{0,200}\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback)\b(?!\s*[(!])'
     notPattern: '{{COMMENT}}'
     message: The redirect target comes from the request; an attacker can send users to a site of their choice from a trusted link.
     message_zh: 重定向目标来自请求；攻击者可借助可信链接把用户引导到任意网站。

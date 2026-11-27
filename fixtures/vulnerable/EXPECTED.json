@@ -5427,6 +5427,27 @@
       "kind": "hotspot"
     },
     {
+      "file": "rust/src/db.rs",
+      "line": 38,
+      "ruleId": "rs-sql-built-string",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 47,
+      "ruleId": "rs-sql-built-string",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 25,
+      "ruleId": "rs-command-shell-api",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
       "file": "deps/package.json",
       "line": 7,
       "ruleId": "dep-missing-lockfile",
@@ -6268,6 +6289,18 @@
     },
     {
       "file": "rust/src/db.rs",
+      "line": 13,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 14,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
       "line": 23,
       "ruleId": "rs-opengrep-sql-format",
       "confidence": "medium"
@@ -6275,6 +6308,12 @@
     {
       "file": "rust/src/db.rs",
       "line": 38,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 48,
       "ruleId": "rs-opengrep-sql-format",
       "confidence": "medium"
     },
@@ -6293,6 +6332,12 @@
     {
       "file": "rust/src/exec.rs",
       "line": 18,
+      "ruleId": "rs-opengrep-shell-command",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 25,
       "ruleId": "rs-opengrep-shell-command",
       "confidence": "medium"
     },
