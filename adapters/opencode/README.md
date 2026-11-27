@@ -92,6 +92,12 @@ Note: a cold `opencode mcp list` right after startup can print "No MCP servers
 configured" because the background server is still loading the project config.
 Warm the server (or retry) before trusting that output.
 
+This matters for the first audit in a new project: with OpenCode 2.4.1, an
+`opencode run` started before `opencode mcp list` shows `code-audit` connected
+gets a session without the MCP server, and the agent cannot call the
+`audit_*` tools (it may fall back to the shell). Run `opencode mcp list` in the
+project, wait until it shows `code-audit connected`, then start the audit.
+
 ## Which directory is audited
 
 The MCP server audits, reads and writes only inside its **base directory**,

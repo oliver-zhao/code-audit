@@ -95,9 +95,9 @@ to rendered report through the MCP tools, checked in the tool-call logs.
 
 | Agent | Tested version | `--host` | Start an audit |
 |---|---|---|---|
-| [Claude Code](https://claude.com/claude-code) | 2.1.183 (macOS) | `claude-code` | `/audit` in the project, or headless `claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"` |
-| [Codex CLI](https://developers.openai.com/codex/cli) | 0.166 (macOS) | `codex` | ask for a security audit; headless `codex exec` with the three `-c` overrides that `install` prints |
-| [OpenCode](https://opencode.ai) | 2.4.1 (Linux) | `opencode` | `/audit`, or `opencode run "Run a security audit of this project with the code-audit skill"` |
+| [Claude Code](https://claude.com/claude-code) | 2.1.332 (macOS) | `claude-code` | `/audit` in the project, or headless `claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"` |
+| [Codex CLI](https://developers.openai.com/codex/cli) | 0.171 (macOS) | `codex` | ask for a security audit; headless `codex exec` with the three `-c` overrides that `install` prints |
+| [OpenCode](https://opencode.ai) | 2.4.1 (Linux) | `opencode` | `/audit`, or `opencode run "Run a security audit of this project with the code-audit skill"`. In a new project, run `opencode mcp list` first and wait until it shows `code-audit` connected: with OpenCode 2.4.1 a session started before that has no MCP server. |
 | DeepSeek Harness (DSH) | 0.2.2-rc.5 (Linux) | `dsh` | `dsh <profile> --patch dsh/cordis.patch.yml`, then ask for a security audit |
 
 Any other MCP-capable agent can use the stdio server `code-audit-mcp`
@@ -454,10 +454,10 @@ where the host supports it, an `/audit` command. It never touches `~/.claude`,
 
 | Host | `install` writes | What was verified |
 |---|---|---|
-| OpenCode 2.4.1 | `opencode.json`, `.opencode/skills/code-audit/SKILL.md`, `.opencode/commands/audit.md` | A full audit through the MCP tools, on Linux, with this version of the code. |
-| Codex CLI 0.166 | `.codex/config.toml`, `.agents/skills/code-audit/SKILL.md`, `AGENTS.md` (managed blocks) | A full audit through the MCP tools, on macOS (`codex exec` with the overrides that `install` prints). |
-| DSH 0.2.2-rc.5 | `dsh/cordis.patch.yml` (managed block), `.dsh/skills/code-audit/SKILL.md` | A full audit through the MCP tools, on Linux, in headless mode (`dsh headless --patch dsh/cordis.patch.yml --approval-policy never`): 21 tool calls from scan to report, none failed. The headless profile needs the credentials service and a model provider enabled; see the adapter README. |
-| Claude Code 2.1.183 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | A full audit through the MCP tools, on macOS, both ways: after a project install (`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and the 8 tools were found) and through the standalone plugin (`--plugin-dir`, `/code-audit:audit`). Not exercised: approving the project server interactively, installing the plugin through the marketplace. |
+| OpenCode 2.4.1 | `opencode.json`, `.opencode/skills/code-audit/SKILL.md`, `.opencode/commands/audit.md` | A full audit through the MCP tools, on Linux, with 0.3.0 (`opencode run --format json`, step-5-preview): 14 tool calls from scan to report, none failed, every page of findings reached through `next_cursor`. A session started before `opencode mcp list` shows the server connected has no MCP server (an OpenCode service issue). |
+| Codex CLI 0.171 | `.codex/config.toml`, `.agents/skills/code-audit/SKILL.md`, `AGENTS.md` (managed blocks) | A full audit through the MCP tools, on macOS (`codex exec` with the overrides that `install` prints). |
+| DSH 0.2.2-rc.5 | `dsh/cordis.patch.yml` (managed block), `.dsh/skills/code-audit/SKILL.md` | A full audit through the MCP tools, on Linux, in headless mode (`dsh headless --patch dsh/cordis.patch.yml --approval-policy never`), with 0.3.0: 19 tool calls from scan to report, none failed. The headless profile needs the credentials service and a model provider enabled; see the adapter README. |
+| Claude Code 2.1.332 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | A full audit through the MCP tools, on macOS, both ways: after a project install (`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and the 8 tools were found) and through the standalone plugin (`--plugin-dir`, `/code-audit:audit`). Not exercised: approving the project server interactively, installing the plugin through the marketplace. |
 
 Per-host details, including what the installer does with existing
 configuration, are in `adapters/<host>/README.md`. `adapters/claude-code/` is

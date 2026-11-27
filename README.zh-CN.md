@@ -52,9 +52,9 @@
 
 | Agent | 测试版本 | `--host` | 发起审计 |
 |---|---|---|---|
-| Claude Code | 2.1.183（macOS） | `claude-code` | 在项目里输入 `/audit`；无交互：`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"` |
-| Codex CLI | 0.166（macOS） | `codex` | 直接要求做安全审计；无交互用 `codex exec` 加上 `install` 打印出的三个 `-c` 参数 |
-| OpenCode | 2.4.1（Linux） | `opencode` | `/audit`，或 `opencode run "Run a security audit of this project with the code-audit skill"` |
+| Claude Code | 2.1.332（macOS） | `claude-code` | 在项目里输入 `/audit`；无交互：`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"` |
+| Codex CLI | 0.171（macOS） | `codex` | 直接要求做安全审计；无交互用 `codex exec` 加上 `install` 打印出的三个 `-c` 参数 |
+| OpenCode | 2.4.1（Linux） | `opencode` | `/audit`，或 `opencode run "Run a security audit of this project with the code-audit skill"`。新项目里先运行 `opencode mcp list`，等它显示 `code-audit` 已连接再开始：OpenCode 2.4.1 在此之前启动的会话里没有 MCP 服务器。 |
 | DeepSeek Harness (DSH) | 0.2.2-rc.5（Linux） | `dsh` | `dsh <profile> --patch dsh/cordis.patch.yml`，然后要求做安全审计 |
 
 其他支持 MCP 的 agent 可以直接使用标准输入输出的服务器 `code-audit-mcp`，工具和参数见 [docs/mcp.md](docs/mcp.md)。没有测过的：在 Claude Code 里交互式批准项目 MCP 服务器、通过插件市场安装 Claude Code 插件、Codex 的项目信任。各宿主细节见 `adapters/<host>/README.md`。
