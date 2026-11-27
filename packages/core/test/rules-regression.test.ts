@@ -309,7 +309,7 @@ describe("C# rule precision", () => {
         "    var c = Path.Combine(root, name);",
         "    using var s = File.OpenRead(Path.Combine(root, userInput));",
       ]),
-    ).toEqual(["cs-path-api:5:hotspot", "cs-path-api:6:hotspot", "cs-path-api:7:hotspot"]);
+    ).toEqual(["cs-path-api:6:hotspot", "cs-path-api:7:hotspot"]);
     expect(
       csharpHits({
         "Upload.cs": [
@@ -347,7 +347,7 @@ describe("C# rule precision", () => {
           "}",
         ],
       }),
-    ).toEqual(["cs-path-api:4:hotspot"]);
+    ).toEqual([]);
   });
 
   it("reports CORS only for any origin with credentials", () => {
@@ -476,5 +476,197 @@ describe("C# rule precision", () => {
       "cs-config-debug-compilation:1:finding",
       "cs-xss-raw-html:1:hotspot",
     ]);
+  });
+
+  // Findings of the independent review of the first C# rule set.
+  it("does not take lambdas and LINQ in Execute/Query calls for SQL", () => {
+    expect(
+      body([
+        "    var users = policy.Execute(() => { var q = db.Users.Where(u => u.Name == id).Select(u => u.Id); return q.ToList(); });",
+        '    cache.Execute(() => Log("count = " + id + " from cache"));',
+        "    var r = db.Users.Where(u => u.Id > 3).Join(db.Roles, u => u.Id, x => x.UserId, (u, x) => u).Select(u => u.Name);",
+      ]),
+    ).toEqual([]);
+    expect(
+      body(['    var rows = conn.Query<User>($"SELECT * FROM Users WHERE Name = \'{id}\'");']),
+    ).toEqual(["cs-sql-injection:3:finding"]);
+  });
+
+  it("knows CheckIsLocalUrl, leaves OIDC redirect URIs alone and sees Results.Redirect", () => {
+    expect(
+      csharpHits({
+        "Checked.cs": [
+          "public class A : Controller {",
+          "  public IActionResult Login(string returnUrl) {",
+          "    if (!CheckIsLocalUrl(returnUrl)) return Forbid();",
+          "    return Redirect(returnUrl);",
+          "  }",
+          "}",
+        ],
+        "Handler.cs": [
+          "public class Handler {",
+          "  public void Challenge(string redirectUri, string callbackUrl) {",
+          "    Response.Redirect(redirectUri);",
+          "    Response.Redirect(callbackUrl);",
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      body(['    app.MapGet("/go", (string returnUrl) => Results.Redirect(returnUrl));']),
+    ).toEqual(["cs-open-redirect:3:finding"]);
+  });
+
+  it("reports an upload file name only in files that handle uploads", () => {
+    expect(
+      csharpHits({
+        "Bundle.cs": [
+          "public class Bundler {",
+          "  public void Write(BundleFile file, string root) {",
+          "    File.WriteAllText(Path.Combine(root, file.FileName), file.Content);",
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      csharpHits({
+        "Upload.cs": [
+          "public class Upload {",
+          "  public void Save(IBrowserFile file, string root) {",
+          "    using var s = File.Create(Path.Combine(root, file.FileName));",
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual(["cs-path-traversal:3:finding"]);
+  });
+
+  it("does not report cookie policy comparisons and switch cases", () => {
+    expect(
+      csharpHits({
+        "CookieWrapper.cs": [
+          "public class CookieWrapper {",
+          "  public bool M(CookieOptions options) {",
+          "    if (options.SecurePolicy == CookieSecurePolicy.None) return false;",
+          "    switch (options.SecurePolicy) { case CookieSecurePolicy.None: return true; }",
+          "    return options.HttpOnly == false;",
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      csharpHits({ "Cookies.cs": ["public class C { void M(CookieOptions o) { o.SecurePolicy = CookieSecurePolicy.None; } }"] }),
+    ).toEqual(["cs-cookie-insecure:1:finding"]);
+  });
+
+  it("does not report LDAP filters whose values are escaped", () => {
+    expect(
+      csharpHits({
+        "Ldap.cs": [
+          "using System.DirectoryServices;",
+          "public class L {",
+          "  public void M(DirectorySearcher searcher, string user) {",
+          '    searcher.Filter = $"(sAMAccountName={EscapeLdapFilterValue(user)})";',
+          '    searcher.Filter = "(cn=" + LdapEncoder.FilterEncode(user) + ")";',
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("ignores commented-out XML and Razor and joins multi-line XML start tags", () => {
+    expect(
+      csharpHits({
+        "Web.config": [
+          "<configuration>",
+          '  <!-- <customErrors mode="Off" /> -->',
+          "  <!--",
+          '    <compilation debug="true" />',
+          "  -->",
+          "</configuration>",
+        ],
+        "Views/Home/Index.cshtml": [
+          '@* @Html.Raw(Request.Query["x"]) *@',
+          "@*",
+          "   @Html.Raw(Model.Bio)",
+          "*@",
+          "<p>@Model.Name</p>",
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      csharpHits({
+        "Web.config": [
+          "<configuration><system.web>",
+          '  <compilation targetFramework="4.8"',
+          '               debug="true" />',
+          "  <customErrors",
+          '      mode="Off" />',
+          '  <machineKey validation="SHA1"',
+          '      validationKey="0123456789ABCDEF0123456789ABCDEF" />',
+          "</system.web></configuration>",
+        ],
+      }),
+    ).toEqual([
+      "cs-config-custom-errors-off:4:finding",
+      "cs-config-debug-compilation:2:finding",
+      "cs-config-machinekey-literal:7:finding",
+    ]);
+  });
+
+  it("finds command lines in ProcessStartInfo initializers, also with escaped quotes", () => {
+    expect(
+      body([
+        '    var a = new ProcessStartInfo { FileName = "bash", Arguments = "-c \\"" + cmd + "\\"" };',
+        '    var b = new ProcessStartInfo { FileName = "ffmpeg", Arguments = $"-i {cmd}" };',
+      ]),
+    ).toEqual(["cs-command-injection:4:finding", "cs-command-shell:3:finding"]);
+  });
+
+  it("keeps encoded and literal raw HTML out of the hotspots", () => {
+    expect(
+      csharpHits({
+        "Views/Home/Index.cshtml": [
+          "@Html.Raw(JavaScriptEncoder.Default.Encode(Model.Name))",
+          "@Html.Raw(UrlEncoder.Default.Encode(Model.Name))",
+          '@Html.Raw("<a href=\\"/x\\">x</a>")',
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("separates XPath predicate values from built element names", () => {
+    expect(
+      csharpHits({
+        "X.cs": [
+          "using System.Xml;",
+          "public class X {",
+          "  public void M(XmlDocument doc, string name, string section) {",
+          '    var a = doc.SelectSingleNode($"//user[@name=\'{name}\']");',
+          '    var b = doc.SelectNodes("//" + section + "/item[@id=\'1\']");',
+          "  }",
+          "}",
+        ],
+      }),
+    ).toEqual(["cs-xpath-dynamic:5:hotspot", "cs-xpath-injection:4:finding"]);
+  });
+
+  it("reports text/html content built from request data and skips test trees", () => {
+    expect(
+      body(['    return Content("<p>" + Request.Query["q"] + "</p>", "text/html");']),
+    ).toEqual(["cs-xss-raw-request:3:finding"]);
+    expect(
+      csharpHits({
+        "test/Api.Test/Sql.cs": [
+          "public class T { void M(string id) {",
+          '  var c = new SqlCommand("SELECT * FROM T WHERE Id = " + id, conn);',
+          "} }",
+        ],
+      }),
+    ).toEqual([]);
   });
 });

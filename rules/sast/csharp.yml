@@ -34,11 +34,15 @@ definitions:
   # A value placed into a SQL literal in value position (after =, <, >, LIKE,
   # IN ( or VALUES (, or inside SQL quotes) by concatenation, an interpolation
   # hole or a string.Format placeholder. Bound parameters never look like this.
-  SQLVALUECONCAT: '(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?"\s*\+|\x27%?"\s*\+\s*[\w(]|\b[Ss]tring\.Format\s*\(\s*@?"[^"\n]{0,600}?(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\(|\x27)\s*%?\{\d'
-  SQLVALUEHOLE: '(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?\{(?!\{|\d{1,3}\})[^{}"\n]{1,200}\}|\x27%?\{(?!\{|\d{1,3}\})[^{}"\n]{1,200}\}%?\x27'
+  # A comparison or assignment in SQL text: =, <>, !=, <, <=, >, >= (not ==
+  # or the => of a lambda), LIKE, IN ( or VALUES (.
+  VALPOS: '(?:(?<![=!<>])=(?![=>])|!=|<[=>]?|(?<![=-])>=?|\bLIKE|\bIN\s*\(|\bVALUES\s*\()'
+  SQLVALUECONCAT: '{{VALPOS}}\s*\x27?%?"\s*\+|\x27%?"\s*\+\s*[\w(]|\b[Ss]tring\.Format\s*\(\s*@?"[^"\n]{0,600}?(?:{{VALPOS}}|\x27)\s*%?\{\d'
+  # An interpolation hole in value position, inside an interpolated literal.
+  SQLVALUEHOLE: '(?:\$@?|@\$)"[^"]{0,800}?(?:{{VALPOS}}\s*\x27?%?|\x27%?)\{(?!\{|\d{1,3}\})'
   SQLVALUE: '{{SQLVALUECONCAT}}|{{SQLVALUEHOLE}}'
   # The text of a SQL statement.
-  SQLWORDS: '\b(?:SELECT\b[^;]{0,400}?\bFROM|INSERT\s+INTO|UPDATE\s+[\w."\[\]`]{1,100}\s+SET|DELETE\s+FROM|EXEC(?:UTE)?\s+[\w.\[\]@]{1,100})\b'
+  SQLWORDS: '\b(?:SELECT\s[^;]{0,400}?\bFROM\s|INSERT\s+INTO\s|UPDATE\s+[\w."\[\]`]{1,100}\s+SET\s|DELETE\s+FROM\s|EXEC(?:UTE)?\s+[\w.\[\]@]{1,100}|WHERE\s+[\w.\[\]"`]{1,100}\s*(?:[=<>]|LIKE\b|IN\s*\())'
   # A string built at runtime: a literal concatenated with something, an
   # interpolated string with a hole, string.Format / string.Concat.
   DYN: '(?:"\s*\+|\+\s*@?\$?"|(?:\$@?|@\$)"[^"\n]{0,400}?(?<!\{)\{(?!\{)|\b[Ss]tring\.(?:Format|Concat)\s*\()'
@@ -58,12 +62,14 @@ rules:
     cwe: CWE-89
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     patterns:
       - '{{SQLSINK}}'
       - '{{SQLVALUE}}'
-      # Generic sink names (Execute, Query) need SQL in the unit.
-      - '\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM|VALUES|JOIN)\b|\bEXEC(?:UTE)?\s+[\w.\[\]@]'
+      # Generic sink names (Execute, Query) need the shape of a SQL statement
+      # (LINQ .Where( / .Select( does not have it).
+      - '{{SQLWORDS}}'
     group: cs-sql
     message: SQL text given to a command (ADO.NET, EF Core raw SQL or Dapper) has a value concatenated, interpolated or formatted into a value position; whoever controls the value can change the query.
     message_zh: 交给数据库命令（ADO.NET、EF Core 原始 SQL 或 Dapper）的 SQL 文本在取值位置拼接、插值或格式化了值；控制该值的人可以改变查询语义。
@@ -80,8 +86,9 @@ rules:
     cwe: CWE-89
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     patterns:
-      - '{{SQLVALUECONCAT}}|(?<!\b(?:FromSql|FromSqlInterpolated|ExecuteSqlInterpolated|ExecuteSqlInterpolatedAsync|ExecuteSql|ExecuteSqlAsync|SqlQuery|Sql)\s{0,20}(?:<[^<>\n]{1,100}>)?\s{0,20}\(\s{0,20})(?:\$@?|@\$)"[^"]{0,800}?(?:(?:[=<>]|\bLIKE|\bIN\s*\(|\bVALUES\s*\()\s*\x27?%?|\x27%?)\{(?!\{)'
+      - '{{SQLVALUECONCAT}}|(?<!\b(?:FromSql|FromSqlInterpolated|ExecuteSqlInterpolated|ExecuteSqlInterpolatedAsync|ExecuteSql|ExecuteSqlAsync|SqlQuery|Sql)\s{0,20}(?:<[^<>\n]{1,100}>)?\s{0,20}\(\s{0,20})(?:\$@?|@\$)"[^"]{0,800}?(?:{{VALPOS}}\s*\x27?%?|\x27%?)\{(?!\{)'
       - '{{SQLWORDS}}'
     notPattern: '\bFormattableString\b|\b(?:FromSql|FromSqlInterpolated|ExecuteSqlInterpolated|ExecuteSqlInterpolatedAsync|ExecuteSql|ExecuteSqlAsync)\s*\(\s*\$'
     group: cs-sql
@@ -139,8 +146,9 @@ rules:
     cwe: CWE-78
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
-    pattern: '(?:{{CMDSINK}}){{SHELL}}\s*,\s*(?:(?:\$@?|@\$)"|@?"[^"\n]{0,200}"\s*\+|[\w.]{1,100}\s*\+|\b[Ss]tring\.Format\s*\()|\bArguments\s*=(?!=)\s*(?:(?:\$@?|@\$)"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))\s[^"\n]{0,400}?(?<!\{)\{(?!\{)|@?"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))\s[^"\n]{0,400}"\s*\+)'
+    pattern: '(?:{{CMDSINK}}){{SHELL}}\s*,\s*(?:(?:\$@?|@\$)"|@?"(?:\\.|[^"\\\n]){0,200}"\s*\+|[\w.]{1,100}\s*\+|\b[Ss]tring\.Format\s*\()|\bArguments\s*=(?!=)\s*(?:(?:\$@?|@\$)"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))(?=\s|\\")[^"\n]{0,400}?(?<!\{)\{(?!\{)|@?"\s*(?:/[cCkK]|-(?:c|[Cc]ommand|EncodedCommand))(?=\s|\\")(?:\\.|[^"\\\n]){0,400}"\s*\+)'
     filePattern: '{{SHELL}}'
     group: cs-command
     message: A command shell (cmd.exe /c, PowerShell -Command, sh -c) is started with a command line built at runtime; shell metacharacters in the value run further commands.
@@ -158,8 +166,9 @@ rules:
     cwe: CWE-78
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
-    pattern: '(?:{{CMDSINK}})[^;]{0,600}?(?:{{DYN}}|[\w)\]]\s*\+\s*[A-Za-z_(])'
+    pattern: '(?:{{CMDSINK}})[^;]{0,600}?(?:{{DYN}}|[\w)\]]\s*\+\s*[A-Za-z_(])|\bnew\s+ProcessStartInfo\s*(?:\(\s*\)\s*)?\{[^;]{0,600}?\b(?:FileName|Arguments)\s*=(?!=)[^,;}]{0,400}?(?:{{DYN}}|[\w)\]]\s*\+\s*[A-Za-z_(])'
     group: cs-command
     message: Process.Start or ProcessStartInfo gets a program or argument string built at runtime; a value that is not validated can run another program or inject arguments.
     message_zh: Process.Start 或 ProcessStartInfo 接收运行时拼装的程序或参数字符串；未校验的值可能启动其他程序或注入参数。
@@ -199,11 +208,13 @@ rules:
     cwe: CWE-90
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     filePattern: '\bDirectorySearcher\b|\bSystem\.DirectoryServices\b|\bLdapConnection\b|\bNovell\.Directory\.Ldap\b'
     patterns:
       - '\b(?:Filter\s*=(?!=)|new\s+DirectorySearcher\s*\(|new\s+SearchRequest\s*\()[^;]{0,400}?{{DYN}}'
       - '\([A-Za-z][\w;-]{0,60}[~<>]?='
+    notPattern: '\b\w{0,40}(?:Escape|Encode|Sanitize)\w{0,40}\s*\('
     message: An LDAP search filter is concatenated or interpolated with a value; characters such as *, (, ) and \ in the value change the filter (LDAP injection).
     message_zh: LDAP 查询过滤器拼接或插值了值；值中的 *、(、)、\ 等字符会改变过滤器语义（LDAP 注入）。
     remediation: Escape every value with an LDAP filter encoder (RFC 4515) before it goes into the filter, or validate it against a strict allowlist.
@@ -216,13 +227,35 @@ rules:
     cwe: CWE-643
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
+    group: cs-xpath
+    filePattern: '\bSystem\.Xml\b|\bXPathNavigator\b|\bXmlDocument\b|\bXmlNode\b|\bXDocument\b'
+    patterns:
+      - '\.(?:SelectNodes|SelectSingleNode|XPathSelectElements?|XPathEvaluate|Evaluate|Compile)\s*\([^;]{0,400}?(?:(?:=|!=|<|>)\s*\x27?"\s*\+|(?:\$@?|@\$)"[^"\n]{0,400}?(?:=\s*\x27?|\x27)\{(?!\{))'
+      - '"[^"\n]{0,200}?(?:\[@|//|/@|=\s*\x27|::)'
+    message: An XPath query is concatenated or interpolated with a value; a quote in the value changes the query (XPath injection).
+    message_zh: XPath 查询拼接或插值了值；值中的引号会改变查询语义（XPath 注入）。
+    remediation: Use a precompiled XPath expression with variables (XsltArgumentList / a custom XsltContext) or validate the value against a strict allowlist.
+    remediation_zh: 使用带变量的预编译 XPath 表达式（XsltArgumentList / 自定义 XsltContext），或按严格白名单校验取值。
+  - id: cs-xpath-dynamic
+    title: C# XPath expression assembled at runtime
+    title_zh: C# XPath 表达式在运行时组装
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-643
+    owasp: A03:2021
+    languages: [csharp]
+    codeOnly: true
+    pathExclude: '{{TESTPATH}}'
+    group: cs-xpath
     filePattern: '\bSystem\.Xml\b|\bXPathNavigator\b|\bXmlDocument\b|\bXmlNode\b|\bXDocument\b'
     patterns:
       - '\.(?:SelectNodes|SelectSingleNode|XPathSelectElements?|XPathEvaluate|Evaluate|Compile)\s*\([^;]{0,400}?{{DYN}}'
       - '"[^"\n]{0,200}?(?:\[@|//|/@|=\s*\x27|::)'
-    message: An XPath query is concatenated or interpolated with a value; a quote in the value changes the query (XPath injection).
-    message_zh: XPath 查询拼接或插值了值；值中的引号会改变查询语义（XPath 注入）。
+    message: An XPath expression is assembled at runtime, but not visibly in a predicate value (for example an element name); confirm the interpolated part is a constant or allowlisted.
+    message_zh: XPath 表达式在运行时组装，但插入位置看起来不是谓词取值（例如元素名）；需确认插入部分是常量或在白名单内。
     remediation: Use a precompiled XPath expression with variables (XsltArgumentList / a custom XsltContext) or validate the value against a strict allowlist.
     remediation_zh: 使用带变量的预编译 XPath 表达式（XsltArgumentList / 自定义 XsltContext），或按严格白名单校验取值。
 
@@ -235,6 +268,7 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bnew\s+(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\s*\(|\b(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\s+\w+\s*=\s*new\s*\(\s*\)'
     message: These formatters put type names in the payload and can execute arbitrary code when they deserialize data an attacker can influence; Microsoft documents that they cannot be made safe.
@@ -252,6 +286,7 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bTypeNameHandling\s*=\s*(?:Newtonsoft\.Json\.)?TypeNameHandling\.(?:All|Auto|Objects|Arrays)\b'
     message: With TypeNameHandling enabled, the JSON decides which .NET type is created; a payload can name a gadget type and run code during deserialization.
@@ -266,6 +301,7 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bnew\s+JavaScriptSerializer\s*\(\s*new\s+SimpleTypeResolver\b'
     message: JavaScriptSerializer with SimpleTypeResolver creates whatever type the __type field names, which allows code execution through gadget types.
@@ -281,6 +317,7 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bnew\s+(?:XmlSerializer|DataContractSerializer|DataContractJsonSerializer)\s*\(\s*Type\.GetType\s*\('
     message: The serializer type comes from Type.GetType; if the type name comes from the input, the attacker chooses what is deserialized.
@@ -314,6 +351,7 @@ rules:
     cwe: CWE-611
     owasp: A05:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: 'DtdProcessing\s*=\s*DtdProcessing\.Parse'
     message: DTD processing can enable XML external entity (XXE) injection and file disclosure.
@@ -331,6 +369,7 @@ rules:
     cwe: CWE-611
     owasp: A05:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bXmlResolver\s*=\s*new\s+XmlUrlResolver\b'
     message: An XmlUrlResolver lets the document load external entities and DTDs from files and URLs (XXE, SSRF, file disclosure).
@@ -345,6 +384,7 @@ rules:
     cwe: CWE-611
     owasp: A05:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bProhibitDtd\s*=\s*false\b'
     message: ProhibitDtd = false allows DTDs, and with them external entities and entity expansion (XXE, billion laughs).
@@ -377,6 +417,7 @@ rules:
     cwe: CWE-328
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\b(?:MD5|SHA1)\.(?:Create|HashData|HashDataAsync|TryHashData)\s*\(|\bnew\s+(?:MD5CryptoServiceProvider|SHA1CryptoServiceProvider|SHA1Managed|MD5Cng|SHA1Cng)\s*\(|\bHashAlgorithm\.Create\s*\(\s*"(?:MD5|SHA1)"'
     message: MD5/SHA1 are unsuitable for passwords, signatures, or integrity checks.
@@ -428,6 +469,7 @@ rules:
     cwe: CWE-327
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\b(?:DES|TripleDES|RC2)\.Create\s*\(|\bnew\s+(?:DES|TripleDES|RC2)CryptoServiceProvider\s*\(|\bnew\s+(?:TripleDESCng|RC4\w{0,30})\s*\(|\bSymmetricAlgorithm\.Create\s*\(\s*"(?:DES|TripleDES|3DES|RC2)"'
     message: DES and RC2 can be brute-forced, RC4 has biased output, and TripleDES has a 64-bit block that leaks data in long sessions (Sweet32).
@@ -442,6 +484,7 @@ rules:
     cwe: CWE-327
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bCipherMode\.ECB\b|\.(?:EncryptEcb|DecryptEcb)\s*\('
     message: ECB encrypts equal plaintext blocks to equal ciphertext blocks, which reveals patterns in the data and allows blocks to be swapped.
@@ -456,6 +499,7 @@ rules:
     cwe: CWE-916
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bnew\s+Rfc2898DeriveBytes\s*\((?![^;]{0,400}?HashAlgorithmName)|\b(?:new\s+Rfc2898DeriveBytes|Rfc2898DeriveBytes\.Pbkdf2)\s*\([^;]{0,400}?,\s*[1-9]\d{0,3}\s*,\s*HashAlgorithmName\b'
     message: Rfc2898DeriveBytes without a HashAlgorithmName uses SHA1 and, unless set, 1000 iterations (obsolete as SYSLIB0041); an iteration count below 10000 makes password guessing cheap.
@@ -486,6 +530,7 @@ rules:
     cwe: CWE-780
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bRSAEncryptionPadding\.Pkcs1\b'
     message: RSA encryption with PKCS#1 v1.5 padding is open to padding-oracle attacks (Bleichenbacher) when decryption errors can be observed.
@@ -517,6 +562,7 @@ rules:
     cwe: CWE-327
     owasp: A02:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bSecurityProtocolType\.(?:Ssl3|Tls|Tls11)\b|\bSslProtocols\.(?:Ssl2|Ssl3|Tls|Tls11)\b'
     # Removing or comparing a protocol is not enabling it.
@@ -628,6 +674,7 @@ rules:
     cwe: CWE-942
     owasp: A05:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     patterns:
       - '\bSetIsOriginAllowed\s*\(\s*(?:\(\s*(?:\w{1,60}\s*)?\)|\w{1,60})\s*=>\s*true\s*\)|\bAllowAnyOrigin\s*\(\s*\)'
@@ -647,7 +694,8 @@ rules:
     codeOnly: true
     pathExclude: '{{TESTPATH}}'
     filePattern: 'Cookie'
-    pattern: '\bHttpOnly\s*=\s*false\b|\bSecure\s*=\s*false\b|\bCookieSecurePolicy\.None\b'
+    pattern: '\bHttpOnly\s*=(?!=)\s*false\b|\bSecure\s*=(?!=)\s*false\b|(?<![=!<>])=(?!=)\s*CookieSecurePolicy\.None\b'
+    notPattern: '\bcase\s|[!=]=\s*(?:false\b|CookieSecurePolicy\.)|\.HasFlag\s*\('
     message: The cookie is sent over plain HTTP (Secure off) or can be read by scripts (HttpOnly off); session and authentication cookies need both.
     message_zh: 该 Cookie 可经明文 HTTP 发送（未设 Secure）或可被脚本读取（未设 HttpOnly）；会话和认证 Cookie 两者都需要。
     remediation: Set HttpOnly = true and Secure = true (CookieSecurePolicy.Always) on session and authentication cookies.
@@ -693,10 +741,11 @@ rules:
     cwe: CWE-601
     owasp: A01:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     flags: ''
     codeOnly: true
-    fileAbsentPattern: '\bIsLocalUrl\s*\(|\bLocalRedirect\w{0,20}\s*\(|\bIsUrlLocalToHost\b'
-    pattern: '(?<![\w.])(?:(?:Response|this|Context\.Response|HttpContext\.Response)\s*\.\s*)?(?:Redirect(?:Permanent)?(?:PreserveMethod)?|new\s+RedirectResult)\s*\(\s*(?:{{REQ}}|(?:[Rr]eturn|[Rr]edirect|[Nn]ext|[Tt]arget|[Cc]allback|[Cc]ontinue)_?(?:[Uu]rl|URL|[Uu]ri|URI|[Tt]o|[Pp]ath)\b)'
+    fileAbsentPattern: 'IsLocal\w{0,20}Url|\bIsLocalUrl\w{0,20}\s*\(|\bLocalRedirect\w{0,20}\s*\(|\bIsUrlLocalToHost\b'
+    pattern: '(?<![\w.])(?:(?:Response|this|Context\.Response|HttpContext\.Response|Results|TypedResults)\s*\.\s*)?(?:Redirect(?:Permanent)?(?:PreserveMethod)?|new\s+RedirectResult)\s*\(\s*(?:{{REQ}}|(?:[Rr]eturn|[Nn]ext|[Tt]arget|[Cc]ontinue)_?(?:[Uu]rl|URL|[Uu]ri|URI|[Tt]o|[Pp]ath)\b)'
     message: The redirect target comes from the request (or a returnUrl-style parameter) and the file never checks that it is local, so the site can be used to send users to a phishing page.
     message_zh: 重定向目标来自请求（或 returnUrl 类参数），且文件中从未校验它是否为本站地址，网站可被利用把用户送往钓鱼页面。
     remediation: Use LocalRedirect / Url.IsLocalUrl, or map the parameter to a fixed set of destinations.
@@ -710,6 +759,7 @@ rules:
     cwe: CWE-79
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     codeOnly: true
     pattern: '\bValidateInput\s*\(\s*false\s*\)|\[\s*(?:[\w.]{1,100}\s*(?:\([^)\n]{0,200}\)\s*)?,\s*){0,5}AllowHtml\s*[\],(]'
     message: Request validation is off for this action or property, so HTML and script reach the code; confirm every place that renders the value encodes it.
@@ -742,9 +792,10 @@ rules:
     cwe: CWE-79
     owasp: A03:2021
     languages: [csharp, razor]
+    pathExclude: '{{TESTPATH}}'
     flags: ''
-    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString)|Response\.Write)\s*\([^;\n]{0,200}?(?:{{REQ}})'
-    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|HtmlEncoder\.\w{1,20}\.Encode)\s*\('
+    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString)|Response\.Write)\s*\([^;\n]{0,200}?(?:{{REQ}})|\bContent\s*\((?=[^;\n]{0,600}"text/html")[^;\n]{0,200}?(?:{{REQ}})'
+    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|UrlEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|(?:Html|JavaScript|Url)Encoder\.\w{1,20}\.Encode)\s*\('
     group: cs-xss
     message: A value of the request is written to the page without HTML encoding (reflected cross-site scripting).
     message_zh: 请求中的值未经 HTML 编码就写入页面（反射型跨站脚本）。
@@ -760,8 +811,8 @@ rules:
     owasp: A03:2021
     languages: [csharp, razor]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString))\s*\((?!\s*@?"[^"\n]{0,400}"\s*\))|\(\s*MarkupString\s*\)\s*(?!@?")[\w(@]'
-    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|HtmlEncoder\.\w{1,20}\.Encode)\s*\('
+    pattern: '\b(?:Html\.Raw|new\s+(?:HtmlString|MarkupString))\s*\((?!\s*@?"(?:\\.|[^"\\\n]){0,400}"\s*\))|\(\s*MarkupString\s*\)\s*(?!@?")[\w(@]'
+    notPattern: '\b(?:HtmlEncode|HtmlAttributeEncode|JavaScriptStringEncode|UrlEncode|Sanitize\w{0,30}|Encoder\.\w{0,30}Encode\w{0,20}|(?:Html|JavaScript|Url)Encoder\.\w{1,20}\.Encode)\s*\('
     group: cs-xss
     message: The value bypasses HTML encoding; confirm it cannot contain markup from users (or is sanitized).
     message_zh: 该值绕过了 HTML 编码；需确认它不会包含来自用户的标记（或已清洗）。
@@ -777,8 +828,10 @@ rules:
     cwe: CWE-22
     owasp: A01:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     flags: ''
     codeOnly: true
+    filePattern: '\b(?:IFormFile|HttpPostedFile\w{0,20}|IBrowserFile|FileUpload\w{0,20})\b|\bRequest\s*[.\[]'
     pattern: '(?:{{FILESINK}})[^;]{0,400}?(?:{{REQ}}|{{UPLOADNAME}})'
     notPattern: '\bPath\.GetFileName(?:WithoutExtension)?\s*\('
     group: cs-path
@@ -797,6 +850,7 @@ rules:
     cwe: CWE-22
     owasp: A01:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     flags: ''
     codeOnly: true
     fileAbsentPattern: '\bGetFullPath\s*\('
@@ -817,10 +871,10 @@ rules:
     languages: [csharp]
     codeOnly: true
     pathExclude: '{{TESTPATH}}'
-    pattern: 'Path\.Combine\s*\('
-    notPattern: 'Path\.Combine\s*\(\s*(?:@?"[^"\n]{0,400}"\s*,\s*){1,10}@?"[^"\n]{0,400}"\s*\)'
+    pattern: 'Path\.Combine\s*\([^;\n]{0,300}?,\s*[a-z]\w{0,60}\s*[,)]'
+    notPattern: '\bPath\.GetFileName(?:WithoutExtension)?\s*\('
     group: cs-path
-    message: A path is combined from runtime segments; confirm the segments are trusted and normalized inside the allowed directory.
+    message: A path is combined with a variable as a later segment; confirm the segment is trusted and the result stays inside the allowed directory.
     message_zh: 路径由运行时片段拼接；需确认片段可信且规范化后仍在允许目录内。
     remediation: Use a fixed file name or allowlist, and verify the realpath stays inside the allowed directory.
     remediation_zh: 使用固定文件名或白名单，并校验 realpath 位于允许目录内。
@@ -838,6 +892,7 @@ rules:
     cwe: CWE-470
     owasp: A03:2021
     languages: [csharp]
+    pathExclude: '{{TESTPATH}}'
     flags: ''
     codeOnly: true
     pattern: '\b(?:Type\.GetType|Activator\.CreateInstance|Assembly\.(?:Load|LoadFrom|LoadFile|UnsafeLoadFrom))\s*\([^;]{0,200}?(?:{{REQ}})'

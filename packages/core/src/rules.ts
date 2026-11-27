@@ -1914,6 +1914,161 @@ export function csharpLogicalLines(
   return result;
 }
 
+/** A start tag that stays open longer than this many lines is treated as a lexer error. */
+const MARKUP_MAX_TAG_LINES = 50;
+
+/**
+ * Units for XML configuration (`xml`) and Razor views (`razor`), which are
+ * otherwise matched line by line:
+ *
+ * - XML: `<!-- ... -->` comments (also across lines) are blanked, and an
+ *   element whose start tag spans several lines (`<compilation` on one line,
+ *   `debug="true" />` on the next) is one unit, up to the `>` that closes the
+ *   tag outside attribute quotes. `<![CDATA[ ... ]]>` content is text.
+ * - Razor: `@* ... *@` comments (also across lines) are blanked; every
+ *   physical line stays its own unit. HTML comments are not blanked: Razor
+ *   code inside them still runs.
+ *
+ * Blanked text keeps its length, so columns are those of the physical line.
+ * The lexer FAILS OPEN: when the file ends inside a comment or a start tag,
+ * or a start tag stays open for more than `MARKUP_MAX_TAG_LINES` lines, the
+ * region is added again as plain physical lines and recorded in
+ * `diagnostics.fallbacks`.
+ */
+export function markupLogicalLines(
+  lines: string[],
+  language: "xml" | "razor",
+  overLong?: number[],
+  diagnostics?: LexDiagnostics,
+): LogicalLine[] {
+  const xml = language === "xml";
+  const open = xml ? "<!--" : "@*";
+  const close = xml ? "-->" : "*@";
+  const result: LogicalLine[] = [];
+  const windows: LogicalLine[] = [];
+  const regions: Array<{ from: number; to: number; reason: string }> = [];
+  let inComment = false;
+  let commentStart = -1;
+  let inCdata = false;
+  let inTag = false;
+  let tagQuote: string | null = null;
+  let tagStart = -1;
+  let parts: string[] = [];
+  let start = 0;
+
+  const flush = (): void => {
+    if (parts.length === 0) return;
+    const offsets: number[] = [];
+    let offset = 0;
+    for (const part of parts) {
+      offsets.push(offset);
+      offset += part.length + 1;
+    }
+    result.push({ start, text: parts.join("\n"), offsets, declaration: false, headerEnd: 0 });
+    parts = [];
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    if (parts.length === 0) start = lineIndex;
+    let code = "";
+    let index = 0;
+    while (index < line.length) {
+      if (inComment) {
+        const end = line.indexOf(close, index);
+        const stop = end < 0 ? line.length : end + close.length;
+        code += " ".repeat(stop - index);
+        index = stop;
+        if (end >= 0) inComment = false;
+        continue;
+      }
+      if (inCdata) {
+        const end = line.indexOf("]]>", index);
+        const stop = end < 0 ? line.length : end + 3;
+        code += line.slice(index, stop);
+        index = stop;
+        if (end >= 0) inCdata = false;
+        continue;
+      }
+      const ch = line[index] as string;
+      if (inTag) {
+        if (tagQuote !== null) {
+          if (ch === tagQuote) tagQuote = null;
+        } else if (ch === '"' || ch === "'") {
+          tagQuote = ch;
+        } else if (ch === ">") {
+          inTag = false;
+        }
+        code += ch;
+        index += 1;
+        continue;
+      }
+      if (line.startsWith(open, index)) {
+        inComment = true;
+        commentStart = lineIndex;
+        code += " ".repeat(open.length);
+        index += open.length;
+        continue;
+      }
+      if (xml && line.startsWith("<![CDATA[", index)) {
+        inCdata = true;
+        code += "<![CDATA[";
+        index += 9;
+        continue;
+      }
+      if (xml && ch === "<") {
+        inTag = true;
+        tagQuote = null;
+        tagStart = lineIndex;
+      }
+      code += ch;
+      index += 1;
+    }
+    if (code.length > MAX_PATTERN_LINE_LENGTH) {
+      overLong?.push(lineIndex);
+      diagnostics?.overLong.push(lineIndex);
+      for (const unit of windowUnits(lineIndex, code)) windows.push(unit);
+      code = code.slice(0, MAX_PATTERN_LINE_LENGTH);
+    }
+    parts.push(code);
+    if (inTag && lineIndex - tagStart + 1 >= MARKUP_MAX_TAG_LINES) {
+      // A quote or "<" was probably not what it seemed: recover.
+      regions.push({ from: tagStart, to: lineIndex, reason: `a start tag stays open for ${MARKUP_MAX_TAG_LINES} lines` });
+      inTag = false;
+      tagQuote = null;
+    }
+    if (!inTag) flush();
+  }
+  flush();
+  const last = lines.length - 1;
+  if (inComment && commentStart >= 0) {
+    regions.push({ from: commentStart, to: last, reason: "the file ends inside a comment" });
+  }
+  if (inTag && tagStart >= 0) {
+    regions.push({ from: tagStart, to: last, reason: "the file ends inside a start tag" });
+  }
+  regions.sort((left, right) => left.from - right.from);
+  const merged: Array<{ from: number; to: number; reason: string }> = [];
+  for (const region of regions) {
+    const previous = merged[merged.length - 1];
+    if (previous && region.from <= previous.to + 1) previous.to = Math.max(previous.to, region.to);
+    else merged.push({ ...region });
+  }
+  for (const region of merged) {
+    diagnostics?.fallbacks.push({ ...region });
+    for (let index = region.from; index <= region.to; index += 1) {
+      const text = lines[index] ?? "";
+      if (text.trim().length === 0) continue;
+      windows.push({ start: index, text: text.slice(0, MAX_PATTERN_LINE_LENGTH), offsets: [0], declaration: false, headerEnd: 0, extra: true });
+      if (text.length > MAX_PATTERN_LINE_LENGTH) {
+        for (const unit of windowUnits(index, text)) windows.push(unit);
+      }
+    }
+  }
+  for (const unit of windows) result.push(unit);
+  return result;
+}
+
 function plainLogicalLines(lines: string[], overLong: number[]): LogicalLine[] {
   const result: LogicalLine[] = [];
   const windows: LogicalLine[] = [];
@@ -2227,7 +2382,9 @@ export function scanRules(
         ? pythonLogicalLines(lines, overLong, diagnostics)
         : file.language === "csharp"
           ? csharpLogicalLines(lines, overLong, diagnostics)
-          : plainLogicalLines(lines, overLong);
+          : file.language === "xml" || file.language === "razor"
+            ? markupLogicalLines(lines, file.language, overLong, diagnostics)
+            : plainLogicalLines(lines, overLong);
     if (overLong.length > 0) {
       const beyond = overLong.some(
         (index) => (lines[index] as string).length > MAX_LONG_LINE_MATCHED,

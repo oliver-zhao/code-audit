@@ -29,7 +29,7 @@ rules:
   - id: cs-opengrep-aspnet-sql
     languages: [csharp]
     severity: ERROR
-    message: Data from the HTTP request (query string, form, headers, cookies or a [FromQuery]/[FromForm]/[FromBody]/[FromRoute] parameter) reaches the SQL text of a command (SqlCommand, CommandText, EF Core FromSqlRaw/ExecuteSqlRaw). Pass it as a parameter instead.
+    message: Data from the HTTP request (query string, form, headers, cookies, a [FromQuery]/[FromForm]/[FromBody]/[FromRoute] parameter or a string parameter of a controller action) reaches the SQL text of a command (SqlCommand, CommandText, EF Core FromSqlRaw/ExecuteSqlRaw, Dapper Query/Execute). Pass it as a parameter instead.
     metadata:
       cwe: "CWE-89"
       confidence: HIGH
@@ -73,6 +73,26 @@ rules:
           - pattern-inside: |
               $RET $METHOD(..., [FromRoute(...)] $TYPE $PARAM, ...) { ... }
           - pattern: $PARAM
+      # String parameters of an action without a binding attribute: public
+      # methods with an [Http*] attribute in a class deriving from Controller
+      # or ControllerBase.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  class $CTRL : Controller { ... }
+              - pattern-inside: |
+                  class $CTRL : ControllerBase { ... }
+          - pattern-either:
+              - pattern-inside: |
+                  [$HTTP]
+                  public $RET $METHOD(..., string $PARAM, ...) { ... }
+              - pattern-inside: |
+                  [$HTTP(...)]
+                  public $RET $METHOD(..., string $PARAM, ...) { ... }
+          - metavariable-regex:
+              metavariable: $HTTP
+              regex: ^Http(Get|Post|Put|Patch|Delete)$
+          - pattern: $PARAM
     pattern-sanitizers: &aspnet-sanitizers
       - pattern: int.Parse(...)
       - pattern: long.Parse(...)
@@ -88,6 +108,18 @@ rules:
               - pattern: $DB.FromSqlRaw($SQL, ...)
               - pattern: $DB.ExecuteSqlRaw($SQL, ...)
               - pattern: $DB.ExecuteSqlRawAsync($SQL, ...)
+              # Dapper extension methods on a connection (the receiver must be
+              # named like one: Execute/Query are common method names).
+              - patterns:
+                  - pattern-either:
+                      - pattern: $CONN.$DAPPER($SQL, ...)
+                      - pattern: $CONN.$DAPPER<$T>($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $DAPPER
+                      regex: ^(Query|Execute)(First|FirstOrDefault|Single|SingleOrDefault|Multiple|Scalar|Reader)?(Async)?$
+                  - metavariable-regex:
+                      metavariable: $CONN
+                      regex: (?i)^(_?\w*conn(ection)?|_?\w*db|_?cn|_?\w*transaction|_?tx)$
           - focus-metavariable: $SQL
 
   - id: cs-opengrep-aspnet-command
@@ -153,6 +185,13 @@ rules:
               if (<... Url.IsLocalUrl(...) ...>) { ... }
           - pattern-not-inside: |
               if (<... Url.IsLocalUrl(...) ...>) $STMT;
+          # Early return when the URL is not local.
+          - pattern-not-inside: |
+              if (!Url.IsLocalUrl($U)) { ... }
+              ...
+          - pattern-not-inside: |
+              if (!Url.IsLocalUrl($U)) return $X;
+              ...
           # A URL built by a helper method (which may fix the host) is not
           # reported; the request value must be the target or part of it.
           - metavariable-pattern:
