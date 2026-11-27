@@ -91,3 +91,9 @@ data "aws_iam_policy_document" "ops" {
     resources = [aws_s3_bucket.logs.arn]
   }
 }
+
+resource "aws_ebs_volume" "scratch" {
+  availability_zone = "us-east-1a"
+  size              = 20
+  encrypted         = "false"
+}

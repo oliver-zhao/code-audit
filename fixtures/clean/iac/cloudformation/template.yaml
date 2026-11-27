@@ -1,0 +1,12 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  ReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: describe
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: ["ec2:DescribeInstances"]
+                Resource: "*"

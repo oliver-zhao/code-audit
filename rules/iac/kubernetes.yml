@@ -16,6 +16,13 @@ definitions:
   K8S_EXCLUDE: '(?:^|/)(?:\.github/|\.gitlab-ci[^/]*$|(?:docker-)?compose(?:[.-][\w.-]*)?\.ya?ml$)'
   K8S_FILE: '^\s*(?:apiVersion|securityContext|podSecurityContext)\s*:'
   WORKLOAD: '^\s*kind\s*:\s*["\x27]?(?:Pod|Deployment|StatefulSet|DaemonSet|Job|CronJob|ReplicaSet|ReplicationController|PodTemplate)["\x27]?\s*$'
+  # CloudFormation, kind cluster configs, skaffold and Ansible are YAML with
+  # similar keys (Resources, extraMounts hostPath, privileged) but are not
+  # Kubernetes manifests.
+  NOT_K8S: '^AWSTemplateFormatVersion|^\s*Type\s*:\s*["\x27]?AWS::|^\s*apiVersion\s*:\s*["\x27]?(?:kind\.x-k8s\.io|skaffold/)|^-\s+(?:hosts|import_playbook|name)\s*:'
+  # A key at the start of a line or inside a flow mapping ({privileged: true}).
+  KEY: '(?:^\s*|[{,]\s*)'
+  RUNTIME_PATH: '(?:var/)?run/(?:docker\.sock|containerd(?:/containerd\.sock)?|crio(?:/crio\.sock)?|cri-dockerd\.sock)|var/lib/docker'
   RBAC_ROLE: '^\s*kind\s*:\s*["\x27]?(?:Cluster)?Role["\x27]?\s*$'
 rules:
   - id: k8s-privileged-container
@@ -26,8 +33,9 @@ rules:
     cwe: CWE-250
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*privileged\s*:\s*["\x27]?true\b'
+    pattern: '{{KEY}}privileged\s*:\s*["\x27]?true\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: A privileged container has almost all host capabilities, so a container escape has severe impact.
@@ -45,13 +53,14 @@ rules:
     cwe: CWE-250
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*host(?:Network|PID|IPC)\s*:\s*["\x27]?true\b'
+    pattern: '{{KEY}}host(?:Network|PID|IPC)\s*:\s*["\x27]?true\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: Sharing the host network, PID or IPC namespace weakens isolation and exposes host processes and ports.
     message_zh: 共享宿主机网络、PID 或 IPC 命名空间会削弱隔离，暴露宿主机进程与端口。
-    remediation: Remove hostNetwork/hostPID/hostIPC and use the pod own namespaces.
+    remediation: Remove hostNetwork/hostPID/hostIPC and use the pod's own namespaces.
     remediation_zh: 移除 hostNetwork/hostPID/hostIPC，使用 Pod 自身的命名空间。
     references:
       - CWE-250
@@ -64,8 +73,9 @@ rules:
     cwe: CWE-269
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*allowPrivilegeEscalation\s*:\s*["\x27]?true\b'
+    pattern: '{{KEY}}allowPrivilegeEscalation\s*:\s*["\x27]?true\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: allowPrivilegeEscalation lets a process gain more privileges than its parent, enabling setuid-style escalation.
@@ -83,8 +93,9 @@ rules:
     cwe: CWE-250
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*(?:runAsNonRoot\s*:\s*["\x27]?false\b|runAsUser\s*:\s*["\x27]?0["\x27]?\s*(?:#.*)?$)'
+    pattern: '{{KEY}}(?:runAsNonRoot\s*:\s*["\x27]?false\b|runAsUser\s*:\s*["\x27]?0["\x27]?(?=\s*(?:[,}#]|$)))'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: Running as root (or explicitly non-root=false) amplifies the impact of a container compromise.
@@ -105,10 +116,15 @@ rules:
     # Only values below a hostPath key, so an httpGet probe `path: /` is not
     # taken for a mount. The second form serves the line fallback.
     withinKeys: [hostPath]
-    pattern: '(?:^|^\s*path\s*:\s*["\x27]?)/(?:(?:var/)?run/(?:docker\.sock|containerd(?:/containerd\.sock)?|crio(?:/crio\.sock)?|cri-dockerd\.sock)|var/lib/docker)?/?["\x27]?\s*$'
+    # Parsed: the value below hostPath. Line fallback (a Helm template that is
+    # not valid YAML): only a socket or Docker data path on a `path:` line, or
+    # a flow `hostPath: {path: ...}`; a bare `path: /` there is usually an
+    # httpGet probe.
+    pattern: '^/(?:{{RUNTIME_PATH}})?/?$|^\s*path\s*:\s*["\x27]?/(?:{{RUNTIME_PATH}})/?["\x27]?\s*$|hostPath\s*:\s*\{\s*path\s*:\s*["\x27]?/(?:{{RUNTIME_PATH}})?/?["\x27]?\s*[,}]'
     notPattern: mountPath
     filePattern: hostPath
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: Mounting the host root file system or the container runtime socket gives the pod control equivalent to host root.
     message_zh: 挂载宿主机根文件系统或容器运行时套接字，等同于让 Pod 获得宿主机 root 控制权。
@@ -126,10 +142,11 @@ rules:
     owasp: A05:2021
     languages: [yaml]
     withinKeys: [hostPath]
-    pattern: '(?:^|^\s*path\s*:\s*["\x27]?)/(?:etc(?:/kubernetes(?:/pki)?)?|proc|root|boot|sys|home|var/lib/kubelet|var/lib/etcd)/?["\x27]?\s*$'
+    pattern: '(?:^|^\s*path\s*:\s*["\x27]?|hostPath\s*:\s*\{\s*path\s*:\s*["\x27]?)/(?:etc(?:/kubernetes(?:/pki)?)?|proc|root|boot|sys|home|var/lib/kubelet|var/lib/etcd)/?["\x27]?\s*(?:$|[,}])'
     notPattern: mountPath
     filePattern: hostPath
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: A hostPath volume exposes host configuration, credentials or kernel interfaces (/etc, /proc, /sys, kubelet or etcd data) to the pod.
     message_zh: hostPath 卷把宿主机配置、凭据或内核接口（/etc、/proc、/sys、kubelet 或 etcd 数据）暴露给 Pod。
@@ -147,6 +164,7 @@ rules:
     pattern: '^\s*(?:CAP_)?(?:ALL|SYS_ADMIN|SYS_MODULE|SYS_RAWIO|DAC_READ_SEARCH|BPF)\s*$'
     filePattern: capabilities
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: ALL, SYS_ADMIN, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH and BPF each allow a container to escape to the node or read node files.
     message_zh: ALL、SYS_ADMIN、SYS_MODULE、SYS_RAWIO、DAC_READ_SEARCH 和 BPF 中任意一个都能让容器逃逸到节点或读取节点文件。
@@ -164,6 +182,7 @@ rules:
     pattern: '^\s*(?:CAP_)?(?:NET_ADMIN|SYS_PTRACE|SYS_BOOT|SYS_TIME|PERFMON|MAC_ADMIN|MAC_OVERRIDE|SYSLOG)\s*$'
     filePattern: capabilities
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The capability lets the container reconfigure node networking, trace other processes, or change kernel-wide state.
     message_zh: 该 capability 允许容器重新配置节点网络、跟踪其他进程或修改内核全局状态。
@@ -180,7 +199,7 @@ rules:
     languages: [yaml]
     pattern: '^\s*(?:init|ephemeral)?[cC]ontainers\s*:'
     filePattern: '{{WORKLOAD}}'
-    fileAbsentPattern: '^\s*-\s*["\x27]?ALL["\x27]?\s*$|\bdrop\s*:\s*\[\s*["\x27]?ALL\b'
+    fileAbsentPattern: '{{NOT_K8S}}|^\s*-\s*["\x27]?ALL["\x27]?\s*$|\bdrop\s*:\s*\[\s*["\x27]?ALL\b'
     pathInclude: '{{K8S_PATH}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: No container in this file drops all Linux capabilities, so the runtime default set (including NET_RAW) stays available.
@@ -198,7 +217,7 @@ rules:
     languages: [yaml]
     pattern: '^\s*(?:init|ephemeral)?[cC]ontainers\s*:'
     filePattern: '{{WORKLOAD}}'
-    fileAbsentPattern: '^\s*limits\s*:'
+    fileAbsentPattern: '{{NOT_K8S}}|^\s*limits\s*:'
     pathInclude: '{{K8S_PATH}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: No container in this file has resource limits, so one compromised or faulty pod can exhaust the node.
@@ -213,8 +232,9 @@ rules:
     cwe: CWE-732
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*readOnlyRootFilesystem\s*:\s*["\x27]?false\b'
+    pattern: '{{KEY}}readOnlyRootFilesystem\s*:\s*["\x27]?false\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: A writable root file system lets an attacker who gets code execution modify binaries and persist in the container.
@@ -231,6 +251,7 @@ rules:
     languages: [yaml]
     pattern: '^\s*type\s*:\s*["\x27]?Unconfined\b|(?:seccomp|apparmor)\.security\.(?:alpha|beta)\.kubernetes\.io/[\w./-]{0,100}["\x27]?\s*:\s*["\x27]?unconfined\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: The seccomp or AppArmor profile is Unconfined, removing kernel syscall filtering that blocks many container escapes.
@@ -245,12 +266,13 @@ rules:
     cwe: CWE-200
     owasp: A05:2021
     languages: [yaml]
-    pattern: '^\s*procMount\s*:\s*["\x27]?Unmasked\b'
+    pattern: '{{KEY}}procMount\s*:\s*["\x27]?Unmasked\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: procMount Unmasked removes the masking of sensitive /proc paths, exposing kernel information and interfaces to the container.
-    message_zh: procMount 设为 Unmasked 会取消了对 /proc 敏感路径的屏蔽，向容器暴露内核信息与接口。
+    message_zh: procMount 设为 Unmasked 会取消对 /proc 敏感路径的屏蔽，向容器暴露内核信息与接口。
     remediation: Remove procMount or set it to Default.
     remediation_zh: 删除 procMount 或设为 Default。
   - id: k8s-unsafe-sysctl
@@ -266,6 +288,7 @@ rules:
     withinKeys: [sysctls]
     pattern: '^\s*(?:kernel\.(?!shm|msg|sem\b)|vm\.|fs\.(?!mqueue\.))[\w./-]{1,100}\s*$'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The sysctl is not namespaced, so setting it from a pod changes kernel behaviour for every workload on the node.
     message_zh: 该 sysctl 不受命名空间隔离，从 Pod 设置会改变节点上所有工作负载的内核行为。
@@ -279,8 +302,9 @@ rules:
     cwe: CWE-269
     owasp: A01:2021
     languages: [yaml]
-    pattern: '^\s*automountServiceAccountToken\s*:\s*["\x27]?true\b'
+    pattern: '{{KEY}}automountServiceAccountToken\s*:\s*["\x27]?true\b'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: The API token of the service account is mounted into the pod, so code execution in the pod gives access to the Kubernetes API with that account's rights.
@@ -297,6 +321,7 @@ rules:
     languages: [yaml]
     pattern: '^\s*(?:-\s*)?image\s*:\s*["\x27]?(?:\S+:latest|(?!\S*@)(?:[^:\s/"\x27{}<>]+(?::\d+)?/)*[^:\s/"\x27{}<>]+)["\x27]?\s*$'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     filePattern: '{{K8S_FILE}}'
     message: An image with the latest tag (or no tag) is not reproducible and may pull unaudited changes.
@@ -324,6 +349,7 @@ rules:
     # Kept on the folder names it always used: env lists also appear in
     # partial manifests without apiVersion (Kustomize patches, Helm snippets).
     pathInclude: '(?:^|/)(?:k8s|kubernetes|manifests|deploy)/.*\.ya?ml$'
+    fileAbsentPattern: '{{NOT_K8S}}'
     message: A credential value is embedded directly in a pod env, exposing it to anyone who can read the manifest.
     message_zh: 凭据值直接写在 Pod env 中，任何能读取清单的人都能看到。
     remediation: Reference a Secret via valueFrom/secretKeyRef and keep the value out of the manifest.
@@ -347,6 +373,7 @@ rules:
     redactEvidence: true
     filePattern: '^\s*kind\s*:\s*["\x27]?Secret["\x27]?\s*$'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: A Secret manifest in the repository holds its values in the clear (base64 is an encoding, not encryption). Check whether these are real credentials.
     message_zh: 仓库中的 Secret 清单以明文保存其值（base64 只是编码而非加密）。请确认这些是否为真实凭据。
@@ -364,6 +391,7 @@ rules:
     pattern: '^\s*\*\s*$'
     filePattern: '{{RBAC_ROLE}}'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: A wildcard in verbs or resources grants every current and future permission of that kind, including secrets access and privilege escalation.
     message_zh: verbs 或 resources 中的通配符会授予该类所有现有及未来的权限，包括访问 secrets 与提权。
@@ -381,6 +409,7 @@ rules:
     pattern: '^\s*cluster-admin\s*$'
     filePattern: 'RoleBinding'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The subject receives full control of the cluster; compromise of that service account or user compromises everything.
     message_zh: 主体获得了集群的完全控制权；该 service account 或用户一旦被攻破，整个集群随之失守。
@@ -398,11 +427,30 @@ rules:
     pattern: '^\s*system:(?:anonymous|unauthenticated)\s*$'
     filePattern: 'RoleBinding'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The role is bound to system:anonymous or system:unauthenticated, so anyone who can reach the API server gets these rights without credentials.
     message_zh: 角色被绑定到 system:anonymous 或 system:unauthenticated，任何能访问 API Server 的人无需凭据即可获得这些权限。
     remediation: Remove the anonymous subject and bind the role to specific authenticated users or service accounts.
     remediation_zh: 删除匿名主体，把角色绑定到具体的已认证用户或 service account。
+  - id: k8s-rbac-authenticated-subject
+    title: Kubernetes binding grants rights to every authenticated user
+    title_zh: Kubernetes 绑定向所有已认证用户授权
+    severity: high
+    confidence: medium
+    cwe: CWE-285
+    owasp: A01:2021
+    languages: [yaml]
+    withinKeys: [subjects]
+    pattern: '^\s*system:authenticated\s*$'
+    filePattern: 'RoleBinding'
+    pathInclude: '{{K8S_PATH}}'
+    pathExclude: '{{K8S_EXCLUDE}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
+    message: The role is bound to system:authenticated, which is every user and service account with any valid credential; on GKE that includes any Google account.
+    message_zh: 角色被绑定到 system:authenticated，即任何持有有效凭据的用户和 service account；在 GKE 上包括任意 Google 账号。
+    remediation: Bind the role to specific users, groups or service accounts.
+    remediation_zh: 将角色绑定到具体的用户、组或 service account。
   - id: k8s-rbac-escalation-verbs
     title: Kubernetes role grants escalate, bind or impersonate
     title_zh: Kubernetes 角色授予 escalate、bind 或 impersonate
@@ -415,6 +463,7 @@ rules:
     pattern: '^\s*(?:escalate|bind|impersonate)\s*$'
     filePattern: '{{RBAC_ROLE}}'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: escalate, bind and impersonate let the subject grant itself, or act with, permissions it does not have.
     message_zh: escalate、bind 和 impersonate 允许主体为自己授予或冒用其本不具备的权限。
@@ -433,6 +482,7 @@ rules:
     pattern: '^\s*secrets\s*$'
     filePattern: '{{RBAC_ROLE}}'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The role names the secrets resource; with get, list or watch it can read every Secret in its scope. Check the verbs and the scope.
     message_zh: 该角色涉及 secrets 资源；若包含 get、list 或 watch，则可读取其范围内所有 Secret。请检查动作与范围。
@@ -450,6 +500,7 @@ rules:
     pattern: '^\s*type\s*:\s*["\x27]?(?:LoadBalancer|NodePort)\b'
     filePattern: '^\s*(?:-\s*)?(?:port|targetPort|nodePort)\s*:\s*["\x27]?(?:22|23|2375|2376|3389|5900|6443|10250|10255|2379|2380|3306|5432|6379|27017|9200|11211|5984)["\x27]?\s*$'
     pathInclude: '{{K8S_PATH}}'
+    fileAbsentPattern: '{{NOT_K8S}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: A LoadBalancer or NodePort service in this file uses an SSH, remote-desktop, Docker, kubelet, etcd or database port. Check whether it must be reachable from outside the cluster.
     message_zh: 该文件中的 LoadBalancer 或 NodePort 服务使用了 SSH、远程桌面、Docker、kubelet、etcd 或数据库端口。请确认是否必须从集群外访问。
@@ -465,7 +516,7 @@ rules:
     owasp: A02:2021
     languages: [yaml]
     pattern: '^\s*kind\s*:\s*["\x27]?Ingress["\x27]?\s*$'
-    fileAbsentPattern: '^\s*tls\s*:|ssl-redirect'
+    fileAbsentPattern: '{{NOT_K8S}}|^\s*tls\s*:|ssl-redirect'
     pathInclude: '{{K8S_PATH}}'
     pathExclude: '{{K8S_EXCLUDE}}'
     message: The Ingress has no tls section, so traffic is served over plain HTTP unless TLS is terminated in front of it.

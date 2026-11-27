@@ -9,6 +9,7 @@ version: 1
 # or `expose:` cannot be mistaken for them.
 definitions:
   COMPOSE: '(?:^|/)(?:docker-)?compose(?:[.-][\w.-]*)?\.ya?ml$'
+  DEV_SECRET: '(?:p[a@]ss(?:w[o0]rd)?\d{0,4}|secret\d{0,4}|postgres(?:ql)?|mysql|mariadb|mongo(?:db)?|redis|root|admin\d{0,4}|test\d{0,4}|dev|demo|local|user|guest|db|app|example|changeme|wordpress|nextcloud|gitea|keycloak|grafana|sonar|123456\d{0,4})'
   SECRET_NAME: '\w{0,60}?(?:PASSWORD|PASSWD|SECRET(?:_KEY(?:_BASE)?)?|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|_PASS|_PWD)'
 rules:
   - id: compose-privileged
@@ -144,10 +145,29 @@ rules:
     owasp: A07:2021
     languages: [yaml]
     pattern: '^\s*(?:-\s*)?["\x27]?{{SECRET_NAME}}["\x27]?\s*[:=]\s*["\x27]?(?<secret>(?!(?:true|false|yes|no|none|null|0|1)["\x27]?\s*$)[^\s"\x27$#{\[/.~][^\s"\x27]{3,200})'
-    notPattern: '_FILE["\x27]?\s*[:=]|\b(?:changeme|change_me|placeholder|dummy|example|redacted)\b|<[^<>]{0,60}>|x{4,}|\*{3,}'
+    # Development defaults (the user, database or image name, "password",
+    # "secret", ...) are the lower-confidence twin below.
+    notPattern: '[:=]\s*["\x27]?{{DEV_SECRET}}["\x27]?\s*(?:#.*)?$|_FILE["\x27]?\s*[:=]|\b(?:changeme|change_me|placeholder|dummy|example|redacted)\b|<[^<>]{0,60}>|x{4,}|\*{3,}'
     redactEvidence: true
     pathInclude: '{{COMPOSE}}'
     message: A password or token is written into the compose file, so everyone with access to the repository has it.
     message_zh: 密码或令牌直接写在 compose 文件中，任何能访问仓库的人都能获得。
+    remediation: Use variable substitution from an untracked .env file (${DB_PASSWORD}) or Docker secrets (*_FILE variables).
+    remediation_zh: 使用未纳入版本控制的 .env 文件做变量替换（${DB_PASSWORD}），或使用 Docker secrets（*_FILE 变量）。
+  - id: compose-env-dev-secret
+    title: docker-compose sets a development default password
+    title_zh: docker-compose 设置了开发默认密码
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [yaml]
+    pattern: '^\s*(?:-\s*)?["\x27]?{{SECRET_NAME}}["\x27]?\s*[:=]\s*["\x27]?(?<secret>(?!(?:true|false|yes|no|none|null|0|1)["\x27]?\s*$){{DEV_SECRET}})["\x27]?\s*(?:#.*)?$'
+    notPattern: '_FILE["\x27]?\s*[:=]'
+    redactEvidence: true
+    pathInclude: '{{COMPOSE}}'
+    message: A password is set to a well-known default (the user, database or image name, password, secret, admin). Harmless for a local development stack, a real exposure if this file is used anywhere else.
+    message_zh: 密码被设为众所周知的默认值（用户名、数据库名、镜像名、password、secret、admin）。本地开发环境无妨，但在其他环境使用即为真实风险。
     remediation: Use variable substitution from an untracked .env file (${DB_PASSWORD}) or Docker secrets (*_FILE variables).
     remediation_zh: 使用未纳入版本控制的 .env 文件做变量替换（${DB_PASSWORD}），或使用 Docker secrets（*_FILE 变量）。

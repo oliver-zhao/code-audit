@@ -1,0 +1,13 @@
+# Labels new issues; see https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#issues
+# (no pull_request_target, no workflow_run, no issue_comment here)
+name: triage
+on: push
+jobs:
+  label:
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "branch $GITHUB_HEAD_REF"

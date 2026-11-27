@@ -15,6 +15,7 @@ definitions:
   TF: '\.tf(?:vars)?$'
   COMMENT: '^\s*(?:#|//)'
   NOT_LITERAL: '\$\{|\b(?:var|local|data|module)\.|\bchangeme\b|<[^<>]*>|x{3,}'
+  DENY: '\beffect["\x27]?\s*[=:]\s*["\x27]Deny["\x27]'
   OPEN_CIDR: '"(?:0\.0\.0\.0/0|::/0)"'
 rules:
   # ---------------------------------------------------------------- AWS
@@ -84,7 +85,7 @@ rules:
     cwe: CWE-732
     owasp: A01:2021
     languages: [yaml]
-    pattern: '\b(?:block_public_acls|block_public_policy|ignore_public_acls|restrict_public_buckets)\s*=\s*false\b'
+    pattern: '\b(?:block_public_acls|block_public_policy|ignore_public_acls|restrict_public_buckets)\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: A public access block setting is false, so a public ACL or bucket policy can expose the bucket.
@@ -99,7 +100,7 @@ rules:
     cwe: CWE-668
     owasp: A05:2021
     languages: [yaml]
-    pattern: '\bpublicly_accessible\s*=\s*true\b'
+    pattern: '\bpublicly_accessible\s*=\s*"?true\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: The database instance gets a public address and can be reached from the internet if its security group allows it.
@@ -114,7 +115,7 @@ rules:
     cwe: CWE-311
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\b(?:encrypted|storage_encrypted|at_rest_encryption_enabled|enable_encryption)\s*=\s*false\b|\bencryption_disabled\s*=\s*true\b'
+    pattern: '\b(?:encrypted|storage_encrypted|at_rest_encryption_enabled|enable_encryption)\s*=\s*"?false\b|\bencryption_disabled\s*=\s*"?true\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Storage is explicitly unencrypted, exposing data at rest to anyone with disk or snapshot access.
@@ -132,7 +133,7 @@ rules:
     cwe: CWE-319
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\btransit_encryption_enabled\s*=\s*false\b|\bclient_broker\s*=\s*"(?:PLAINTEXT|TLS_PLAINTEXT)"|\bin_cluster\s*=\s*false\b'
+    pattern: '\btransit_encryption_enabled\s*=\s*"?false\b|\bclient_broker\s*=\s*"(?:PLAINTEXT|TLS_PLAINTEXT)"|\bin_cluster\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Traffic to the cache or broker is not encrypted, so anyone on the network path can read or change it.
@@ -152,6 +153,8 @@ rules:
     # lines is not seen.
     pattern: '\bactions?["\x27]?\s*[=:]\s*(?:\[\s*)?["\x27]\*["\x27]'
     notPattern: '{{COMMENT}}'
+    # A Deny statement in the file may be what limits it: see the hotspot twin.
+    fileAbsentPattern: '{{DENY}}'
     pathInclude: '{{TF}}'
     message: An IAM policy with Action "*" grants every API call of every service on the resources it names (all of them with Resource "*").
     message_zh: Action 为 "*" 的 IAM 策略允许对所列资源调用所有服务的所有 API（Resource 为 "*" 时即全部资源）。
@@ -160,6 +163,23 @@ rules:
     references:
       - CWE-732
       - OWASP A01:2021
+  - id: tf-iam-wildcard-with-deny
+    title: Terraform IAM policy allows every action, in a file with a Deny statement
+    title_zh: Terraform IAM 策略允许所有操作，且文件中有 Deny 语句
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [yaml]
+    pattern: '\bactions?["\x27]?\s*[=:]\s*(?:\[\s*)?["\x27]\*["\x27]'
+    notPattern: '{{COMMENT}}'
+    filePattern: '{{DENY}}'
+    pathInclude: '{{TF}}'
+    message: Action "*" appears in a file that also has a Deny statement. Check whether this statement is the Deny (for example a guard-rail policy) or an Allow that grants everything.
+    message_zh: Action 为 "*" 出现在含有 Deny 语句的文件中。请确认该语句是 Deny（例如防护策略）还是授予全部权限的 Allow。
+    remediation: Scope Allow statements to the actions and resources required.
+    remediation_zh: 将 Allow 语句限制在所需的操作与资源范围内。
   - id: tf-iam-passrole-wildcard
     title: Terraform IAM policy allows iam:PassRole in a policy file with Resource "*"
     title_zh: Terraform IAM 策略在含 Resource "*" 的文件中允许 iam:PassRole
@@ -200,7 +220,7 @@ rules:
     cwe: CWE-320
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\benable_key_rotation\s*=\s*false\b'
+    pattern: '\benable_key_rotation\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Automatic key rotation is disabled, so a leaked key stays valid for all data it protects, indefinitely.
@@ -231,7 +251,7 @@ rules:
     cwe: CWE-778
     owasp: A09:2021
     languages: [yaml]
-    pattern: '\b(?:enable_logging|enable_log_file_validation)\s*=\s*false\b'
+    pattern: '\b(?:enable_logging|enable_log_file_validation)\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     filePattern: '"aws_cloudtrail"'
     pathInclude: '{{TF}}'
@@ -326,7 +346,7 @@ rules:
     group: tf-credential-literal
     languages: [yaml]
     pattern: '(?:access_key|secret_key|token|password)\s*=\s*"[^"]{8,}"'
-    notPattern: '{{NOT_LITERAL}}|{{COMMENT}}'
+    notPattern: '{{NOT_LITERAL}}|{{COMMENT}}|"arn:|\b(?:example|placeholder|dummy|redacted)\b'
     redactEvidence: true
     pathInclude: '{{TF}}'
     message: A credential is embedded in Terraform source (provider, resource or tfvars), leaking it to anyone who reads the source or the state.
@@ -399,7 +419,7 @@ rules:
     cwe: CWE-732
     owasp: A01:2021
     languages: [yaml]
-    pattern: '\b(?:allow_blob_public_access|allow_nested_items_to_be_public)\s*=\s*true\b|\bcontainer_access_type\s*=\s*"(?:blob|container)"'
+    pattern: '\b(?:allow_blob_public_access|allow_nested_items_to_be_public)\s*=\s*"?true\b|\bcontainer_access_type\s*=\s*"(?:blob|container)"'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Blobs or containers can be read anonymously from the internet.
@@ -415,7 +435,7 @@ rules:
     cwe: CWE-668
     owasp: A05:2021
     languages: [yaml]
-    pattern: '\bpublic_network_access_enabled\s*=\s*true\b|\bpublic_network_access\s*=\s*"Enabled"'
+    pattern: '\bpublic_network_access_enabled\s*=\s*"?true\b|\bpublic_network_access\s*=\s*"Enabled"'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: The resource is reachable from the public internet. That is expected for a public web app, not for a database, key vault or storage account.
@@ -430,7 +450,7 @@ rules:
     cwe: CWE-326
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\b\w{0,40}tls_version\w{0,20}\s*=\s*"(?:TLS)?1[._][01]"'
+    pattern: '\b\w{0,40}tls_version\w{0,20}\s*=\s*"(?:TLS_?)?1[._][01]"'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: The service accepts TLS 1.0 or 1.1, which are deprecated and allow weak cipher suites.
@@ -445,7 +465,7 @@ rules:
     cwe: CWE-319
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\b(?:https_only|enable_https_traffic_only|https_traffic_only_enabled)\s*=\s*false\b'
+    pattern: '\b(?:https_only|enable_https_traffic_only|https_traffic_only_enabled)\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: The app or storage account accepts unencrypted HTTP requests.
@@ -493,7 +513,8 @@ rules:
     owasp: A01:2021
     languages: [yaml]
     pattern: '"(?:[A-Za-z]+:)?(?:allUsers|allAuthenticatedUsers)"'
-    notPattern: '{{COMMENT}}'
+    # Input validation (contains(var.members, "allUsers")) rejects the value.
+    notPattern: '{{COMMENT}}|\b(?:contains|anytrue|alltrue)\s*\(|\bcondition\s*='
     pathInclude: '{{TF}}'
     message: allUsers is anyone on the internet and allAuthenticatedUsers is anyone with a Google account; the resource becomes public.
     message_zh: allUsers 表示互联网上的任何人，allAuthenticatedUsers 表示任何拥有 Google 账号的人；资源因此公开。
@@ -522,7 +543,7 @@ rules:
     cwe: CWE-285
     owasp: A01:2021
     languages: [yaml]
-    pattern: '\benable_legacy_abac\s*=\s*true\b'
+    pattern: '\benable_legacy_abac\s*=\s*"?true\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Legacy ABAC grants broad rights that RBAC cannot restrict, for example to every service account in the cluster.
@@ -568,7 +589,7 @@ rules:
     cwe: CWE-319
     owasp: A02:2021
     languages: [yaml]
-    pattern: '\brequire_ssl\s*=\s*false\b|\bssl_mode\s*=\s*"ALLOW_UNENCRYPTED_AND_ENCRYPTED"|\bssl_enforcement_enabled\s*=\s*false\b'
+    pattern: '\brequire_ssl\s*=\s*"?false\b|\bssl_mode\s*=\s*"ALLOW_UNENCRYPTED_AND_ENCRYPTED"|\bssl_enforcement_enabled\s*=\s*"?false\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{TF}}'
     message: Clients may connect to the database without TLS.

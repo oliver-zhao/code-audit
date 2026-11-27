@@ -17,3 +17,8 @@ jobs:
       - uses: some-org/deploy-preview@v2
         with:
           token: ${{ secrets.DEPLOY_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          path: merged
+      - run: echo '${{ toJSON(github.event.pull_request) }}' > event.json

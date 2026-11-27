@@ -1071,6 +1071,7 @@ describe("evidence of credential rules", () => {
       .sort();
     expect(flagged).toEqual([
       "agent-mcp-inline-secret",
+      "compose-env-dev-secret",
       "compose-env-literal-secret",
       "dep-http-install",
       "dep-pip-trusted-host",

@@ -300,10 +300,9 @@ describe("path context in a scan", () => {
       expect(finding.confidenceOriginal).toBeUndefined();
     }
     const workflow = result.findings.filter((finding) => finding.file === "tests/.github/workflows/ci.yml");
-    expect(workflow.map((finding) => finding.ruleId).sort()).toEqual([
-      "gha-pull-request-target",
-      "gha-script-injection",
-    ]);
+    // gha-pull-request-target is a hotspot (a base-branch checkout is the
+    // documented safe use); the finding here is the script injection.
+    expect(workflow.map((finding) => finding.ruleId).sort()).toEqual(["gha-script-injection"]);
     for (const finding of workflow) {
       expect(finding.confidence).toBe("high");
       expect(finding.adjustments).toBeUndefined();

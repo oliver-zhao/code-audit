@@ -1,0 +1,19 @@
+name: ok-to-test
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  test:
+    if: contains(github.event.comment.body, '/ok-to-test')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ format('refs/pull/{0}/merge', github.event.issue.number) }}
+          persist-credentials: false
+      - run: |
+          gh pr checkout ${{ github.event.issue.number }}
+          git fetch origin pull/${{ github.event.issue.number }}/head:pr
+          make test

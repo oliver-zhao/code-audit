@@ -21,3 +21,10 @@ jobs:
   call:
     uses: ./.github/workflows/reusable.yml
     secrets: inherit
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Built by ${{ github.event.workflow_run.head_commit.committer.name }}"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}

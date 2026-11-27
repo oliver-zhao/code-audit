@@ -5,7 +5,8 @@
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { inventory } from "../src/inventory.js";
-import { loadRules, scanRules } from "../src/rules.js";
+import { MAX_PATTERN_LINE_LENGTH, loadRules, scanRules } from "../src/rules.js";
+import { yamlKeyValues } from "../src/yamlValues.js";
 import { CLEAN, RULES_DIR, VULNERABLE, cleanup, loadExpected, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("rules-iac");
@@ -51,11 +52,12 @@ describe("IaC fixtures", () => {
     for (const rule of iacRules) expect(rule.id).toMatch(IAC_RULE);
   });
 
-  it("finds nothing but two low-confidence hotspots in the clean IaC fixtures", () => {
+  it("finds nothing but three low-confidence hotspots in the clean IaC fixtures", () => {
     const hits = scanRules(inventory(path.join(CLEAN, "iac")).files, ruleSet, { inlineIgnore: false }).hits.filter(
       (hit) => IAC_RULE.test(hit.rule.id),
     );
     expect(hits.map((hit) => `${hit.file.relPath}:${hit.line} ${hit.rule.id}`).sort()).toEqual([
+      "kubernetes/chart/templates/deployment.yaml:8 k8s-capabilities-not-dropped",
       "kubernetes/pod.yml:31 k8s-secret-in-env",
       "terraform/main.tf:17 tf-sg-open-ssh",
     ]);
@@ -471,6 +473,164 @@ describe("GitHub Actions rules", () => {
           "        run: curl -fsSL https://example.invalid/x.tgz -o x.tgz && sha256sum -c x.sha256",
         ),
       }, /curl/),
+    ).toEqual([]);
+  });
+});
+
+describe("engine points the IaC rules rely on", () => {
+  it("tests a filePattern in the windows of an over-long line instead of failing open", () => {
+    const long = `description: "${"x".repeat(MAX_PATTERN_LINE_LENGTH * 3)}"`;
+    // No apiVersion anywhere: the Kubernetes rules stay off despite the long line.
+    expect(scan({ "cfn/a.yaml": lines(long, "privileged: true") }, /^k8s-/)).toEqual([]);
+    // `apiVersion:` in the middle of a long line is not a line start.
+    expect(scan({ "cfn/b.yaml": lines(`x: ${"y ".repeat(1500)}  apiVersion: v1`, "privileged: true") }, /^k8s-/)).toEqual([]);
+    // A filePattern met only beyond the first window is still found.
+    const rule = (name: string) =>
+      lines(`${"#".repeat(MAX_PATTERN_LINE_LENGTH + 10)} uses: actions/checkout@v4`, "on: pull_request_target", "jobs: {}");
+    expect(scan({ ".github/workflows/w.yml": rule("w") }, /pull-request-target/)).toEqual([
+      ".github/workflows/w.yml:2 gha-pull-request-target",
+    ]);
+  });
+
+  it("compares withinKeys keys case-sensitively", () => {
+    const parsed = yamlKeyValues("Resources:\n  Role: '*'\nrules:\n  - resources: ['*']\n", ["resources"]);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.values.map((value) => `${value.key}=${value.text}`)).toEqual(["resources=*"]);
+  });
+});
+
+describe("review fixes", () => {
+  it("keeps CloudFormation, kind, skaffold and Ansible files out of the Kubernetes rules", () => {
+    expect(
+      scan({
+        "cfn/t.yaml": lines(
+          'AWSTemplateFormatVersion: "2010-09-09"',
+          "Resources:",
+          "  R:",
+          "    Type: AWS::IAM::Role",
+          "    Properties:",
+          "      securityContext: {privileged: true}",
+          "      resources: ['*']",
+        ),
+        "kind/cluster.yaml": lines("kind: Cluster", "apiVersion: kind.x-k8s.io/v1alpha4", "nodes:", "  - role: control-plane", "    extraMounts:", "      - hostPath: /", "        containerPath: /host"),
+        "skaffold.yaml": lines("apiVersion: skaffold/v4beta6", "kind: Config", "deploy:", "  docker:", "    images: [app]", "privileged: true"),
+        "ansible/site.yml": lines("- hosts: all", "  tasks:", "    - k8s:", "        definition:", "          apiVersion: v1", "          spec: {hostNetwork: true}"),
+      }, /^k8s-/),
+    ).toEqual([]);
+  });
+
+  it("does not take a probe path for a mount when a Helm template falls back to lines", () => {
+    expect(
+      scan({
+        "chart/templates/ds.yaml": lines(
+          "apiVersion: apps/v1",
+          "kind: DaemonSet",
+          "metadata: {name: {{ .Release.Name }}}",
+          "spec:",
+          "  template:",
+          "    spec:",
+          "      containers:",
+          "        - livenessProbe:",
+          "            httpGet:",
+          "              path: /",
+          "      volumes:",
+          "        - name: sock",
+          "          hostPath:",
+          "            path: /var/run/docker.sock",
+        ),
+      }, /hostpath/),
+    ).toEqual(["chart/templates/ds.yaml:14 k8s-hostpath-mount"]);
+  });
+
+  it("reads flow-style security contexts", () => {
+    expect(
+      scan({ "k8s/p.yaml": lines("apiVersion: v1", "kind: Pod", "spec:", "  hostNetwork: false", "  securityContext: {runAsUser: 0, allowPrivilegeEscalation: true}") }, /run-as-root|escalation/),
+    ).toEqual(["k8s/p.yaml:5 k8s-allow-privilege-escalation", "k8s/p.yaml:5 k8s-run-as-root"]);
+  });
+
+  it("gates GitHub triggers on the declaration, not on the word", () => {
+    const body = [
+      "jobs:",
+      "  a:",
+      "    if: github.event_name == 'workflow_run' || github.event_name == 'issue_comment'",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "        with:",
+      "          ref: ${{ github.event.pull_request.head.sha }}",
+    ];
+    expect(
+      scan({
+        ".github/workflows/w.yml": lines(
+          "# Reacts to issues: https://github.com/org/repo/issues and pull_request_target docs",
+          "on: [push, pull_request]",
+          ...body,
+        ),
+      }, /gha-(?:untrusted-checkout|missing-permissions|checkout-persist|pull-request-target)/),
+    ).toEqual([]);
+    expect(
+      scan({ ".github/workflows/w.yml": lines("on: {issues: {types: [opened]}, push: {}}", ...body) }, /missing-permissions/),
+    ).toEqual([".github/workflows/w.yml:1 gha-missing-permissions"]);
+  });
+
+  it("does not report an echo of the branch name as a checkout", () => {
+    expect(
+      scan({
+        ".github/workflows/w.yml": lines(
+          "on: pull_request_target",
+          "permissions: {}",
+          "jobs:",
+          "  a:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          '      - run: echo "head is ${{ github.event.pull_request.head.sha }}"',
+          "      - run: git checkout ${{ github.event.pull_request.head.sha }}",
+        ),
+      }, /untrusted-checkout/),
+    ).toEqual([".github/workflows/w.yml:8 gha-untrusted-checkout"]);
+  });
+
+  it("only reports apk --allow-untrusted with an install verb", () => {
+    expect(
+      scan({
+        Dockerfile: lines(
+          "FROM alpine:3.20",
+          "RUN apk index --allow-untrusted -o APKINDEX.tar.gz *.apk",
+          "RUN apk --allow-untrusted add /tmp/x.apk",
+          "USER app",
+        ),
+      }, /unsigned/),
+    ).toEqual(["Dockerfile:3 dockerfile-unsigned-packages"]);
+  });
+
+  it("rates development default passwords lower than other literals", () => {
+    expect(
+      scan({
+        "compose.yaml": lines(
+          "services:",
+          "  db:",
+          "    environment:",
+          "      POSTGRES_PASSWORD: postgres",
+          "      - MYSQL_ROOT_PASSWORD=example",
+          "      ADMIN_PASSWORD: Xk2v9-QpL7zr",
+        ),
+      }, /compose-env/),
+    ).toEqual([
+      "compose.yaml:4 compose-env-dev-secret",
+      "compose.yaml:5 compose-env-dev-secret",
+      "compose.yaml:6 compose-env-literal-secret",
+    ]);
+  });
+
+  it("skips input validation and placeholder credentials in Terraform", () => {
+    expect(
+      scan({
+        "v.tf": lines(
+          '  condition = !contains(var.members, "allUsers")',
+          'secret_key = "EXAMPLE-not-a-key-1234"',
+          'password = "placeholder value"',
+        ),
+      }, /gcp-public|credentials/),
     ).toEqual([]);
   });
 });

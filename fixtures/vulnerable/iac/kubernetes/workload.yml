@@ -41,3 +41,13 @@ spec:
         - name: etc
           hostPath:
             path: /etc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug
+spec:
+  containers:
+    - name: shell
+      image: example/debug:1.0.0
+      securityContext: {privileged: true, runAsUser: 0}

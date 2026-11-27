@@ -5,18 +5,27 @@ definitions:
   EXPR_OPEN: \$\{\{(?:(?!\}\})[^\n]){0,300}?
   # Event fields whose text an outside contributor chooses (GitHub's list of
   # untrusted input, plus discussions).
-  UNTRUSTED_FIELD: (?:github\.head_ref\b|github\.event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.(?:ref|label)|head\.repo\.default_branch)|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|author\.(?:name|email))|commits(?:\.\*|\[[^\]\n]{0,20}\])?\.(?:message|author\.(?:name|email))|pages(?:\.\*|\[[^\]\n]{0,20}\])?\.page_name|workflow_run\.(?:head_branch|head_commit\.message|display_title|pull_requests(?:\.\*|\[[^\]\n]{0,20}\])?\.head\.ref))\b)
+  UNTRUSTED_FIELD: (?:tojson\(\s*github\.event\.(?:pull_request|issue|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run)\s*\)|github\.head_ref\b|github\.event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.(?:ref|label)|head\.repo\.default_branch)|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|(?:author|committer)\.(?:name|email))|commits(?:\.\*|\[[^\]\n]{0,20}\])?\.(?:message|(?:author|committer)\.(?:name|email))|pages(?:\.\*|\[[^\]\n]{0,20}\])?\.page_name|workflow_run\.(?:head_branch|head_commit\.(?:message|(?:author|committer)\.(?:name|email))|display_title|pull_requests(?:\.\*|\[[^\]\n]{0,20}\])?\.head\.ref))\b)
   WORKFLOW: '(?:^|/)\.github/workflows/[^/]+\.ya?ml$'
   # Triggers whose workflow runs with a write token and secrets although the
   # change comes from an outside contributor.
-  PRIVILEGED_TRIGGER: '\b(?:pull_request_target|workflow_run|issue_comment)\b'
+  # Expressions that name the contributor's commit, branch or fork.
+  HEAD_CODE: '(?:[^}\n]{0,200}?(?:github\.event\.pull_request\.(?:head\.(?:sha|ref|repo\.full_name)|merge_commit_sha)|github\.head_ref|github\.event\.workflow_run\.(?:head_sha|head_branch|head_repository\.full_name))\b(?!\s*[=!]=))'
+  # The trigger declaration (`on: x`, `on: [a, x]`, `on: {x: ...}`, an `x:`
+  # key or `- x` item), not the word in a comment, URL or `if:` condition.
+  ON_OPEN: '^(?:["\x27]?on["\x27]?\s*:[^#\n]{0,200}?|\s+(?:-\s*)?)["\x27]?'
+  ON_CLOSE: '["\x27]?\s*(?::|,|\]|\}|#|$)'
+  PRIVILEGED_TRIGGER: '{{ON_OPEN}}(?:pull_request_target|workflow_run|issue_comment){{ON_CLOSE}}'
   PIPE_TO_SHELL: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+){0,3})?(?:(?:ba|z|da|k|a)?sh|python[23]?(?!\s+-c\b))\b(?![.\w-])|\b(?:ba|z)?sh\s+(?:-c\s+)?["\x27]?(?:<\(|\$\()\s*(?:curl|wget)\b'
 rules:
   - id: gha-pull-request-target
     title: GitHub Actions uses pull_request_target with checkout
     title_zh: GitHub Actions 使用 pull_request_target 并检出代码
-    severity: high
-    confidence: high
+    # Checking out the base branch is the documented safe use; checking out
+    # the contributor's code is gha-untrusted-checkout (critical).
+    severity: medium
+    confidence: low
+    kind: hotspot
     cwe: CWE-829
     owasp: A08:2021
     languages:
@@ -24,10 +33,10 @@ rules:
     # The trigger itself (`on: pull_request_target`, `on: [push,
     # pull_request_target]`, a `pull_request_target:` key or list item), not
     # a mention in an `if:` condition or a comment.
-    pattern: '^(?:["\x27]?on["\x27]?\s*:[^#\n]{0,200}?|\s+(?:-\s*)?)["\x27]?pull_request_target["\x27]?\s*(?::|,|\]|#|$)'
+    pattern: '{{ON_OPEN}}pull_request_target{{ON_CLOSE}}'
     pathInclude: '{{WORKFLOW}}'
     filePattern: uses:\s*actions/checkout
-    message: pull_request_target runs in the base repository context; checking out untrusted PR code can leak secrets.
+    message: pull_request_target runs in the base repository context with its secrets; check that the checkout is the base branch and that no PR code is executed.
     message_zh: pull_request_target 在基仓库上下文运行，结合 checkout 不可信 PR 代码可导致密钥泄露。
     remediation: Use pull_request instead; if pull_request_target is required, check out only the base branch and never execute PR code.
     remediation_zh: 改用 pull_request；如必须使用 pull_request_target，只检出基分支并避免执行 PR 代码。
@@ -155,7 +164,7 @@ rules:
   - id: gha-github-env-untrusted-var
     title: GitHub Actions writes a shell variable to GITHUB_ENV in a workflow that reads untrusted fields
     title_zh: 读取不可信字段的 GitHub Actions 工作流把 shell 变量写入 GITHUB_ENV
-    severity: high
+    severity: medium
     confidence: low
     kind: hotspot
     cwe: CWE-94
@@ -182,8 +191,12 @@ rules:
     # the contributor's head commit, branch or fork, in a workflow started by
     # pull_request_target, workflow_run or issue_comment, which run with the
     # base repository's secrets and a write token.
-    withinKeys: [ref, repository]
-    pattern: '\$\{\{[^}\n]{0,200}?(?:github\.event\.pull_request\.head\.(?:sha|ref|repo\.full_name)|github\.head_ref|github\.event\.workflow_run\.(?:head_sha|head_branch|head_repository\.full_name))\b(?!\s*[=!]=)|refs/pull/\$\{\{'
+    # In run: also `gh pr checkout` and `git fetch ... pull/N/head`.
+    withinKeys: [ref, repository, run]
+    # The expression forms are anchored at the start of the value (a ref:
+    # or repository: input); inside a run script only git and gh commands
+    # count, so an echo of the branch name is not taken for a checkout.
+    pattern: '^\s*(?:refs/pull/\$\{\{|\$\{\{\s*(?:{{HEAD_CODE}}|format\(\s*\x27refs/pull/))|\bgit\s+(?:checkout|switch|fetch)\b[^\n]{0,200}?\$\{\{\s*{{HEAD_CODE}}|\bgh\s+pr\s+checkout\b|\bgit\s+fetch\b[^\n]{0,200}?\bpull/(?:\$\{\{[^}\n]{0,100}\}\}|[^\s/]{1,80})/(?:head|merge)\b'
     filePattern: '{{PRIVILEGED_TRIGGER}}'
     pathInclude: '{{WORKFLOW}}'
     message: The workflow runs with the base repository's secrets and a write token but checks out the contributor's code; any build script, test or package hook in that code then runs with those privileges ("pwn request").
@@ -213,7 +226,9 @@ rules:
   - id: gha-unpinned-action
     title: GitHub Actions uses a third-party action without a commit SHA
     title_zh: GitHub Actions 使用未固定到提交 SHA 的第三方 action
-    severity: medium
+    # Always true when it matches (a tag or branch can move), but it takes a
+    # compromise of the upstream repository to matter: low severity.
+    severity: low
     confidence: medium
     cwe: CWE-829
     owasp: A08:2021
@@ -253,7 +268,7 @@ rules:
     owasp: A01:2021
     languages: [yaml]
     pattern: '^["\x27]?on["\x27]?\s*:'
-    filePattern: '\b(?:pull_request_target|workflow_run|issue_comment|issues|discussion|discussion_comment|pull_request_review_comment)\b'
+    filePattern: '{{ON_OPEN}}(?:pull_request_target|workflow_run|issue_comment|issues|discussion|discussion_comment|pull_request_review_comment){{ON_CLOSE}}'
     fileAbsentPattern: '^\s*permissions\s*:'
     pathInclude: '{{WORKFLOW}}'
     message: The workflow reacts to events that outside users trigger and sets no permissions, so its token has the repository default, which may be read-write.
@@ -286,7 +301,7 @@ rules:
     languages: [yaml]
     withinKeys: [runs-on]
     pattern: '\bself-hosted\b'
-    filePattern: '\bpull_request(?:_target)?\b(?!\.)'
+    filePattern: '{{ON_OPEN}}pull_request(?:_target)?{{ON_CLOSE}}'
     pathInclude: '{{WORKFLOW}}'
     message: Pull requests from forks can run code on a self-hosted runner, which usually persists between jobs and sits inside the network. Check that the repository is private or that fork runs need approval.
     message_zh: 来自 fork 的 PR 可以在自托管 runner 上运行代码，而 runner 通常在作业之间持久存在并位于内网。请确认仓库为私有或 fork 运行需要审批。
@@ -325,8 +340,8 @@ rules:
   - id: gha-curl-pipe-shell
     title: GitHub Actions pipes a download into a shell
     title_zh: GitHub Actions 将下载内容直接交给 shell 执行
-    severity: medium
-    confidence: medium
+    severity: high
+    confidence: high
     cwe: CWE-829
     owasp: A08:2021
     languages: [yaml]
@@ -362,7 +377,7 @@ rules:
     languages: [yaml]
     withinKeys: [uses]
     pattern: '^\s*(?:actions/download-artifact|dawidd6/action-download-artifact)@'
-    filePattern: '\bworkflow_run\b'
+    filePattern: '{{ON_OPEN}}workflow_run{{ON_CLOSE}}'
     pathInclude: '{{WORKFLOW}}'
     message: Artifacts of the triggering run can come from a fork's pull request. Check that this privileged workflow treats them as data and never executes, sources or extracts them over its workspace.
     message_zh: 触发运行的 artifact 可能来自 fork 的 PR。请确认该特权工作流只把它们当作数据，绝不执行、source 或解压覆盖其工作区。
