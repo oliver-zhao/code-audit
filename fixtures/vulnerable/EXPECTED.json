@@ -1641,14 +1641,21 @@
     },
     {
       "file": "javascript/electron-main.js",
-      "line": 13,
+      "line": 11,
+      "ruleId": "js-electron-node-integration-frames",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 14,
       "ruleId": "js-electron-open-external",
       "language": "javascript",
       "kind": "hotspot"
     },
     {
       "file": "javascript/electron-main.js",
-      "line": 17,
+      "line": 18,
       "ruleId": "js-graphql-introspection",
       "language": "javascript",
       "kind": "hotspot"
@@ -1726,7 +1733,7 @@
     {
       "file": "javascript/injection.js",
       "line": 29,
-      "ruleId": "js-command-injection",
+      "ruleId": "js-command-injection-request",
       "language": "javascript",
       "kind": "finding"
     },
@@ -1768,9 +1775,9 @@
     {
       "file": "javascript/injection.js",
       "line": 42,
-      "ruleId": "js-sql-injection",
+      "ruleId": "js-sql-string-build",
       "language": "javascript",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "javascript/injection.js",
@@ -1852,9 +1859,9 @@
     {
       "file": "javascript/web.js",
       "line": 25,
-      "ruleId": "js-path-traversal",
+      "ruleId": "js-path-api",
       "language": "javascript",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "javascript/web.js",
@@ -4205,13 +4212,6 @@
       "file": "api/javascript/app.js",
       "line": 7,
       "ruleId": "js-exec-api",
-      "language": "javascript",
-      "kind": "hotspot"
-    },
-    {
-      "file": "api/javascript/app.js",
-      "line": 8,
-      "ruleId": "js-path-api",
       "language": "javascript",
       "kind": "hotspot"
     },
