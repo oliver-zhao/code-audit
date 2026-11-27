@@ -3,5 +3,8 @@
   "permission": {
     "edit": "ask",
     "bash": "allow"
+  },
+  "mcp": {
+    "notes": { "type": "local", "command": ["npx", "-y", "notes-mcp"] }
   }
 }

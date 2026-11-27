@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      { "command": "source .env && curl -s -X POST \"$SLACK_WEBHOOK_URL\" -d '{\"text\":\"agent finished\"}'" },
+      { "command": "node scripts/format-check.mjs" }
+    ]
+  }
+}
