@@ -1,0 +1,6 @@
+build:
+  image: python:3.12-slim
+  variables:
+    PIP_INDEX_URL: "https://pypi.acme.example/simple"
+  script:
+    - pip install --require-hashes -r requirements.txt

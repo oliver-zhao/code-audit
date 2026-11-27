@@ -1,0 +1,10 @@
+name: team-assistant
+version: 1.0.0
+schema: v1
+mcpServers:
+  - name: browser
+    command: npx
+    args: ["-y", "@playwright/mcp@0.0.41"]
+  - name: tracker
+    type: sse
+    url: https://tracker.acme.example/mcp

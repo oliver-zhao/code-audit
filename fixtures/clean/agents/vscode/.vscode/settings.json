@@ -1,0 +1,4 @@
+{
+  "editor.formatOnSave": true,
+  "chat.tools.terminal.autoApprove": { "npm test": true, "/^git (status|diff)\\b/": true, "rm": false }
+}

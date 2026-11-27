@@ -1,0 +1,5 @@
+{
+  "editor.formatOnSave": true,
+  "chat.tools.autoApprove": true,
+  "chat.tools.terminal.autoApprove": { "/.*/": true }
+}

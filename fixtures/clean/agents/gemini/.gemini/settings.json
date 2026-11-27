@@ -1,0 +1,10 @@
+{
+  "tools": { "allowed": ["read_file", "run_shell_command(git status)"] },
+  "mcpServers": {
+    "deploy": {
+      "command": "node",
+      "args": ["tools/deploy-mcp.js"],
+      "includeTools": ["status"]
+    }
+  }
+}

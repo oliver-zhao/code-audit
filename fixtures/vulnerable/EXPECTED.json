@@ -3961,7 +3961,7 @@
       "line": 21,
       "ruleId": "agent-mcp-unpinned-npx",
       "language": "json",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "agents/mcp-supply.json",
@@ -3973,7 +3973,7 @@
     {
       "file": "agents/mcp-supply.json",
       "line": 18,
-      "ruleId": "agent-hook-network-exec",
+      "ruleId": "agent-mcp-remote-script",
       "language": "json",
       "kind": "finding"
     },
@@ -4367,6 +4367,489 @@
       "line": 7,
       "ruleId": "dep-missing-lockfile",
       "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/aider/.aider.conf.yml",
+      "line": 3,
+      "ruleId": "agent-host-auto-approve",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/aider/.aider.conf.yml",
+      "line": 4,
+      "ruleId": "agent-mcp-inline-secret",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/agents/helper.md",
+      "line": 4,
+      "ruleId": "agent-agent-all-tools",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/.claude/commands/deploy.md",
+      "line": 4,
+      "ruleId": "agent-skill-unrestricted-bash",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/.claude/commands/deploy.md",
+      "line": 9,
+      "ruleId": "agent-skill-shell-arguments",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 4,
+      "ruleId": "agent-claude-bypass-permissions",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 7,
+      "ruleId": "agent-claude-allow-unrestricted-shell",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 9,
+      "ruleId": "agent-claude-allow-dangerous-command",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 10,
+      "ruleId": "agent-claude-allow-dangerous-command",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 13,
+      "ruleId": "agent-claude-enable-all-mcp",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 15,
+      "ruleId": "agent-claude-api-base-url",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 21,
+      "ruleId": "agent-hook-network-exec",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 22,
+      "ruleId": "agent-hook-secret-exfil",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.json",
+      "line": 23,
+      "ruleId": "agent-hook-persistence",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/settings.local.json",
+      "line": 3,
+      "ruleId": "agent-claude-allow-dangerous-command",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/.claude/skills/release/SKILL.md",
+      "line": 4,
+      "ruleId": "agent-skill-unrestricted-bash",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/.claude/skills/release/SKILL.md",
+      "line": 8,
+      "ruleId": "agent-exfil-env",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 4,
+      "ruleId": "prompt-injection-hidden-unicode",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 5,
+      "ruleId": "prompt-injection-html-comment",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 5,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 6,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 7,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 8,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 9,
+      "ruleId": "prompt-injection-decode-exec",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 10,
+      "ruleId": "prompt-injection-auto-approve",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 11,
+      "ruleId": "prompt-injection-paste-url",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 12,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 13,
+      "ruleId": "prompt-injection-hidden-unicode",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/claude/CLAUDE.md",
+      "line": 14,
+      "ruleId": "prompt-injection-hidden-unicode",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/continue/.continue/config.yaml",
+      "line": 7,
+      "ruleId": "agent-mcp-unpinned-npx",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/continue/.continue/config.yaml",
+      "line": 10,
+      "ruleId": "agent-mcp-cleartext-http",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/copilot/.github/copilot-instructions.md",
+      "line": 3,
+      "ruleId": "prompt-injection-hidden-unicode",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/copilot/.github/instructions/review.instructions.md",
+      "line": 5,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/copilot/.github/instructions/review.instructions.md",
+      "line": 6,
+      "ruleId": "prompt-injection-ignore",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/cli.json",
+      "line": 3,
+      "ruleId": "agent-claude-allow-unrestricted-shell",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 3,
+      "ruleId": "agent-mcp-unpinned-npx",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 4,
+      "ruleId": "agent-mcp-unpinned-npx",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 5,
+      "ruleId": "agent-mcp-git-source",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 6,
+      "ruleId": "agent-mcp-git-source",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 9,
+      "ruleId": "agent-mcp-docker-privileged",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 13,
+      "ruleId": "agent-mcp-filesystem-root",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 16,
+      "ruleId": "agent-mcp-cleartext-http",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/cursor/.cursor/mcp.json",
+      "line": 17,
+      "ruleId": "agent-mcp-inline-secret",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/gemini/.gemini/settings.json",
+      "line": 2,
+      "ruleId": "agent-host-auto-approve",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/gemini/.gemini/settings.json",
+      "line": 7,
+      "ruleId": "agent-gemini-mcp-trust",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/mcp-supply.json",
+      "line": 9,
+      "ruleId": "agent-mcp-unpinned-npx",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/opencode/opencode.json",
+      "line": 5,
+      "ruleId": "agent-opencode-allow-all",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/SKILL-bad.md",
+      "line": 5,
+      "ruleId": "prompt-injection-exfil",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/SKILL-bad.md",
+      "line": 5,
+      "ruleId": "agent-exfil-env",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/vscode/.vscode/settings.json",
+      "line": 3,
+      "ruleId": "agent-host-auto-approve",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/vscode/.vscode/settings.json",
+      "line": 4,
+      "ruleId": "agent-host-auto-approve",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/.gitlab-ci.yml",
+      "line": 4,
+      "ruleId": "dep-pip-insecure-index",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/.gitlab-ci.yml",
+      "line": 5,
+      "ruleId": "dep-go-checksum-off",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/.yarnrc.yml",
+      "line": 2,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/.yarnrc.yml",
+      "line": 3,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/.yarnrc.yml",
+      "line": 4,
+      "ruleId": "dep-registry-token-literal",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 5,
+      "ruleId": "dep-install-script-network",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 6,
+      "ruleId": "dep-curl-pipe-shell",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 10,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 11,
+      "ruleId": "dep-npm-git-source",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 12,
+      "ruleId": "dep-npm-git-source",
+      "language": "json",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/npm/package.json",
+      "line": 15,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "json",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 5,
+      "ruleId": "dep-pip-insecure-index",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 6,
+      "ruleId": "dep-pip-extra-index-url",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 7,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 11,
+      "ruleId": "dep-go-checksum-off",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 12,
+      "ruleId": "dep-go-checksum-off",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 14,
+      "ruleId": "dep-npm-insecure-transport",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "deps/README.md",
+      "line": 16,
+      "ruleId": "dep-curl-pipe-shell",
+      "language": "markdown",
       "kind": "hotspot"
     }
   ],

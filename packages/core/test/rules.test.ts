@@ -1098,6 +1098,7 @@ describe("evidence of credential rules", () => {
       "cs-jwt-hardcoded-key",
       "dep-http-install",
       "dep-pip-trusted-host",
+      "dep-registry-token-literal",
       "dockerfile-secret-env",
       "go-hardcoded-crypto-key",
       "go-jwt-hardcoded-secret",
