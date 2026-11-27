@@ -11,3 +11,6 @@ packages/*/assets/
 packages/*/LICENSE
 packages/*/NOTICE
 *.tgz
+
+# Local-only development records (plan, stage reports, task briefs); never pushed
+/_private/

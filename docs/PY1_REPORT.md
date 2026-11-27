@@ -1,6 +1,6 @@
 # PY1 report: stronger Python support
 
-Task brief: `tasks/PY1.md`. This stage was started by the OpenCode implementer (model `ernie-5.5-free`), which stopped after step 4 when the free model's daily request limit was reached. Its rules passed their own fixtures but were unusable on real code (63 Python findings at confidence ≥ medium on the flask repository, almost all false). The work was then taken over on a macOS workstation, reworked by four engineers working on disjoint files, and verified on both macOS and Linux.
+This stage was started by the OpenCode implementer (model `ernie-5.5-free`), which stopped after step 4 when the free model's daily request limit was reached. Its rules passed their own fixtures but were unusable on real code (63 Python findings at confidence ≥ medium on the flask repository, almost all false). The work was then taken over on a macOS workstation, reworked by four engineers working on disjoint files, and verified on both macOS and Linux.
 
 ## What changed
 
