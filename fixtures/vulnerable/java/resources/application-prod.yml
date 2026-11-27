@@ -1,0 +1,10 @@
+spring:
+  h2:
+    console:
+      enabled: true
+      path: /h2
+  data:
+    redis:
+      password: Fixture-Only-Redis-Pass-2026
+  mail:
+    password: ENC(FixtureOnlyEncryptedValue)

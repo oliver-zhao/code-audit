@@ -72,4 +72,14 @@ public class RequestFlows {
         String target = file;
         return new File(target);
     }
+
+    @GetMapping("/bulk")
+    public File bulk(@RequestParam java.util.Map<String, String> params) {
+        return new File(params.get("file"));
+    }
+
+    public void tool(HttpServletRequest request) throws Exception {
+        String tool = request.getParameterMap().get("tool")[0];
+        new ProcessBuilder(tool).start();
+    }
 }

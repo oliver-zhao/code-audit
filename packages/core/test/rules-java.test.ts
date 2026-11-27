@@ -347,3 +347,117 @@ describe("Spring Boot configuration rules", () => {
     ]);
   });
 });
+
+describe("review fixes (fa1c8ab follow-up)", () => {
+  it("1: does not flag Spring Security's allowlisting SecurityJackson2Modules.enableDefaultTyping", () => {
+    expect(stmt("SecurityJackson2Modules.enableDefaultTyping(mapper);")).toEqual([]);
+    expect(stmt("mapper.enableDefaultTyping();")).toEqual(["3:java-jackson-default-typing"]);
+  });
+
+  it("2: path traversal uses path-like request values and stays inside the call", () => {
+    expect(stmt("Files.copy(request.getInputStream(), target);")).toEqual([]);
+    expect(stmt('if (new File(baseDir, "x").exists() && request.getParameter("a") != null) {')).toEqual(["3:java-file-api"]);
+    expect(stmt("URI next = uri.resolve(request.getRequestURI());")).toEqual([]);
+    expect(stmt('Files.write(target, request.getParameter("body").getBytes());')).toEqual([]);
+    expect(stmt('new File(base, URLDecoder.decode(request.getParameter("f"), "UTF-8"));')).toEqual([
+      "3:java-path-traversal",
+    ]);
+    expect(stmt('Files.readAllBytes(Paths.get(root, request.getParameter("doc")));')).toEqual(["3:java-path-traversal"]);
+  });
+
+  it("2: request rules do not run past the closing parenthesis of their sink", () => {
+    expect(stmt('rt.exec(cmd); audit(request.getParameter("u"));')).toEqual(["3:java-exec-api"]);
+    expect(stmt('response.getWriter().write(page()); log(request.getParameter("q"));')).toEqual([]);
+    expect(stmt('Class.forName(DRIVER).newInstance(); use(request.getParameter("t"));')).toEqual([]);
+    expect(
+      stmt('LOG.info("start"); handle(request.getParameter("u"));', "src/main/java/App.java", [
+        "import org.apache.logging.log4j.Logger;",
+      ]),
+    ).toEqual([]);
+    expect(
+      stmt('engine.eval(script); bind(request.getParameter("x"));', "src/main/java/App.java", [
+        "import javax.script.ScriptEngine;",
+      ]),
+    ).toEqual(["3:java-expression-eval-api"]);
+  });
+
+  it("3: expression injection needs an expression or script engine in the file", () => {
+    expect(stmt('policy.evaluate(request.getParameter("role"));')).toEqual([]);
+    expect(stmt('rules.eval(request.getParameter("x"));')).toEqual([]);
+    expect(
+      stmt('engine.eval(request.getParameter("x"));', "src/main/java/App.java", ["import javax.script.ScriptEngine;"]),
+    ).toEqual(["3:java-expression-injection-request"]);
+  });
+
+  it("4: command concatenation must be inside the ProcessBuilder / exec call", () => {
+    expect(stmt("new ProcessBuilder(cmd).directory(new File(base + sub)).start();")).toEqual([
+      "3:java-exec-api",
+      "3:java-file-api",
+    ]);
+    expect(stmt('new ProcessBuilder("tar", "-xf", archive + suffix).start();')).toEqual(["3:java-command-injection"]);
+  });
+
+  it("5: service passwords in Spring config, but not Jasypt ENC() or Spring Cloud {cipher}", () => {
+    const conf = (value: string): string[] =>
+      hits("src/main/resources/application.yml", ["spring:", "  rabbitmq:", `    password: ${value}`]);
+    expect(conf("Real-Looking-Rabbit-1")).toEqual(["3:java-spring-datasource-password"]);
+    expect(conf("ENC(AbCdEfGh123456)")).toEqual([]);
+    expect(conf("'{cipher}AbCdEf0123'")).toEqual([]);
+    expect(conf("${RABBIT_PASSWORD}")).toEqual([]);
+    expect(hits("src/main/resources/application.yml", ["server:", "  ssl:", "    key-store-password: changeit"])).toEqual([]);
+  });
+
+  it("6: jjwt 0.12 verifyWith/decryptWith/keyLocator parsers are safe unless unsecured()", () => {
+    expect(stmt("Jwts.parser().verifyWith(key).build().parse(token);")).toEqual([]);
+    expect(stmt("Jwts.parser().keyLocator(locator).build().parse(token);")).toEqual([]);
+    expect(stmt("Jwts.parser().decryptWith(key).build().parse(token);")).toEqual([]);
+    expect(stmt("Jwts.parser().unsecured().verifyWith(key).build().parse(token);")).toEqual([
+      "3:java-jwt-unsigned-parse",
+    ]);
+    expect(stmt("Jwts.parser().setSigningKey(KEY).parse(token);")).toEqual(["3:java-jwt-unsigned-parse"]);
+  });
+
+  it("7: finds the H2 console in the nested YAML form, not when disabled", () => {
+    const nested = (value: string): string[] =>
+      hits("src/main/resources/application.yml", ["spring:", "  h2:", "    console:", `      enabled: ${value}`, "      path: /h2"]);
+    expect(nested("true")).toEqual(["4:java-spring-h2-console"]);
+    expect(nested("false")).toEqual([]);
+    expect(hits("src/main/resources/application.yml", ["spring:", "  h2.console.enabled: true"])).toEqual([
+      "2:java-spring-h2-console",
+    ]);
+  });
+
+  it.todo("7: application*.properties variants of the Spring Boot rules (needs a properties language in the engine)");
+
+  it("8: MyBatis ${} in the array form and dynamic SQL fallbacks", () => {
+    expect(stmt('@Select({"<script>", "SELECT * FROM u", "WHERE n = \'${name}\'", "</script>"})')).toEqual([
+      "3:java-mybatis-dollar-substitution",
+    ]);
+    expect(stmt('@Select({"<script>", "SELECT * FROM u WHERE n = #{name}", "</script>"})')).toEqual([]);
+    expect(stmt("jdbcTemplate.queryForList(sql);")).toEqual(["3:java-sql-api"]);
+    expect(stmt("em.createQuery(jpql);")).toEqual(["3:java-sql-api"]);
+    expect(stmt("em.createQuery(criteriaQuery);")).toEqual([]);
+    expect(stmt("conn.createStatement().execute(sql);")).toEqual(["3:java-sql-api"]);
+    expect(stmt('jdbcTemplate.queryForObject("SELECT 1", Integer.class);')).toEqual([]);
+  });
+
+  it("9: only SQL-aware escaping removes a SQL finding", () => {
+    expect(stmt('st.executeQuery("SELECT * FROM t WHERE a = \'" + StringEscapeUtils.escapeHtml4(a) + "\'");')).toEqual([
+      "3:java-sql-injection",
+    ]);
+    expect(stmt('st.executeQuery("SELECT * FROM t WHERE a = \'" + ESAPI.encoder().encodeForSQL(codec, a) + "\'");')).toEqual([]);
+  });
+
+  it("calibration: SQL concatenation at the sink is high confidence; dev profiles skip actuator", () => {
+    expect(javaRules.find((rule) => rule.id === "java-sql-injection")?.confidence).toBe("high");
+    expect(
+      hits("src/main/resources/application-dev.yml", [
+        "management:",
+        "  endpoints:",
+        "    web:",
+        "      exposure:",
+        '        include: "*"',
+      ]),
+    ).toEqual([]);
+  });
+});

@@ -64,5 +64,14 @@ public class SqlRepository {
 
         @Update({"UPDATE users SET role = #{role} ORDER BY ${sort}"})
         int updateRole(String role, String sort);
+
+        @Select({"<script>", "SELECT * FROM users", "WHERE team = '${team}'", "</script>"})
+        List<Object> findByTeam(String team);
+    }
+
+    public void adHoc(String sql, String jpql) throws Exception {
+        connection.createStatement().execute(sql);
+        jdbcTemplate.queryForList(sql);
+        entityManager.createQuery(jpql);
     }
 }
