@@ -35,6 +35,7 @@ public class CryptoUtil {
 
     public Object jwt(String token, SecretKey signingKey) {
         Object claims = Jwts.parserBuilder().setSigningKey(signingKey).build().parseClaimsJws(token);
+        Object modern = Jwts.parser().verifyWith(signingKey).build().parse(token);
         Object verified = JWT.require(Algorithm.HMAC256(signingKey.getEncoded())).build().verify(token);
         return claims;
     }

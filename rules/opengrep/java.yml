@@ -13,7 +13,8 @@
 #   body stream / reader, path info);
 # - parameters of Spring handler methods annotated @RequestParam,
 #   @PathVariable, @RequestBody, @RequestHeader or @CookieValue.
-# Values looked up in a map (ALLOWED.get(value); not Paths.get), numbers parsed from the
+# Values looked up in a constant or allowlist map (ALLOWED.get(value),
+# allowedHosts.get(value); not Paths.get), numbers parsed from the
 # value and FilenameUtils.getName(value) are treated as safe.
 # `taint_intrafile: true` follows values through helper methods of the same
 # file.
@@ -81,6 +82,12 @@ rules:
               - pattern: $MAP.getOrDefault($KEY, $DEFAULT)
           - pattern-not: Paths.get(...)
           - pattern-not: java.nio.file.Paths.get(...)
+          # Only lookups in a constant / allowlist map count: a request
+          # parameter map (@RequestParam Map, getParameterMap()) or a List
+          # still holds client data.
+          - metavariable-regex:
+              metavariable: $MAP
+              regex: ^([A-Z][A-Z0-9_]*|.*([Aa]llow|ALLOW|[Ww]hitelist|WHITELIST|[Mm]apping|MAPPING).*)$
       - pattern-either:
           - pattern: Integer.parseInt(...)
           - pattern: Long.parseLong(...)

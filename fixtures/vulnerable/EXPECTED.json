@@ -472,6 +472,13 @@
     },
     {
       "file": "java/RequestFlows.java",
+      "line": 55,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
       "line": 61,
       "ruleId": "java-expression-eval-api",
       "language": "java",
@@ -486,8 +493,29 @@
     },
     {
       "file": "java/RequestFlows.java",
+      "line": 67,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
       "line": 73,
       "ruleId": "java-file-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 78,
+      "ruleId": "java-file-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 83,
+      "ruleId": "java-exec-api",
       "language": "java",
       "kind": "hotspot"
     },
@@ -632,6 +660,34 @@
       "kind": "finding"
     },
     {
+      "file": "java/SqlRepository.java",
+      "line": 68,
+      "ruleId": "java-mybatis-dollar-substitution",
+      "language": "java",
+      "kind": "finding"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 73,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 74,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
+      "file": "java/SqlRepository.java",
+      "line": 75,
+      "ruleId": "java-sql-api",
+      "language": "java",
+      "kind": "hotspot"
+    },
+    {
       "file": "java/UploadController.java",
       "line": 18,
       "ruleId": "java-upload-filename-path",
@@ -756,6 +812,20 @@
       "ruleId": "java-jackson-class-type-info",
       "language": "java",
       "kind": "hotspot"
+    },
+    {
+      "file": "java/resources/application-prod.yml",
+      "line": 4,
+      "ruleId": "java-spring-h2-console",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "java/resources/application-prod.yml",
+      "line": 8,
+      "ruleId": "java-spring-datasource-password",
+      "language": "yaml",
+      "kind": "finding"
     },
     {
       "file": "java/resources/application.yml",
@@ -2206,6 +2276,18 @@
       "file": "java/RequestFlows.java",
       "line": 73,
       "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 78,
+      "ruleId": "java-opengrep-request-path",
+      "confidence": "high"
+    },
+    {
+      "file": "java/RequestFlows.java",
+      "line": 83,
+      "ruleId": "java-opengrep-request-command",
       "confidence": "high"
     },
     {

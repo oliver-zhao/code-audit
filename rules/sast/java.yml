@@ -44,6 +44,15 @@ definitions:
   # or inside SQL quotes. A concatenation here inserts a value; one after
   # FROM / JOIN / ORDER BY inserts an identifier (hotspot only).
   SQLVALPOS: '(?:[=<>]\s?\x27?%?|\x27%?|\b(?:LIKE|like)\s\x27?%?|\b(?:IN|in)\s?\(\s?\x27?)'
+  # SQL-aware escaping (an HTML or URL encoder does not make SQL safe).
+  SQLESCAPED: '(?:encodeForSQL|escapeSql|escapeSQL)\s*\('
+  # A gap inside the argument list of the call whose "(" precedes it: plain
+  # characters, balanced (...) groups and the opening "(" of a nested call,
+  # but never the ")" that closes the call itself, so a match cannot run on
+  # into a following call (new File(dir, "x").exists() && request...).
+  INARG: '(?:[^()\n;]|\([^()\n;]{0,200}\)|\((?![^()\n;]{0,200}\))){0,300}?'
+  # The same, limited to the first argument (no top-level comma).
+  FIRSTARG: '(?:[^(),\n;]|\([^()\n;]{0,200}\)|\((?![^()\n;]{0,200}\))){0,300}?'
   # Escaping helpers that make a concatenated value safe for its context.
   ESCAPED: '(?:[eE]scape\w{0,30}|[eE]ncode\w{0,30}|[sS]anitiz\w{0,30}|ESAPI)\s*\('
   # The first argument of a call is not a single string literal (and not empty).
@@ -64,7 +73,7 @@ rules:
     flags: ''
     pathExclude: '{{TESTPATH}}'
     pattern: '{{SQLSINK}}\s*{{SQLSTART}}{{SQLTAIL}}"\s*\+\s*(?:[\w.]{1,80}\(\s*){0,3}{{REQ}}'
-    notPattern: '{{ESCAPED}}'
+    notPattern: '{{SQLESCAPED}}'
     group: java-sql
     message: A request parameter is concatenated into SQL text that is passed to JDBC, JdbcTemplate or JPA in the same statement (SQL injection).
     message_zh: 请求参数被直接拼接进传给 JDBC、JdbcTemplate 或 JPA 的 SQL 文本（SQL 注入）。
@@ -73,15 +82,15 @@ rules:
   - id: java-sql-injection
     title: Java SQL statement built with string concatenation
     title_zh: Java SQL 语句通过字符串拼接构造
-    severity: critical
-    confidence: medium
+    severity: high
+    confidence: high
     cwe: CWE-89
     owasp: A03:2021
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
     pattern: '{{SQLSINK}}\s*(?:{{SQLSTART}}{{SQLTAIL}}{{SQLVALPOS}}{{DYNCONCAT}}|String\.format\s*\(\s*{{SQLSTART}}[^"\n]{0,600}{{SQLVALPOS}}%s)'
-    notPattern: '{{ESCAPED}}'
+    notPattern: '{{SQLESCAPED}}'
     group: java-sql
     message: SQL text passed to JDBC, JdbcTemplate or JPA/Hibernate is built by concatenating or formatting a run-time value into a value position (after =, LIKE, IN or inside quotes).
     message_zh: 传给 JDBC、JdbcTemplate 或 JPA/Hibernate 的 SQL 文本在值的位置（=、LIKE、IN 之后或引号内）拼接或格式化了运行时值。
@@ -101,7 +110,7 @@ rules:
     flags: ''
     pathExclude: '{{TESTPATH}}'
     pattern: '{{SQLSTART}}{{SQLTAIL}}(?:[=<>(,]\s?|\b(?:LIKE|like)\s)\x27%?{{DYNCONCAT}}'
-    notPattern: '{{ESCAPED}}'
+    notPattern: '{{SQLESCAPED}}'
     group: java-sql
     message: A run-time value is spliced between SQL quotes ('" + value + "') in a comparison, LIKE, IN or VALUES list of a SQL statement; a quote in the value changes the statement.
     message_zh: 运行时值被拼接在 SQL 语句比较、LIKE、IN 或 VALUES 列表的引号之间（'" + value + "'）；值中的引号会改变语句结构。
@@ -119,7 +128,7 @@ rules:
     flags: ''
     pathExclude: '{{TESTPATH}}'
     pattern: '{{SQLSTART}}{{SQLTAIL}}{{DYNCONCAT}}'
-    notPattern: '{{ESCAPED}}'
+    notPattern: '{{SQLESCAPED}}'
     group: java-sql
     message: SQL text is concatenated with a run-time value (often a table or column name); confirm the value cannot come from a user.
     message_zh: SQL 文本与运行时值拼接（常见于表名或列名）；需确认该值不可能来自用户。
@@ -136,7 +145,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.(?:executeQuery|executeUpdate|executeLargeUpdate|addBatch|prepareStatement|prepareCall|createNativeQuery|createSQLQuery)\s*\({{NONLIT}}(?!\s*")|\b(?:st|stmt|statement|s)\.execute\s*\({{NONLIT}}(?!\s*")'
+    pattern: '\.(?:executeQuery|executeUpdate|executeLargeUpdate|addBatch|prepareStatement|prepareCall|createNativeQuery|createSQLQuery)\s*\({{NONLIT}}(?!\s*")|\b(?:st|stmt|statement|s)\.execute\s*\({{NONLIT}}(?!\s*")|\bcreateStatement\s*\(\s*\)\s*\.execute\w{0,12}\s*\({{NONLIT}}(?!\s*")|\b\w{0,40}(?:[jJ]dbc|JDBC|[tT]emplate)\w{0,20}\s*\.(?:query\w{0,12}|update|batchUpdate|execute)\s*\({{NONLIT}}(?!\s*")(?![\w.]{1,80}\.class\b)|\b(?:em|entityManager|\w{1,40}EntityManager|session|\w{1,40}Session)\s*\.(?:createQuery|createSelectionQuery|createMutationQuery)\s*\(\s*\w{0,30}(?:[jJ]pql|JPQL|[hH]ql|HQL|[sS]ql|SQL|[qQ]uery(?:String|Str|Text)|[sS]tatement)\w{0,20}\s*[,)]'
     group: java-sql
     message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
     message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
@@ -155,7 +164,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '@(?:Select|Update|Insert|Delete)\s*\(\s*(?:value\s*=\s*)?(?:\{\s*)?"[^"\n]{0,600}\$\{'
+    pattern: '@(?:Select|Update|Insert|Delete)\s*\(\s*(?:value\s*=\s*)?(?:\{\s*)?"(?:[^"\n]{0,600}"\s*[,+]\s*"){0,20}[^"\n]{0,600}\$\{'
     message: '${...} in a MyBatis @Select/@Update/@Insert/@Delete is pasted into the SQL text unescaped; a caller-supplied value becomes SQL.'
     message_zh: MyBatis @Select/@Update/@Insert/@Delete 中的 ${...} 会不经转义直接粘贴进 SQL 文本；调用方传入的值会变成 SQL。
     remediation: 'Use #{...} (a bound parameter). For identifiers, map the input to an allowlisted column name in Java first.'
@@ -172,7 +181,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:\.exec|new\s+(?:java\.lang\.)?ProcessBuilder|\.command)\s*\([^;\n]{0,400}{{REQ}}'
+    pattern: '(?:\.exec|new\s+(?:java\.lang\.)?ProcessBuilder|\.command)\s*\({{INARG}}{{REQVAL}}'
     group: java-command
     message: A request value reaches Runtime.exec or ProcessBuilder in the same statement (OS command injection).
     message_zh: 请求参数在同一语句中进入 Runtime.exec 或 ProcessBuilder（系统命令注入）。
@@ -188,7 +197,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:Runtime\.getRuntime\(\)|\b(?:runtime|rt|r)\b)\.exec\s*\([^;\n]{0,600}?(?:{{DYNCONCAT}}|[\w)\]]\s*\+\s*"|\b[a-z]\w{0,40}\s*\+\s*[a-z]\w{0,40}\b)|new\s+(?:java\.lang\.)?ProcessBuilder\s*\([^;\n]{0,600}?(?:{{DYNCONCAT}}|[\w)\]]\s*\+\s*"|\b[a-z]\w{0,40}\s*\+\s*[a-z]\w{0,40}\b)'
+    pattern: '(?:Runtime\.getRuntime\(\)|\b(?:runtime|rt|r)\b)\.exec\s*\({{INARG}}(?:{{DYNCONCAT}}|[\w)\]]\s*\+\s*"|\b[a-z]\w{0,40}\s*\+\s*[a-z]\w{0,40}\b)|new\s+(?:java\.lang\.)?ProcessBuilder\s*\({{INARG}}(?:{{DYNCONCAT}}|[\w)\]]\s*\+\s*"|\b[a-z]\w{0,40}\s*\+\s*[a-z]\w{0,40}\b)'
     group: java-command
     message: The command passed to Runtime.exec or ProcessBuilder is built by string concatenation, so a run-time value can add arguments or shell syntax.
     message_zh: 传给 Runtime.exec 或 ProcessBuilder 的命令由字符串拼接而成，运行时值可以注入额外参数或 shell 语法。
@@ -245,8 +254,9 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:\.parseExpression|\bOgnl\.(?:getValue|setValue|parseExpression)|\bMVEL\.(?:eval|compileExpression|executeExpression)\w{0,20}|\.eval|\bVelocity\.evaluate|\.evaluate|\.createValueExpression|\.parseClass)\s*\([^;\n]{0,300}{{REQ}}'
+    pattern: '(?:\.parseExpression|\bOgnl\.(?:getValue|setValue|parseExpression)|\bMVEL\.(?:eval|compileExpression|executeExpression)\w{0,20}|\.eval|\bVelocity\.evaluate|\.evaluate|\.createValueExpression|\.parseClass)\s*\({{INARG}}{{REQVAL}}'
     notPattern: '[xX][pP]ath'
+    filePattern: 'javax\.script|jakarta\.el|javax\.el|groovy|ExpressionParser|[oO]gnl|OGNL|[mM]vel|MVEL|[vV]elocity|[jJ]exl|JEXL|ScriptEngine|freemarker'
     group: java-expression
     message: A request value is evaluated as a SpEL/OGNL/MVEL/EL expression, a template or a script, which lets the client run code on the server.
     message_zh: 请求参数被当作 SpEL/OGNL/MVEL/EL 表达式、模板或脚本求值，客户端可以在服务器上执行代码。
@@ -280,7 +290,7 @@ rules:
     owasp: A08:2021
     languages: [java]
     flags: ''
-    pattern: 'new\s+(?:java\.io\.)?ObjectInputStream\s*\([^;\n]{0,200}{{REQ}}|new\s+(?:java\.beans\.)?XMLDecoder\s*\([^;\n]{0,200}{{REQ}}'
+    pattern: 'new\s+(?:java\.io\.)?ObjectInputStream\s*\({{INARG}}{{REQ}}|new\s+(?:java\.beans\.)?XMLDecoder\s*\({{INARG}}{{REQ}}'
     group: java-deserialization
     message: Bytes sent by the client are deserialized with Java native serialization or XMLDecoder; a gadget chain on the class path gives remote code execution.
     message_zh: 客户端发送的字节被 Java 原生序列化或 XMLDecoder 反序列化；类路径上的 gadget 链可导致远程代码执行。
@@ -348,7 +358,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.enableDefaultTyping(?:AsProperty)?\s*\(|\bLaissezFaireSubTypeValidator\.instance\b|new\s+LaissezFaireSubTypeValidator\s*\('
+    pattern: '(?<!SecurityJackson2Modules)\.enableDefaultTyping(?:AsProperty)?\s*\(|\bLaissezFaireSubTypeValidator\.instance\b|new\s+LaissezFaireSubTypeValidator\s*\('
     message: Global default typing (enableDefaultTyping, or activateDefaultTyping with LaissezFaireSubTypeValidator) lets JSON choose the class to instantiate, which enables gadget-chain code execution.
     message_zh: 全局默认类型（enableDefaultTyping，或 activateDefaultTyping 搭配 LaissezFaireSubTypeValidator）允许 JSON 指定要实例化的类，可被 gadget 链利用执行代码。
     remediation: Remove default typing, or use activateDefaultTyping with a BasicPolymorphicTypeValidator that allows only your own base types.
@@ -575,7 +585,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileInputStream|FileOutputStream|FileReader|FileWriter|RandomAccessFile|PrintWriter)|\bPaths\.get|\bPath\.of|\bFiles\.\w{1,30}|\.resolve|\.getResource(?:AsStream)?)\s*\([^;\n]{0,300}{{REQ}}'
+    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileInputStream|FileOutputStream|FileReader|FileWriter|RandomAccessFile|PrintWriter)|\bPaths\.get|\bPath\.of|\.getResource(?:AsStream)?)\s*\({{INARG}}{{REQVAL}}|(?:\bFiles\.\w{1,30}|\.resolve)\s*\({{FIRSTARG}}{{REQVAL}}'
     notPattern: 'FilenameUtils\.getName|\.getFileName\(\)'
     group: java-file
     message: A request value becomes part of a file path; "../" or an absolute path in it reads or writes files outside the intended directory.
@@ -595,7 +605,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileOutputStream)|\bPaths\.get|\bPath\.of|\.resolve|\bFiles\.(?:write|copy|newOutputStream|createFile))\s*\([^;\n]{0,300}\.(?:getOriginalFilename|getSubmittedFileName)\s*\(\s*\)'
+    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileOutputStream)|\bPaths\.get|\bPath\.of|\.resolve|\bFiles\.(?:write|copy|newOutputStream|createFile))\s*\({{INARG}}\.(?:getOriginalFilename|getSubmittedFileName)\s*\(\s*\)'
     notPattern: 'FilenameUtils\.getName|\.getFileName\(\)|UUID'
     fileAbsentPattern: 'getCanonicalPath\s*\(|toRealPath\s*\(|\.contains\s*\(\s*"\.\."|\.normalize\s*\(\s*\)\s*\.startsWith'
     group: java-file
@@ -613,7 +623,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileOutputStream)|\.resolve|\bPaths\.get|\bPath\.of)\s*\([^;\n]{0,200}\b\w{0,30}(?:[eE]ntry|\bze|\bzipEntry|\bje)\w{0,20}\.getName\s*\(\s*\)'
+    pattern: '(?:new\s+(?:java\.io\.)?(?:File|FileOutputStream)|\.resolve|\bPaths\.get|\bPath\.of)\s*\({{INARG}}\b\w{0,30}(?:[eE]ntry|\bze|\bzipEntry|\bje)\w{0,20}\.getName\s*\(\s*\)'
     fileAbsentPattern: 'getCanonicalPath\s*\(|toRealPath\s*\(|\.normalize\s*\(\s*\)|\.startsWith\s*\('
     group: java-file
     message: A ZIP/JAR entry name is joined to the extraction directory without a containment check; an entry named "../../x" is written outside it (Zip Slip).
@@ -702,7 +712,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.get(?:Writer|OutputStream)\s*\(\s*\)\s*\.(?:write|print|println|printf|format|append)\s*\([^;\n]{0,300}{{REQVAL}}'
+    pattern: '\.get(?:Writer|OutputStream)\s*\(\s*\)\s*\.(?:write|print|println|printf|format|append)\s*\({{INARG}}{{REQVAL}}'
     notPattern: '{{ESCAPED}}|HtmlUtils\.htmlEscape|Encode\.for'
     group: java-xss
     message: A request value is written to the response body without HTML encoding (reflected cross-site scripting).
@@ -1160,7 +1170,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\.(?:parseClaimsJwt|parsePlaintextJwt|parseUnsecuredClaims|parseUnsecuredContent)\s*\(|\bAlgorithm\.none\s*\(\s*\)|\bJwts\.parser(?:Builder)?\s*\(\s*\)[^;\n]{0,300}\.(?:parse|unsecured)\s*\('
+    pattern: '\.(?:parseClaimsJwt|parsePlaintextJwt|parseUnsecuredClaims|parseUnsecuredContent)\s*\(|\bAlgorithm\.none\s*\(\s*\)|\bJwts\.parser(?:Builder)?\s*\(\s*\)(?![^;\n]{0,300}\.(?:verifyWith|decryptWith|keyLocator)\s*\()[^;\n]{0,300}\.parse\s*\(|\bJwts\.parser(?:Builder)?\s*\(\s*\)[^;\n]{0,300}\.unsecured\s*\('
     message: The token is parsed with an API that accepts unsigned JWTs (alg "none"); a client can forge any claims.
     message_zh: 使用了接受未签名 JWT（alg 为 "none"）的 API 解析令牌；客户端可以伪造任意声明。
     remediation: Use parseClaimsJws / parseSignedClaims (jjwt) or JWT.require(algorithm).build().verify(token) (auth0), which reject unsigned tokens.
@@ -1245,7 +1255,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:log|logger|LOG|LOGGER)\.(?:trace|debug|info|warn|error|fatal)\s*\([^;\n]{0,300}{{REQVAL}}'
+    pattern: '\b(?:log|logger|LOG|LOGGER)\.(?:trace|debug|info|warn|error|fatal)\s*\({{INARG}}{{REQVAL}}'
     filePattern: 'org\.apache\.logging\.log4j'
     message: Request data is logged with Log4j 2. With log4j-core older than 2.17.1 (and lookups enabled) "${jndi:...}" in the value loads remote code (Log4Shell, CVE-2021-44228); it also allows log forging.
     message_zh: 用 Log4j 2 记录了请求数据。log4j-core 低于 2.17.1（且启用 lookup）时，值中的 "${jndi:...}" 会加载远程代码（Log4Shell，CVE-2021-44228）；也可能导致日志伪造。
@@ -1262,7 +1272,7 @@ rules:
     languages: [java]
     flags: ''
     pathExclude: '{{TESTPATH}}'
-    pattern: '(?:\bClass\.forName|\.loadClass)\s*\([^;\n]{0,200}{{REQVAL}}'
+    pattern: '(?:\bClass\.forName|\.loadClass)\s*\({{INARG}}{{REQVAL}}'
     message: The class to load comes from the request (unsafe reflection); confirm it is checked against an allowlist before use.
     message_zh: 要加载的类来自请求（不安全反射）；需确认使用前已按白名单校验。
     remediation: Map request values to classes through a fixed table instead of Class.forName.
@@ -1311,7 +1321,7 @@ rules:
     languages: [yaml]
     flags: ''
     pathInclude: '{{SPRINGCONF}}'
-    pathExclude: '{{TESTPATH}}'
+    pathExclude: '{{TESTPATH}}|(?:^|/)application-(?:dev|local|test)\w{0,20}\.ya?ml$'
     pattern: '^\s*(?:management\.endpoints\.web\.exposure\.)?include\s*:\s*(?:"\*"|\x27\*\x27|\[\s*["\x27]\*["\x27]\s*\])'
     filePattern: 'exposure'
     group: java-actuator
@@ -1349,7 +1359,10 @@ rules:
     flags: ''
     pathInclude: '{{SPRINGCONF}}'
     pathExclude: '{{TESTPATH}}|(?:^|/)application-(?:dev|local|test)\w{0,20}\.ya?ml$'
-    pattern: '^\s*(?:spring\.)?h2\.console\.enabled\s*:\s*["\x27]?true\b|^\s*console\.enabled\s*:\s*["\x27]?true\b'
+    # Matched on the parsed YAML: every scalar below a `console:` key (nested
+    # h2: / console: / enabled: true) and the dotted spellings of the key.
+    withinKeys: [console, console.enabled, h2.console.enabled, spring.h2.console.enabled]
+    pattern: '^\s*true\s*$'
     filePattern: '^\s*(?:spring\.)?h2[.:]'
     message: The H2 console gives a SQL shell (and, through CREATE ALIAS, Java code execution) to anyone who can reach it.
     message_zh: H2 控制台为任何能访问它的人提供 SQL 终端（并可通过 CREATE ALIAS 执行 Java 代码）。
@@ -1389,8 +1402,8 @@ rules:
     remediation: Turn debug on per environment (command-line flag or a dev profile), not in the shared configuration.
     remediation_zh: 按环境开启 debug（命令行参数或开发 profile），而不是写在共享配置中。
   - id: java-spring-datasource-password
-    title: Spring Boot datasource password written in the configuration
-    title_zh: Spring Boot 数据源口令写在配置文件中
+    title: Service password written in Spring Boot configuration
+    title_zh: 服务口令写在 Spring Boot 配置文件中
     severity: high
     confidence: medium
     cwe: CWE-798
@@ -1399,11 +1412,10 @@ rules:
     flags: 'i'
     pathInclude: '{{SPRINGCONF}}'
     pathExclude: '{{TESTPATH}}|(?:^|/)application-(?:dev|local|test)\w{0,20}\.ya?ml$'
-    pattern: '^\s*(?:spring\.datasource\.|datasource\.)?password\s*:\s*(?<secret>"[^"$\n]{4,200}"|\x27[^\x27$\n]{4,200}\x27|[^\s"\x27#$][^\s#]{3,200})\s*(?:#|$)'
-    filePattern: 'datasource'
-    notPattern: 'password\s*:\s*["\x27]?(?:[^\s"\x27#]{0,40}(?:changeme|change-me|example|placeholder|dummy|xxx|your)|(?:password|secret)["\x27]?\s*(?:#|$)|<)'
+    pattern: '^\s*(?:[\w-]{1,60}\.){0,8}password\s*:\s*(?<secret>"[^"$\n]{4,200}"|\x27[^\x27$\n]{4,200}\x27|[^\s"\x27#$][^\s#]{3,200})\s*(?:#|$)'
+    notPattern: 'password\s*:\s*["\x27]?(?:[^\s"\x27#]{0,40}(?:changeme|change-me|changeit|example|placeholder|dummy|xxx|your)|(?:password|secret)["\x27]?\s*(?:#|$)|<|ENC\(|\{cipher\})'
     redactEvidence: true
-    message: A database password is written in the Spring Boot configuration; everyone with the repository or the built jar has it.
-    message_zh: 数据库口令写在 Spring Boot 配置中；任何拿到仓库或构建产物的人都能看到它。
-    remediation: 'Reference an environment variable or secret store (password: ${DB_PASSWORD}) and rotate the committed password.'
-    remediation_zh: '引用环境变量或密钥存储（password: ${DB_PASSWORD}），并轮换已提交的口令。'
+    message: A service password (database, Redis, RabbitMQ, mail and similar) is written in plain text in the Spring Boot configuration; everyone with the repository or the built jar has it.
+    message_zh: 服务口令（数据库、Redis、RabbitMQ、邮件等）以明文写在 Spring Boot 配置中；任何拿到仓库或构建产物的人都能看到它。
+    remediation: 'Reference an environment variable or secret store (password: ${DB_PASSWORD}), or encrypt it (Jasypt ENC(...)), and rotate the committed password.'
+    remediation_zh: '引用环境变量或密钥存储（password: ${DB_PASSWORD}），或加密保存（Jasypt ENC(...)），并轮换已提交的口令。'

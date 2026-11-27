@@ -11,6 +11,7 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
+import org.springframework.security.jackson2.SecurityJackson2Modules;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
@@ -36,6 +37,7 @@ public class XmlImport {
     public Object others(String yaml) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.activateDefaultTyping(BasicPolymorphicTypeValidator.builder().allowIfSubType(Order.class).build());
+        SecurityJackson2Modules.enableDefaultTyping(mapper);
         Object y = new Yaml(new SafeConstructor(new LoaderOptions())).load(yaml);
         return y;
     }
