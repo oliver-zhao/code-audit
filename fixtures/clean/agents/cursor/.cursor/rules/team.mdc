@@ -1,0 +1,5 @@
+---
+description: Team conventions
+alwaysApply: true
+---
+Prefer small functions and descriptive names.

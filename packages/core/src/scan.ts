@@ -20,7 +20,7 @@ import {
   type Severity,
 } from "./finding.js";
 import { inventory, type InventoryResult } from "./inventory.js";
-import { SOURCE_LANGUAGES, type Language } from "./language.js";
+import { SOURCE_LIKE_LANGUAGES, type Language } from "./language.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
 import { validateAuditRoot } from "./pathJail.js";
 import {
@@ -221,7 +221,7 @@ export function makeRunId(date: Date): string {
 }
 
 function categoryFor(rule: LoadedRule, language: Language): "sast" | "config" {
-  return SOURCE_LANGUAGES.includes(language) ? "sast" : "config";
+  return SOURCE_LIKE_LANGUAGES.includes(language) ? "sast" : "config";
 }
 
 function buildCoverage(

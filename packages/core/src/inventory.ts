@@ -1,7 +1,7 @@
 import { countLines as countPhysicalLines, splitLines } from "./redact.js";
 import fs from "node:fs";
 import path from "node:path";
-import { SOURCE_LANGUAGES, detectLanguage, type Language } from "./language.js";
+import { CONFIG_LANGUAGES, SOURCE_LANGUAGES, detectLanguage, type Language } from "./language.js";
 import { toPosixRelative, validateAuditRoot } from "./pathJail.js";
 import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
 import type { PathContext } from "./finding.js";
@@ -351,14 +351,7 @@ function kindFor(language: Language, isLockfile: boolean, manifest: boolean): In
   if (isLockfile) return "lockfile";
   if (manifest) return "manifest";
   if (language === "markdown") return "doc";
-  if (
-    language === "json" ||
-    language === "yaml" ||
-    language === "xml" ||
-    language === "dockerfile"
-  ) {
-    return "config";
-  }
+  if (CONFIG_LANGUAGES.includes(language)) return "config";
   if (language !== "unknown") return "source";
   return "other";
 }
