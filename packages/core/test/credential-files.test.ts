@@ -203,7 +203,9 @@ describe("whitespace-separated and positional credentials are masked", () => {
       expect(search.status, search.stderr).toBe(0);
       expect(leaks(search.stdout + search.stderr), args.join(" ")).toEqual([]);
     }
-  });
+    // Spawns ~30 CLI processes; each loads every rule. Slow CI hosts need more
+    // than the default 30 s.
+  }, 180_000);
 
   it("without a file name where the form itself is enough", () => {
     for (const line of [
