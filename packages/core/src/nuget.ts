@@ -89,6 +89,8 @@ export function exactNuGetVersion(raw: string): string | undefined {
 interface MetaValue {
   value: string;
   conditional: boolean;
+  /** Set on the last kept value when further conditional values were dropped. */
+  overflow?: boolean;
 }
 
 interface ItemDecl {
@@ -108,6 +110,10 @@ interface PropertyDecl {
   value: string;
   /** The property or an enclosing PropertyGroup / When / Otherwise / Target has a condition. */
   conditional: boolean;
+  /** Condition attributes of the property and its enclosing elements. */
+  conditions: string[];
+  /** Inside When / Otherwise / Target, whose applicability is not known. */
+  opaque: boolean;
 }
 
 interface MsbuildFile {
@@ -158,10 +164,18 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
     element: XmlElement;
     parent: string;
     conditional: boolean;
+    conditions: string[];
+    opaque: boolean;
   }
   const queue: Frame[] = [];
   for (let k = parsed.root.children.length - 1; k >= 0; k -= 1) {
-    queue.push({ element: parsed.root.children[k] as XmlElement, parent: "#document", conditional: false });
+    queue.push({
+      element: parsed.root.children[k] as XmlElement,
+      parent: "#document",
+      conditional: false,
+      conditions: [],
+      opaque: false,
+    });
   }
   while (queue.length > 0) {
     const frame = queue.pop() as Frame;
@@ -174,8 +188,11 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
       name === "when" ||
       name === "otherwise" ||
       name === "target";
+    const own = element.attrs.get("condition");
+    const conditions = own !== undefined && frame.conditions.length < 8 ? [...frame.conditions, own] : frame.conditions;
+    const opaque = frame.opaque || name === "when" || name === "otherwise" || name === "target";
     if (parent === "propertygroup") {
-      file.properties.push({ name, value: element.text.trim(), conditional });
+      file.properties.push({ name, value: element.text.trim(), conditional, conditions, opaque });
       continue;
     }
     if (name === "import") {
@@ -200,6 +217,7 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
         // another candidate.
         if (!valueConditional) list.length = 0;
         if (list.length < MAX_CANDIDATES) list.push({ value, conditional: valueConditional });
+        else (list[list.length - 1] as MetaValue).overflow = true;
         metadata.set(key, list);
       };
       for (const [key, value] of element.attrs) if (METADATA.has(key)) add(key, value, false);
@@ -219,7 +237,7 @@ export function readMsbuildFile(content: string, rel: string): MsbuildFile {
       continue;
     }
     for (let k = element.children.length - 1; k >= 0; k -= 1) {
-      queue.push({ element: element.children[k] as XmlElement, parent: name, conditional });
+      queue.push({ element: element.children[k] as XmlElement, parent: name, conditional, conditions, opaque });
     }
   }
   return file;
@@ -239,8 +257,13 @@ const MAX_REFERENCES_PER_VALUE = 64;
  */
 type Values = ReadonlyArray<string | null>;
 
-/** Characters one project's evaluation may build by expanding references. */
-const MAX_EXPANSION_CHARS = 4_000_000;
+/**
+ * Characters one expansion may build, and one project's evaluation in total.
+ * The first keeps a single hostile property from making everything after it
+ * unknown; the second bounds the time of a file full of them.
+ */
+const MAX_EXPANSION_CHARS_PER_VALUE = 65_536;
+const MAX_EXPANSION_CHARS = 32_000_000;
 
 /**
  * Evaluated properties of one project, with the expansion budget they share:
@@ -278,6 +301,7 @@ export function expandValues(text: string, properties: ReadonlyMap<string, Value
   let truncated = false;
   let i = 0;
   let references = 0;
+  let spent = 0;
   const append = (options: Values): void => {
     const next: Array<string | null> = [];
     for (const prefix of results) {
@@ -285,6 +309,7 @@ export function expandValues(text: string, properties: ReadonlyMap<string, Value
         if (prefix === null || option === null) next.push(null);
         else {
           const joined = prefix + option;
+          spent += joined.length;
           if (budgeted) budgeted.budget -= joined.length;
           next.push(joined.length > MAX_EXPANDED_LENGTH ? null : joined);
         }
@@ -311,6 +336,7 @@ export function expandValues(text: string, properties: ReadonlyMap<string, Value
     const name = text.slice(start + 2, end).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) return [null];
     append(properties.get(name.toLowerCase()) ?? [null]);
+    if (spent > MAX_EXPANSION_CHARS_PER_VALUE) return [null];
     if (budgeted && budgeted.budget <= 0) return [null];
     i = end + 1;
   }
@@ -324,17 +350,66 @@ export function expandValues(text: string, properties: ReadonlyMap<string, Value
  * An unconditional definition replaces the property; a conditional one adds
  * its values to the possible ones, since the condition is not evaluated.
  */
+const EMPTY_CHECK =
+  /^\s*(?:(['"]?)\$\(\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\)\1\s*(==|!=)\s*(['"])\4|(['"])\5\s*(==|!=)\s*(['"]?)\$\(\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\)\7)\s*$/;
+
+/**
+ * The value of a condition that only compares a property with the empty
+ * string (`'$(X)' == ''`, `'$(X)' != ''`, either order), when the possible
+ * values of X decide it; undefined for any other condition.
+ */
+function parseEmptyCheck(condition: string): { name: string; equals: boolean } | undefined {
+  if (condition.length > 256) return undefined;
+  const match = EMPTY_CHECK.exec(condition);
+  if (!match) return undefined;
+  return { name: (match[2] ?? match[8] ?? "").toLowerCase(), equals: (match[3] ?? match[6]) === "==" };
+}
+
+export function staticEmptyCheck(condition: string, properties: ReadonlyMap<string, Values>): boolean | undefined {
+  const check = parseEmptyCheck(condition);
+  if (!check) return undefined;
+  const operator = check.equals ? "==" : "!=";
+  const values = properties.get(check.name) ?? [""];
+  let empty: boolean;
+  if (values.every((value) => value === "")) empty = true;
+  else if (values.every((value) => value !== null && value.trim() !== "")) empty = false;
+  else return undefined;
+  return operator === "==" ? empty : !empty;
+}
+
+/**
+ * Evaluate property definitions in order, as MSBuild does: each value is
+ * expanded when it is defined (so `<V>$(V).5</V>` extends the earlier V).
+ * An unconditional definition replaces the property; a conditional one adds
+ * its values to the possible ones, since the condition is not evaluated,
+ * except for empty checks the known values decide (`'$(V)' == ''` is false
+ * once V has a value: the "default if empty" idiom).
+ */
 function evaluateProperties(files: readonly MsbuildFile[], start?: PropertyMap): PropertyMap {
   const properties = new PropertyMap(start ?? []);
   if (start) properties.budget = start.budget;
   for (const file of files) {
     for (const property of file.properties) {
+      let conditional = property.conditional;
+      if (conditional) {
+        const results = property.conditions.map((condition) => staticEmptyCheck(condition, properties));
+        if (results.includes(false)) continue;
+        if (!property.opaque && results.every((result) => result === true)) conditional = false;
+      }
       const values = expandValues(property.value, properties);
       const previous = properties.get(property.name);
-      if (!property.conditional || previous === undefined) {
+      if (!conditional) {
         properties.set(property.name, values);
+      } else if (previous === undefined) {
+        // Defined in some builds only: elsewhere it stays empty.
+        properties.set(property.name, uniqueValues(["", ...values]));
       } else {
-        let merged = uniqueValues([...previous, ...values]);
+        // `<V Condition="'$(V)' == ''">default</V>` replaces exactly the
+        // builds where V is empty.
+        const check = property.conditions.length === 1 && !property.opaque ? parseEmptyCheck(property.conditions[0] as string) : undefined;
+        const kept =
+          check && check.equals && check.name === property.name ? previous.filter((value) => value !== "") : previous;
+        let merged = uniqueValues([...kept, ...values]);
         if (merged.length > MAX_CANDIDATES) {
           merged = merged.slice(0, MAX_CANDIDATES);
           if (!merged.includes(null)) merged.push(null);
@@ -492,6 +567,8 @@ interface Candidate {
 interface CandidateList {
   entries: readonly Candidate[];
   definite: boolean;
+  /** File of a candidate dropped at the bound; reported as not checked. */
+  overflow?: string;
 }
 
 /** Apply a set of the value: unconditional replaces, conditional adds. */
@@ -499,11 +576,14 @@ function setCandidate(
   list: CandidateList | undefined,
   entry: Candidate,
   conditional: boolean,
+  overflow = false,
 ): CandidateList {
-  if (!conditional) return { entries: [entry], definite: true };
+  if (!conditional) return { entries: [entry], definite: true, ...(overflow ? { overflow: entry.file } : {}) };
   const entries = list ? [...list.entries] : [];
+  let dropped = list?.overflow ?? (overflow ? entry.file : undefined);
   if (entries.length < MAX_CANDIDATES) entries.push(entry);
-  return { entries, definite: list?.definite ?? false };
+  else dropped ??= entry.file;
+  return { entries, definite: list?.definite ?? false, ...(dropped ? { overflow: dropped } : {}) };
 }
 
 interface CentralIndex {
@@ -577,6 +657,7 @@ function applyMetadata(
         list,
         { value: value.value, file: decl.file, line: decl.line },
         forceConditional || value.conditional,
+        value.overflow === true,
       );
     }
     if (list) target.set(key, list);
@@ -812,18 +893,26 @@ export function evaluateNuGetProject(
     if (override) {
       candidates.push(...override.entries);
       definite = override.definite;
+      if (override.overflow) unresolved(override.overflow);
     }
     if (!definite) {
       const own = item.metadata.get("version");
       const fallback = own ?? (cpmEnabled ? centralFor(key) : undefined);
       if (fallback) candidates.push(...fallback.entries);
+      if (fallback?.overflow) unresolved(fallback.overflow);
     }
     if (candidates.length === 0) {
       unresolved(item.file);
       continue;
     }
     for (const candidate of candidates) {
-      for (const expanded of expandValues(candidate.value, properties)) {
+      const expansions = expandValues(candidate.value, properties);
+      // A property defined only in some builds is empty in the others; an
+      // empty version is no version to check, so it is not counted when the
+      // property has a value elsewhere.
+      const hasValue = expansions.some((value) => value !== null && value.trim() !== "");
+      for (const expanded of expansions) {
+        if (hasValue && expanded !== null && expanded.trim() === "") continue;
         const version = expanded === null ? undefined : exactNuGetVersion(expanded);
         if (version === undefined) {
           unresolved(candidate.file);
