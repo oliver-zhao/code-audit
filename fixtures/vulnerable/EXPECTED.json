@@ -4283,7 +4283,7 @@
       "line": 1,
       "ruleId": "gha-pull-request-target",
       "language": "yaml",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": ".github/workflows/ci.yml",
@@ -4426,6 +4426,132 @@
       "kind": "finding"
     },
     {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 27,
+      "ruleId": "gha-script-injection",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 28,
+      "ruleId": "gha-checkout-persist-credentials",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/hygiene.yml",
+      "line": 30,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/ok-to-test.yml",
+      "line": 14,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/ok-to-test.yml",
+      "line": 17,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/ok-to-test.yml",
+      "line": 18,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 20,
+      "ruleId": "gha-checkout-persist-credentials",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 22,
+      "ruleId": "gha-untrusted-checkout",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": ".github/workflows/pwn.yml",
+      "line": 24,
+      "ruleId": "gha-script-injection",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/compose/docker-compose.prod.yml",
+      "line": 37,
+      "ruleId": "compose-env-dev-secret",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/rbac.yml",
+      "line": 40,
+      "ruleId": "k8s-rbac-authenticated-subject",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 50,
+      "ruleId": "k8s-capabilities-not-dropped",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 50,
+      "ruleId": "k8s-missing-resource-limits",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 53,
+      "ruleId": "k8s-privileged-container",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/kubernetes/workload.yml",
+      "line": 53,
+      "ruleId": "k8s-run-as-root",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/aws.tf",
+      "line": 98,
+      "ruleId": "tf-unencrypted-storage",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/gcp.tf",
+      "line": 38,
+      "ruleId": "tf-outdated-tls-version",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "iac/terraform/guardrail.tf",
+      "line": 9,
+      "ruleId": "tf-iam-wildcard-with-deny",
+      "language": "yaml",
+      "kind": "hotspot"
+    },
+    {
       "file": "iac/terraform/aws.tf",
       "line": 90,
       "ruleId": "tf-iam-service-wildcard",
@@ -4521,7 +4647,7 @@
       "line": 3,
       "ruleId": "gha-pull-request-target",
       "language": "yaml",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": ".github/workflows/pwn.yml",

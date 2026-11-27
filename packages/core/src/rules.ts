@@ -2342,15 +2342,26 @@ export function scanRules(
       }
     };
 
-    // File-level conditions are tested line by line on at most the first
-    // MAX_PATTERN_LINE_LENGTH characters of each line, so they cannot scan the
-    // whole file from every line start.
-    let hasLongLine = false;
+    // File-level conditions are tested line by line. An over-long line is
+    // tested in the same overlapping windows that rule matching uses (up to
+    // MAX_LONG_LINE_MATCHED characters), so no single test scans more than
+    // MAX_PATTERN_LINE_LENGTH characters. A window that starts inside the
+    // line is prefixed with a character that is neither a line break nor a
+    // blank, so `^` (and `^\s*key:`) cannot match in the middle of a line.
+    // Only a line longer than MAX_LONG_LINE_MATCHED leaves text untested; a
+    // filePattern then fails open, as before.
+    let hasUntestedText = false;
     const anyLine = (pattern: RegExp): boolean => {
       for (const line of lines) {
         if (line.length > MAX_PATTERN_LINE_LENGTH) {
-          hasLongLine = true;
           if (pattern.test(line.slice(0, MAX_PATTERN_LINE_LENGTH))) return true;
+          if (line.length > MAX_LONG_LINE_MATCHED) hasUntestedText = true;
+          const limit = Math.min(line.length, MAX_LONG_LINE_MATCHED);
+          const step = MAX_PATTERN_LINE_LENGTH / 2;
+          for (let column = step; column < limit; column += step) {
+            const window = line.slice(column, Math.min(limit, column + MAX_PATTERN_LINE_LENGTH));
+            if (pattern.test(`\u0001${window}`)) return true;
+          }
         } else if (pattern.test(line)) return true;
       }
       return false;
@@ -2360,9 +2371,9 @@ export function scanRules(
       () =>
         applicable.filter((rule) => {
           if (rule.compiled.filePattern && !anyLine(rule.compiled.filePattern)) {
-            // Fail open: the part of an over-long line that was not tested may
-            // hold what the rule requires.
-            if (!hasLongLine) return false;
+            // Fail open: the part of an over-long line beyond the matched
+            // windows may hold what the rule requires.
+            if (!hasUntestedText) return false;
           }
           if (rule.compiled.fileAbsentPattern && anyLine(rule.compiled.fileAbsentPattern)) {
             return false;

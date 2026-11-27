@@ -31,3 +31,7 @@ services:
     environment:
       - API_TOKEN=tok_fake_0123456789abcdef
       - DB_PASSWORD=${DB_PASSWORD}
+  wiki:
+    image: example/wiki:2.1
+    environment:
+      WIKI_DB_PASSWORD: postgres

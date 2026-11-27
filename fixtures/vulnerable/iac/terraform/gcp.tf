@@ -32,3 +32,8 @@ resource "google_container_cluster" "legacy" {
   name            = "legacy"
   logging_service = "none"
 }
+
+resource "google_compute_ssl_policy" "legacy" {
+  name            = "legacy"
+  min_tls_version = "TLS_1_0"
+}

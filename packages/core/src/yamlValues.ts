@@ -105,7 +105,9 @@ interface Scope {
 }
 
 /**
- * Values of the keys `keys` (compared case-insensitively) anywhere in a YAML
+ * Values of the keys `keys` (compared case-sensitively: YAML keys are, and
+ * `Resources:` of a CloudFormation template is not `resources:` of a
+ * Kubernetes role) anywhere in a YAML
  * text, with aliases resolved and GitHub Actions `env` / `matrix`
  * indirection resolved one level:
  *
@@ -123,7 +125,7 @@ export function yamlKeyValues(content: string, keys: readonly string[]): YamlKey
   if (content.length > YAML_VALUES_MAX_BYTES) {
     return { ok: false, reason: `larger than ${YAML_VALUES_MAX_BYTES / 1024} KiB` };
   }
-  const watched = new Map(keys.map((key) => [key.toLowerCase(), key]));
+  const watched = new Set(keys);
   const lineCounter = new LineCounter();
   let documents: Document.Parsed[];
   try {
@@ -333,7 +335,7 @@ export function yamlKeyValues(content: string, keys: readonly string[]): YamlKey
           let scope: Scope | undefined;
           for (const pair of target.items) {
             const name = keyText(pair.key);
-            const key = name === undefined ? undefined : watched.get(name.toLowerCase());
+            const key = name !== undefined && watched.has(name) ? name : undefined;
             if (key !== undefined) {
               const scalars: Scalar[] = [];
               scalarsBelow(pair.value, depth + 1, scalars);

@@ -66,7 +66,7 @@ rules:
   - id: dockerfile-curl-sh
     title: Dockerfile executes a remote script with curl | sh
     title_zh: Dockerfile 中 curl | sh 执行远程脚本
-    severity: critical
+    severity: high
     confidence: high
     cwe: CWE-829
     owasp: A08:2021
@@ -230,7 +230,7 @@ rules:
     cwe: CWE-494
     owasp: A08:2021
     languages: [dockerfile]
-    pattern: '\bapk\b[^\n|;&]{0,300}?\s--allow-untrusted\b|\bapt(?:-get)?\b[^\n|;&]{0,300}?\s(?:--allow-unauthenticated|--force-yes|--allow-insecure-repositories|-o\s*Acquire::AllowInsecureRepositories=(?:true|1))\b|\[\s*trusted=yes\s*\](?!\s*(?:file|copy):)|\b(?:yum|dnf|microdnf|tdnf|zypper)\b[^\n|;&]{0,300}?\s(?:--nogpgcheck|--no-gpg-checks)\b|\bgpgcheck\s*=\s*0\b|\brpm\b[^\n|;&]{0,300}?\s--nosignature\b'
+    pattern: '\bapk\b(?=[^\n|;&]{0,300}?\s(?:add|fetch|upgrade|fix)\b)[^\n|;&]{0,300}?\s--allow-untrusted\b|\bapt(?:-get)?\b[^\n|;&]{0,300}?\s(?:--allow-unauthenticated|--force-yes|--allow-insecure-repositories|-o\s*Acquire::AllowInsecureRepositories=(?:true|1))\b|\[\s*trusted=yes\s*\](?!\s*(?:file|copy):)|\b(?:yum|dnf|microdnf|tdnf|zypper)\b[^\n|;&]{0,300}?\s(?:--nogpgcheck|--no-gpg-checks)\b|\bgpgcheck\s*=\s*0\b|\brpm\b[^\n|;&]{0,300}?\s--nosignature\b'
     notPattern: '{{COMMENT}}'
     pathInclude: '{{DOCKERFILE}}'
     message: Package signatures are not checked, so a mirror or network attacker can install arbitrary packages into the image.

@@ -16,3 +16,4 @@ RUN chmod 1777 /tmp && chmod -R 755 /srv/app
 EXPOSE 8080 2222
 USER 10001:10001
 CMD ["/opt/tool/run"]
+RUN apk index --allow-untrusted -o /tmp/packages/APKINDEX.tar.gz /tmp/packages/*.apk
