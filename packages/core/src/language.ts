@@ -7,6 +7,7 @@ export type Language =
   | "go"
   | "c"
   | "cpp"
+  | "rust"
   | "dockerfile"
   | "yaml"
   | "json"
@@ -22,6 +23,7 @@ export const SOURCE_LANGUAGES: readonly Language[] = [
   "go",
   "c",
   "cpp",
+  "rust",
 ];
 
 const EXTENSION_LANGUAGE: Record<string, Language> = {
@@ -46,6 +48,7 @@ const EXTENSION_LANGUAGE: Record<string, Language> = {
   ".hpp": "cpp",
   ".hh": "cpp",
   ".hxx": "cpp",
+  ".rs": "rust",
   ".yml": "yaml",
   ".yaml": "yaml",
   ".tf": "yaml",
@@ -79,6 +82,7 @@ export function languageDisplayName(language: Language | string): string {
     go: "Go",
     c: "C",
     cpp: "C/C++",
+    rust: "Rust",
     dockerfile: "Dockerfile",
     yaml: "YAML",
     json: "JSON",

@@ -1,0 +1,713 @@
+version: 1
+# Built-in Rust rules. Written for code-audit (Apache-2.0); original patterns.
+#
+# Conventions:
+# - Rust is matched one physical line at a time today, comments included. A
+#   rule therefore discards a match on a line that starts with `//` (this also
+#   skips doc-test examples in `///` and `//!` comments). The planned C-family
+#   lexer removes comments and joins a statement while ( or [ are open; the
+#   patterns below hold in both cases.
+# - rustfmt splits long method chains over several lines, and a chain is not
+#   joined by the lexer (the brackets are closed between the links). Rules that
+#   need two links of a chain use filePattern for the other link.
+# - Rust's `regex` crate is linear-time: there is no ReDoS rule on purpose.
+# - Test, bench, example and fuzz trees are excluded (TESTPATH). Unit tests in
+#   `#[cfg(test)] mod tests` inside a source file cannot be told apart by path.
+definitions:
+  # tests/, benches/, examples/, fuzz targets, crates named *-tests / *-bench /
+  # *fuzz*, and test_*.rs / *_test.rs / tests.rs files.
+  TESTPATH: '(?:^|/)(?:tests?|benches|benchmarks?|examples?|fuzz|testing|test[-_]utils?)/|(?:^|/)[^/]{0,80}(?:[-_]tests?|[-_]bench(?:es|mark|marks)?|fuzz[^/]{0,40})/|(?:^|/)(?:tests?|[^/]{0,80}_tests?|test_[^/]{0,80})\.rs$'
+  COMMENT: '^\s*//'
+  # The SQL keyword a statement starts with.
+  SQLKW: '(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|TRUNCATE|REPLACE|MERGE|PRAGMA|GRANT|REVOKE|EXPLAIN|VACUUM|ATTACH|COPY|UPSERT)\b'
+  # A string built at run time: format!("...{...") or "literal".to_string() + x.
+  FMTARG: 'format!\s*\(\s*r?#{0,3}"[^"\n]{0,400}\{'
+  # Turbofish after a function name: query_as::<_, User>
+  TURBO: '(?:::<[^()\n]{0,200}>)?'
+  # Start of the first argument: optional & / &* and an opening parenthesis.
+  ARGPFX: '(?:&\s*(?:\*\s*)?)?(?:\(\s*)?'
+  SHELL: '"(?:/usr/bin/|/bin/)?(?:sh|bash|zsh|dash|ksh|fish|cmd|cmd\.exe|powershell|powershell\.exe|pwsh)"'
+  # Values that an actix / axum / rocket handler received from the request.
+  REQVAL: '(?:\.into_inner\(\)|\bmatch_info\(\)|\b(?:query|params|form|payload)\.\w|\bpath\.0\b|\breq\.(?:uri|path|query_string)\(\))'
+  WEBFILE: '\b(?:actix_web|axum|rocket|warp|poem|salvo|tide)\b'
+rules:
+  # ---- SQL injection ----
+  - id: rs-sql-injection
+    title: Rust SQL query built with format! or string concatenation
+    title_zh: Rust SQL 查询通过 format! 或字符串拼接构造
+    severity: critical
+    confidence: medium
+    cwe: CWE-89
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    # SQL-specific entry points (sqlx, diesel, sea-orm) accept any runtime
+    # string; generic method names (.query / .execute / .prepare of rusqlite,
+    # tokio-postgres and sqlx executors) need SQL text after the quote.
+    pattern: '(?:\bsqlx::(?:query|query_as|query_scalar|query_with|query_as_with|query_scalar_with|raw_sql){{TURBO}}|(?<![.\w])(?:query_as|query_scalar|raw_sql|sql_query){{TURBO}})\s*\(\s*{{ARGPFX}}(?:{{FMTARG}}|r?#{0,3}"[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)|(?:\.(?:query|query_one|query_opt|query_raw|query_row|query_map|execute|execute_batch|batch_execute|simple_query|prepare|prepare_cached)|(?<![.\w])query)\s*\(\s*{{ARGPFX}}(?:format!\s*\(\s*r?#{0,3}"\s*{{SQLKW}}[^"\n]{0,400}\{|r?#{0,3}"\s*{{SQLKW}}[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)|\bStatement::from_(?:string|sql_and_values)\s*\(\s*[^,;\n]{1,120},\s*(?:&\s*)?(?:{{FMTARG}}|r?#{0,3}"[^"\n]{0,400}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+)'
+    notPattern: '{{COMMENT}}|\bquote_ident\w{0,20}\s*\(|\bescape_\w{0,30}\s*\('
+    group: rs-sql
+    message: A runtime value is formatted or concatenated into SQL text passed to the database driver; if any part comes from a user this is SQL injection.
+    message_zh: 运行时的值通过 format! 或拼接写入传给数据库驱动的 SQL 文本；只要其中有用户输入，就构成 SQL 注入。
+    remediation: Use bind parameters (sqlx .bind() or the query! macros, rusqlite params!, tokio-postgres &[&value], diesel .bind::<T, _>()); allowlist identifiers that cannot be bound.
+    remediation_zh: 使用绑定参数（sqlx 的 .bind() 或 query! 宏、rusqlite 的 params!、tokio-postgres 的 &[&value]、diesel 的 .bind::<T, _>()）；无法绑定的标识符使用白名单。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: rs-sql-built-string
+    title: Rust SQL text built at run time
+    title_zh: Rust 在运行时拼接 SQL 文本
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    # A format! whose literal is a SQL statement with an interpolation, a SQL
+    # literal concatenated with a value, or a non-literal pushed onto a
+    # variable that holds SQL (String::push_str, sqlx QueryBuilder::push).
+    pattern: 'format!\s*\(\s*r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b|ALTER\s+TABLE\b|TRUNCATE\s+TABLE\b)[^"\n]{0,300}\{|format!\s*\(\s*r?#{0,3}"\s*(?:CREATE|DROP)\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|USER|ROLE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?[`\x27\[]?\{|r?#{0,3}"\s*(?:SELECT\s[^"\n]{0,300}\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w."`]{1,80}\s+SET\b|DELETE\s+FROM\b)[^"\n]{0,300}"\s*(?:\.to_(?:string|owned)\(\)\s*)?\+\s*&?\s*[A-Za-z_]|\b(?:sql|stmt|statement|where_clause|qb|query_builder)\w{0,20}\.push(?:_str)?\s*\(\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,60}\s*\))'
+    notPattern: '{{COMMENT}}|\bquote_ident\w{0,20}\s*\(|\bescape_\w{0,30}\s*\(|\.push_bind\s*\('
+    group: rs-sql
+    message: SQL text is assembled from runtime values; check where every interpolated value comes from before it reaches a query.
+    message_zh: SQL 文本由运行时的值拼接而成；需检查每个插入值的来源，确认它进入查询前是可信的。
+    remediation: Keep the SQL text constant and pass values as bind parameters (sqlx QueryBuilder::push_bind, .bind(), params!).
+    remediation_zh: 保持 SQL 文本为常量，值通过绑定参数传入（sqlx QueryBuilder::push_bind、.bind()、params!）。
+    references:
+      - CWE-89
+      - OWASP A03:2021
+
+  # ---- Command injection ----
+  - id: rs-command-shell-injection
+    title: Rust shell started with a non-literal command string
+    title_zh: Rust 以非字面量命令字符串启动 shell
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    # .arg("-c").arg(x) / .args(["-c", x]) / .args(&["/C", &x]) with x not a
+    # string literal, in a file that starts a shell.
+    pattern: '\.args?\s*\(\s*(?:&\s*)?(?:vec!\s*)?(?:\[\s*)?"(?:-c|/C|/c|-Command)"\s*(?:,|\]?\s*\)\s*\.args?\s*\((?:\s*&)?(?:\s*\[)?)\s*(?:&\s*)?(?:format!\s*\(|[A-Za-z_][\w.]{0,80}(?:\(\))?\s*[,\])])'
+    notPattern: '{{COMMENT}}|Command::new\(\s*"(?:git|ssh|python3?|node)"'
+    filePattern: 'Command::new\(\s*{{SHELL}}\s*\)'
+    group: rs-command
+    message: A command string that is not a literal is passed to a shell with -c (or cmd /C); shell metacharacters in it run arbitrary commands.
+    message_zh: 非字面量的命令字符串通过 -c（或 cmd /C）交给 shell 执行；其中的 shell 元字符可执行任意命令。
+    remediation: Run the program directly with Command::new(program).arg(value) for each argument, and do not start a shell; allowlist values that select a program.
+    remediation_zh: 直接用 Command::new(程序).arg(值) 逐个传参运行目标程序，不要经过 shell；选择程序的值使用白名单。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: rs-command-shell-api
+    title: Rust command runs a shell
+    title_zh: Rust 通过 shell 执行命令
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bCommand::new\(\s*{{SHELL}}\s*\)'
+    notPattern: '{{COMMENT}}'
+    group: rs-command
+    message: A shell is started; check that the script it runs contains no request or file data.
+    message_zh: 代码启动了 shell；需确认它执行的脚本不包含请求或文件中的数据。
+    remediation: Prefer running the target program directly with separate arguments.
+    remediation_zh: 优先直接运行目标程序，并以单独参数传值。
+  - id: rs-command-dynamic-program
+    title: Rust command with a non-literal program
+    title_zh: Rust 命令的程序名不是字面量
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bCommand::new\(\s*(?![\s"]|r#*")(?:&\s*)?[A-Za-z_]'
+    notPattern: '{{COMMENT}}|\benv!\s*\(|\bcurrent_exe\b|CARGO_BIN_EXE|\bstd::env::var\("(?:CARGO|RUSTC|RUSTDOC|SHELL|EDITOR|PAGER)\w{0,10}"\)'
+    group: rs-command
+    message: The program to run is not a literal; if a user can choose it, they can run any program on the host.
+    message_zh: 要运行的程序名不是字面量；如果用户能决定它，就能在主机上运行任意程序。
+    remediation: Select the program from a fixed allowlist and pass user values only as arguments.
+    remediation_zh: 从固定白名单中选择程序，用户提供的值只作为参数传入。
+
+  # ---- Paths and archives ----
+  - id: rs-path-traversal
+    title: Rust web handler value reaches a file system path
+    title_zh: Rust Web 处理函数的请求值进入文件系统路径
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\bFile::(?:open|create)|\b(?:tokio::)?fs::(?:read|read_to_string|read_dir|write|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|copy|rename|metadata|canonicalize)|\bNamedFile::open(?:_async)?|\bServeFile::new|(?:\b\w{0,30}(?:path|dir|file|base|root|dest|folder|upload|static)\w{0,20}|\bPath(?:Buf)?::(?:new|from)\s*\([^()\n]{0,200}\))\.(?:join|push))\s*\([^;\n]{0,300}{{REQVAL}}|\blet\s+(?:mut\s+)?\w{1,40}\s*:\s*PathBuf\s*=\s*[^;\n]{0,200}{{REQVAL}}'
+    notPattern: '{{COMMENT}}|\.enclosed_name\(\)|\bsanitize\w{0,20}\s*\('
+    filePattern: '{{WEBFILE}}'
+    message: A value taken from the request (path segment, query or form) is used to build a file path; "../" or an absolute path can reach files outside the intended directory.
+    message_zh: 来自请求（路径参数、查询或表单）的值被用于构造文件路径；"../" 或绝对路径可访问预期目录之外的文件。
+    remediation: Reject absolute paths and any component that is not Component::Normal, then canonicalize and check that the result starts with the base directory.
+    remediation_zh: 拒绝绝对路径和任何非 Component::Normal 的路径组件，再 canonicalize 并检查结果仍以基础目录开头。
+  - id: rs-zip-slip
+    title: Rust zip entry name used as an output path (Zip Slip)
+    title_zh: Rust 将 zip 条目名直接用作输出路径（Zip Slip）
+    severity: high
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\.join|\bFile::create|\bPath::new|\bPathBuf::from|\bfs::(?:create_dir_all|write))\s*\(\s*(?:&\s*)?[a-z_]\w{0,30}\.name\(\)'
+    notPattern: '{{COMMENT}}'
+    filePattern: '\bZipArchive\b|\bzip::read\b|\.by_index(?:_raw)?\s*\('
+    message: The name stored in a zip entry is used as a file path; an archive with "../" or absolute names writes outside the target directory.
+    message_zh: zip 条目中保存的名称被直接用作文件路径；包含 "../" 或绝对路径的压缩包可写到目标目录之外。
+    remediation: Use ZipFile::enclosed_name() (or ZipArchive::extract) and skip entries for which it returns None.
+    remediation_zh: 使用 ZipFile::enclosed_name()（或 ZipArchive::extract），对其返回 None 的条目跳过处理。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: rs-tar-slip
+    title: Rust tar entry path joined or unpacked without a containment check
+    title_zh: Rust tar 条目路径未做目录约束即拼接或解包
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.join\s*\(\s*(?:&\s*)?[a-z_]\w{0,30}\.(?:path|header\(\)\s*\.\s*path)\s*\(\)|\b(?:entry|file|ent|item|tar_entry)\.unpack\s*\('
+    notPattern: '{{COMMENT}}'
+    filePattern: '\btar::|\.entries\(\)'
+    message: A tar entry's own path is joined to the output directory, or Entry::unpack is used; neither rejects "../" or absolute paths.
+    message_zh: tar 条目自身的路径被拼接到输出目录，或使用了 Entry::unpack；二者都不会拒绝 "../" 或绝对路径。
+    remediation: Use Entry::unpack_in(dir) or Archive::unpack(dir), which refuse paths outside dir, or validate every path component yourself.
+    remediation_zh: 使用会拒绝越界路径的 Entry::unpack_in(dir) 或 Archive::unpack(dir)，或自行校验每个路径组件。
+
+  # ---- TLS ----
+  - id: rs-tls-accept-invalid
+    title: Rust TLS client accepts invalid certificates or host names
+    title_zh: Rust TLS 客户端接受无效证书或主机名
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)'
+    notPattern: '{{COMMENT}}'
+    message: danger_accept_invalid_certs(true) / danger_accept_invalid_hostnames(true) turns off TLS verification, so anyone on the network path can read and change the traffic.
+    message_zh: danger_accept_invalid_certs(true) / danger_accept_invalid_hostnames(true) 会关闭 TLS 校验，网络路径上的任何人都能读取并篡改流量。
+    remediation: Remove the call; to trust a private CA add it with add_root_certificate().
+    remediation_zh: 删除该调用；如需信任私有 CA，请用 add_root_certificate() 添加。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: rs-rustls-custom-verifier
+    title: Rust rustls custom certificate verifier
+    title_zh: Rust rustls 自定义证书校验器
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.dangerous\(\)\s*\.\s*(?:set_certificate_verifier|with_custom_certificate_verifier)\s*\(|\bOk\(\s*(?:rustls::)?(?:client::danger::)?ServerCertVerified::assertion\(\)\s*\)'
+    notPattern: '{{COMMENT}}'
+    message: rustls is given its own certificate verifier through dangerous(); check that it still validates the chain and the host name instead of accepting every certificate.
+    message_zh: 通过 dangerous() 为 rustls 设置了自定义证书校验器；需确认它仍校验证书链和主机名，而不是接受所有证书。
+    remediation: Use the default WebPkiServerVerifier (or rustls-platform-verifier); for a private CA add it to the RootCertStore.
+    remediation_zh: 使用默认的 WebPkiServerVerifier（或 rustls-platform-verifier）；私有 CA 请加入 RootCertStore。
+  - id: rs-openssl-verify-none
+    title: Rust OpenSSL peer verification disabled
+    title_zh: Rust OpenSSL 关闭对端证书校验
+    severity: high
+    confidence: medium
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bset_verify\s*\(\s*(?:openssl::ssl::)?SslVerifyMode::NONE\b|\bset_verify_callback\s*\([^;\n]{0,120}\|\s*_\w{0,20}\s*,\s*_\w{0,20}\s*\|\s*true\b'
+    notPattern: '{{COMMENT}}'
+    message: SslVerifyMode::NONE or a verify callback that always returns true accepts any certificate.
+    message_zh: SslVerifyMode::NONE 或始终返回 true 的校验回调会接受任何证书。
+    remediation: Use SslVerifyMode::PEER and load trusted roots; keep host name verification on.
+    remediation_zh: 使用 SslVerifyMode::PEER 并加载可信根证书；保持主机名校验开启。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+
+  # ---- Cryptography ----
+  - id: rs-weak-hash
+    title: Rust MD5 or SHA-1 hash
+    title_zh: Rust 使用 MD5 或 SHA-1 哈希
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bmd5::compute\s*\(|\bMd5::(?:new|digest|new_with_prefix)\s*\(|\bSha1::(?:new|digest|from|new_with_prefix)\s*\(|\bMessageDigest::(?:md5|sha1)\s*\(\)|\bdigest::SHA1_FOR_LEGACY_USE_ONLY\b'
+    notPattern: '{{COMMENT}}|websocket|accept_key|\betag\b'
+    group: rs-weak-hash
+    message: MD5 and SHA-1 are broken for collision resistance; check that this hash is not used for signatures, integrity or passwords.
+    message_zh: MD5 和 SHA-1 的抗碰撞性已被攻破；需确认该哈希未用于签名、完整性校验或口令。
+    remediation: Use SHA-256 or better (sha2 crate); hash passwords with argon2, scrypt or bcrypt.
+    remediation_zh: 使用 SHA-256 或更强的算法（sha2 crate）；口令使用 argon2、scrypt 或 bcrypt。
+  - id: rs-weak-password-hash
+    title: Rust password hashed with MD5 or SHA-1
+    title_zh: Rust 使用 MD5 或 SHA-1 哈希口令
+    severity: high
+    confidence: medium
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    patterns:
+      - '\bmd5::compute\s*\(|\bMd5::(?:new|digest|new_with_prefix)\s*\(|\bSha1::(?:new|digest|from|new_with_prefix)\s*\(|\bMessageDigest::(?:md5|sha1)\s*\(\)'
+      - '\b(?:password|passwd|passphrase|pwd)\w{0,20}\b'
+    notPattern: '{{COMMENT}}'
+    group: rs-weak-hash
+    message: A password is hashed with a fast, broken hash (MD5 / SHA-1); a stolen hash is cracked quickly.
+    message_zh: 口令使用快速且已被攻破的哈希（MD5 / SHA-1）处理；哈希泄露后很快会被破解。
+    remediation: Hash passwords with argon2 (argon2 crate), scrypt or bcrypt with a per-user salt.
+    remediation_zh: 使用 argon2（argon2 crate）、scrypt 或 bcrypt 并为每个用户加盐来哈希口令。
+    references:
+      - CWE-916
+      - OWASP A02:2021
+  - id: rs-weak-cipher
+    title: Rust broken cipher or ECB mode
+    title_zh: Rust 使用已被攻破的加密算法或 ECB 模式
+    severity: high
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:Des|TdesEde[23]|TdesEee[23]|Rc4|Blowfish|BlowfishLE)(?:::<[^()\n]{0,80}>)?::new(?:_from_slices?)?\s*\(|\bCipher::(?:des_\w{1,20}|rc4|rc4_40|bf_\w{1,10}|aes_\d{3}_ecb)\s*\(\)|\becb::(?:Encryptor|Decryptor)\s*(?:::|<)|\bEcb\s*<'
+    notPattern: '{{COMMENT}}'
+    message: DES, 3DES, RC4 and Blowfish are broken or have too small a block or key size, and ECB mode leaks patterns of the plaintext.
+    message_zh: DES、3DES、RC4 和 Blowfish 已被攻破或分组/密钥长度过小，ECB 模式会泄露明文的模式。
+    remediation: Use an AEAD cipher (aes-gcm or chacha20poly1305) with a random nonce per message.
+    remediation_zh: 使用 AEAD 算法（aes-gcm 或 chacha20poly1305），每条消息使用随机 nonce。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: rs-fixed-nonce
+    title: Rust nonce or IV from a constant
+    title_zh: Rust 使用常量 nonce 或 IV
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-329
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:Nonce|XNonce|Iv|IV|GenericArray)(?:::<[^()\n]{0,80}>)?::(?:from_slice|from|clone_from_slice)\s*\(\s*(?:&\s*)?(?:b"|\[\s*0(?:u8)?\s*;|\[\s*0x)|\blet\s+(?:nonce|iv)\w{0,20}\s*(?::[^=;\n]{0,60})?=\s*(?:&\s*)?(?:b"|\[\s*0(?:u8)?\s*;\s*\d{1,3}\s*\])'
+    notPattern: '{{COMMENT}}'
+    message: The nonce or IV is a constant; reusing a nonce with the same key breaks AES-GCM and ChaCha20-Poly1305 completely.
+    message_zh: nonce 或 IV 是常量；在同一密钥下重复使用 nonce 会彻底破坏 AES-GCM 和 ChaCha20-Poly1305 的安全性。
+    remediation: Generate a fresh random nonce for each message (Aes256Gcm::generate_nonce(&mut OsRng)) and store it with the ciphertext.
+    remediation_zh: 为每条消息生成新的随机 nonce（Aes256Gcm::generate_nonce(&mut OsRng)），并与密文一起保存。
+  - id: rs-insecure-rng-secret
+    title: Rust predictable RNG used for a secret value
+    title_zh: Rust 用可预测的随机数生成器生成秘密值
+    severity: high
+    confidence: medium
+    cwe: CWE-338
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    # thread_rng(), rand::rng() and OsRng are cryptographically secure and are
+    # not matched.
+    patterns:
+      - '\bSmallRng::(?:seed_from_u64|from_seed|from_entropy|from_rng|from_os_rng)\s*\(|\b(?:StdRng|ChaCha\d{0,2}Rng|Pcg\w{0,10}|XorShiftRng|Xoshiro\w{0,10})::(?:seed_from_u64|from_seed)\s*\('
+      - '(?:token|secret|passw|api_?key|session|nonce|salt|otp|csrf|\bkey\b|_key\b|\bkey_)'
+    notPattern: '{{COMMENT}}'
+    message: A token, key or other secret is drawn from a non-cryptographic or fixed-seed RNG; its values can be predicted.
+    message_zh: 令牌、密钥等秘密值来自非密码学或固定种子的随机数生成器，其取值可被预测。
+    remediation: Use rand::rngs::OsRng or rand::thread_rng() (rand::rng() in rand 0.9) for secrets, and never a fixed seed.
+    remediation_zh: 生成秘密值时使用 rand::rngs::OsRng 或 rand::thread_rng()（rand 0.9 中为 rand::rng()），不要使用固定种子。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: rs-hardcoded-secret
+    title: Rust key or secret in a const or static
+    title_zh: Rust 在 const 或 static 中硬编码密钥
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [rust]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:const|static)\s+[A-Z0-9_]{0,40}(?:SECRET|PRIVATE_KEY|API_KEY|APIKEY|PASSWORD|PASSWD|TOKEN|JWT_KEY|SIGNING_KEY|ENCRYPTION_KEY|HMAC_KEY|AES_KEY|MASTER_KEY)[A-Z0-9_]{0,40}\s*:\s*&(?:''static\s+)?(?:str|\[u8(?:\s*;\s*\d{1,4})?\])\s*=\s*b?"(?<secret>[^"\s]{8,200})"'
+    notPattern: '{{COMMENT}}|_(?:NAME|HEADER|PREFIX|ENV|VAR|PATH|FILE|URL|FIELD|PARAM|COOKIE|LEN|LENGTH|SIZE|TYPE|KIND|ID|LABEL|KEY_ID|SCOPE)\s*:|=\s*b?"[A-Z][A-Z0-9_]{0,200}"|=\s*b?"[a-z]{1,40}(?:[-_.:][a-z]{1,40}){0,10}"|"[^"\n]{0,200}(?:[Ee]xample|EXAMPLE|[Cc]hange_?[Mm]e|CHANGE_?ME|[Dd]ummy|DUMMY|[Pp]laceholder|PLACEHOLDER|xxxx|XXXX|[Yy]our[-_]|YOUR[-_]|TODO|[Ss]ample|SAMPLE|[Rr]eplace|REPLACE|\{\{|\$\{)[^"\n]{0,200}"'
+    redactEvidence: true
+    message: A secret, password, token or key is a literal in the source; anyone with the code or the binary has it.
+    message_zh: 秘密、口令、令牌或密钥以字面量写在源码中；任何拿到代码或二进制的人都能获得它。
+    remediation: Load the value at run time from the environment or a secret store, and rotate the leaked value.
+    remediation_zh: 在运行时从环境变量或密钥管理服务读取，并轮换已经泄露的值。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+
+  # ---- JWT and passwords ----
+  - id: rs-jwt-signature-disabled
+    title: Rust JWT signature validation disabled
+    title_zh: Rust 关闭 JWT 签名校验
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.insecure_disable_signature_validation\s*\(\s*\)'
+    notPattern: '{{COMMENT}}'
+    message: insecure_disable_signature_validation() makes jsonwebtoken accept tokens with any signature, so anyone can forge a token.
+    message_zh: insecure_disable_signature_validation() 会让 jsonwebtoken 接受任意签名的令牌，任何人都能伪造令牌。
+    remediation: Remove the call and validate tokens with the issuer's key and an explicit algorithm list.
+    remediation_zh: 删除该调用，使用签发方的密钥和明确的算法列表校验令牌。
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: rs-jwt-exp-disabled
+    title: Rust JWT expiry not validated
+    title_zh: Rust 未校验 JWT 过期时间
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-613
+    owasp: A07:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.validate_exp\s*=\s*false\b'
+    notPattern: '{{COMMENT}}'
+    message: validate_exp = false makes jsonwebtoken accept expired tokens; check that the expiry is enforced elsewhere, or a leaked token never stops working.
+    message_zh: validate_exp = false 会让 jsonwebtoken 接受已过期的令牌；需确认过期时间在别处得到校验，否则泄露的令牌将永久有效。
+    remediation: Keep validate_exp true and issue short-lived tokens; use leeway for clock skew.
+    remediation_zh: 保持 validate_exp 为 true 并签发短期令牌；时钟偏差用 leeway 处理。
+  - id: rs-jwt-unverified-decode
+    title: Rust JWT read without verification
+    title_zh: Rust 未校验即读取 JWT
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bdangerous_insecure_decode(?:_with_validation)?(?:::<[^()\n]{0,80}>)?\s*\(|\b(?:dangerous_unsafe_decode|dangerous::insecure_decode|insecure_decode)(?:::<[^()\n]{0,80}>)?\s*\(|\bdecode_header\s*\('
+    notPattern: '{{COMMENT}}'
+    message: The token is decoded without checking its signature; check that nothing read from it (claims, kid, alg) is trusted for authentication or authorization.
+    message_zh: 令牌在未校验签名的情况下被解码；需确认从中读取的内容（声明、kid、alg）未被用于认证或授权。
+    remediation: Use jsonwebtoken::decode with a DecodingKey and a Validation that fixes the algorithm; use decode_header only to select a key from an allowlist.
+    remediation_zh: 使用 jsonwebtoken::decode 配合 DecodingKey 和固定算法的 Validation；decode_header 只用于从白名单中选择密钥。
+  - id: rs-jwt-hardcoded-secret
+    title: Rust JWT key from a string literal
+    title_zh: Rust JWT 密钥来自字符串字面量
+    severity: high
+    confidence: high
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:Encoding|Decoding)Key::from_secret\s*\(\s*(?:&\s*)?b?"(?<secret>[^"\n]{1,200})"'
+    notPattern: '{{COMMENT}}'
+    redactEvidence: true
+    message: The HMAC key that signs or verifies tokens is a literal in the source; anyone with the code can mint valid tokens.
+    message_zh: 用于签发或校验令牌的 HMAC 密钥以字面量写在源码中；任何拿到代码的人都能签发有效令牌。
+    remediation: Load a random key of at least 32 bytes from a secret store at start-up, and rotate the leaked one.
+    remediation_zh: 启动时从密钥管理服务读取至少 32 字节的随机密钥，并轮换已经泄露的密钥。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: rs-bcrypt-low-cost
+    title: Rust bcrypt cost below 10
+    title_zh: Rust bcrypt 成本因子低于 10
+    severity: medium
+    confidence: high
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:bcrypt::)?(?:hash|hash_with_salt|hash_with_result)\s*\(\s*[^,;\n]{1,200},\s*0*[1-9]\s*[,)]'
+    notPattern: '{{COMMENT}}'
+    filePattern: '\bbcrypt\b'
+    message: A bcrypt cost below 10 makes password hashes cheap to brute-force.
+    message_zh: bcrypt 成本因子低于 10，口令哈希容易被暴力破解。
+    remediation: Use bcrypt::DEFAULT_COST (12) or higher, or argon2.
+    remediation_zh: 使用 bcrypt::DEFAULT_COST（12）或更高，或改用 argon2。
+
+  # ---- Memory safety (unsafe APIs) ----
+  - id: rs-transmute
+    title: Rust mem::transmute
+    title_zh: Rust 使用 mem::transmute
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-843
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<![.\w])(?:(?:std|core)::)?(?:mem::)?transmute(?:_copy)?(?:::<[^()\n]{0,120}>)?\s*\('
+    notPattern: '{{COMMENT}}'
+    message: transmute reinterprets bits without any check; a wrong size, alignment or invariant is undefined behaviour.
+    message_zh: transmute 不做任何检查地重新解释位模式；大小、对齐或不变量不符时属于未定义行为。
+    remediation: Prefer safe conversions (from_ne_bytes, bytemuck::cast, as, pointer casts with documented invariants).
+    remediation_zh: 优先使用安全转换（from_ne_bytes、bytemuck::cast、as、带有明确不变量说明的指针转换）。
+  - id: rs-from-raw-parts
+    title: Rust slice or buffer built from a raw pointer and length
+    title_zh: Rust 由裸指针和长度构造切片或缓冲区
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-119
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bfrom_raw_parts(?:_mut|_in)?\s*\('
+    notPattern: '{{COMMENT}}'
+    message: from_raw_parts trusts the pointer and the length; a length that is too long or a dangling pointer reads or writes out of bounds.
+    message_zh: from_raw_parts 完全信任指针和长度；长度过大或指针悬空会导致越界读写。
+    remediation: Check that the pointer is valid and aligned for the whole length and that the memory outlives the slice; prefer safe slices.
+    remediation_zh: 确认指针在整个长度内有效且对齐，内存的生命周期长于切片；尽量使用安全切片。
+  - id: rs-mem-uninitialized
+    title: Rust mem::uninitialized
+    title_zh: Rust 使用 mem::uninitialized
+    severity: medium
+    confidence: high
+    cwe: CWE-908
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bmem::uninitialized(?:::<[^()\n]{0,120}>)?\s*\('
+    notPattern: '{{COMMENT}}'
+    message: mem::uninitialized is deprecated and undefined behaviour for almost every type.
+    message_zh: mem::uninitialized 已被弃用，几乎对所有类型都是未定义行为。
+    remediation: Use MaybeUninit<T> and initialise the value before assume_init().
+    remediation_zh: 使用 MaybeUninit<T>，并在 assume_init() 之前完成初始化。
+  - id: rs-get-unchecked
+    title: Rust unchecked indexing
+    title_zh: Rust 不做边界检查的索引
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-125
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.get_unchecked(?:_mut)?\s*\('
+    notPattern: '{{COMMENT}}'
+    message: get_unchecked skips the bounds check; an index out of range is undefined behaviour.
+    message_zh: get_unchecked 跳过边界检查；索引越界属于未定义行为。
+    remediation: Use get() or indexing unless profiling shows the check matters and the index is proven in range.
+    remediation_zh: 除非性能分析证明有必要且索引已被证明在范围内，否则使用 get() 或普通索引。
+  - id: rs-static-mut
+    title: Rust static mut
+    title_zh: Rust 使用 static mut
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-362
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    flags: ''
+    pattern: '\bstatic\s+mut\s+[A-Za-z_]'
+    notPattern: '{{COMMENT}}'
+    message: A static mut is shared mutable state without synchronisation; concurrent access is a data race.
+    message_zh: static mut 是未同步的共享可变状态；并发访问会产生数据竞争。
+    remediation: Use an atomic, Mutex, OnceLock or thread_local! instead.
+    remediation_zh: 改用原子类型、Mutex、OnceLock 或 thread_local!。
+  - id: rs-vec-set-len
+    title: Rust Vec::set_len
+    title_zh: Rust 使用 Vec::set_len
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-908
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.set_len\s*\('
+    # File::set_len truncates a file and is safe.
+    notPattern: '{{COMMENT}}|\w{0,40}file\w{0,20}(?:\(\))?\.set_len\s*\(|\b(?:f|fd)\.set_len\s*\('
+    message: set_len exposes elements that may not be initialised; reading them is undefined behaviour.
+    message_zh: set_len 会暴露可能未初始化的元素；读取它们属于未定义行为。
+    remediation: Initialise the elements first (resize, extend, spare_capacity_mut with MaybeUninit) and call set_len only for initialised elements.
+    remediation_zh: 先初始化元素（resize、extend 或配合 MaybeUninit 使用 spare_capacity_mut），只对已初始化的元素调用 set_len。
+  - id: rs-copy-nonoverlapping
+    title: Rust ptr::copy_nonoverlapping
+    title_zh: Rust 使用 ptr::copy_nonoverlapping
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-120
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bcopy_nonoverlapping(?:::<[^()\n]{0,80}>)?\s*\(|\.copy_to_nonoverlapping\s*\('
+    notPattern: '{{COMMENT}}'
+    message: A raw memory copy has no bounds check; a count larger than either buffer overflows it.
+    message_zh: 裸内存复制没有边界检查；数量超过任一缓冲区大小就会溢出。
+    remediation: Prefer copy_from_slice / clone_from_slice, which check the lengths.
+    remediation_zh: 优先使用会检查长度的 copy_from_slice / clone_from_slice。
+
+  # ---- Web ----
+  - id: rs-cors-permissive
+    title: Rust CORS allows any origin with credentials
+    title_zh: Rust CORS 允许任意来源并携带凭据
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    # actix-cors Cors::permissive() and tower-http CorsLayer::very_permissive()
+    # both reflect any origin and allow credentials.
+    pattern: '\bCors::permissive\s*\(\)|\bCorsLayer::very_permissive\s*\(\)'
+    notPattern: '{{COMMENT}}'
+    group: rs-cors
+    message: The CORS policy reflects any origin and allows credentials, so any web site can make authenticated requests and read the responses.
+    message_zh: CORS 策略会回显任意来源并允许携带凭据，任何网站都能发起带身份的请求并读取响应。
+    remediation: List the allowed origins explicitly (allowed_origin / AllowOrigin::list) and only allow credentials for those.
+    remediation_zh: 显式列出允许的来源（allowed_origin / AllowOrigin::list），只对这些来源允许携带凭据。
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: rs-cors-any-origin-credentials
+    title: Rust CORS any origin combined with credentials
+    title_zh: Rust CORS 任意来源与凭据同时启用
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.allow_any_origin\s*\(\)|\.send_wildcard\s*\(\)|\bAllowOrigin::mirror_request\s*\(\)|\.allowed_origin_fn\s*\(\s*\|[^|\n]{0,80}\|\s*true\b|\bAllowOrigin::predicate\s*\(\s*\|[^|\n]{0,80}\|\s*true\b'
+    notPattern: '{{COMMENT}}'
+    filePattern: '\.supports_credentials\s*\(\)|\.allow_credentials\s*\(\s*true\s*\)'
+    group: rs-cors
+    message: The CORS policy accepts any origin and the same file enables credentials, so any web site can make authenticated requests and read the responses.
+    message_zh: CORS 策略接受任意来源，且同一文件开启了凭据，任何网站都能发起带身份的请求并读取响应。
+    remediation: Allow a fixed list of origins when credentials are enabled.
+    remediation_zh: 启用凭据时只允许固定的来源列表。
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: rs-cookie-insecure
+    title: Rust cookie without Secure or HttpOnly
+    title_zh: Rust Cookie 未设置 Secure 或 HttpOnly
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\.(?:set_)?(?:secure|http_only)\s*\(\s*false\s*\)'
+    notPattern: '{{COMMENT}}'
+    filePattern: '\bCookie\b|\bcookie::|SessionMiddleware|CookieSessionStore'
+    message: The cookie is sent over plain HTTP (secure(false)) or readable by scripts (http_only(false)); a session cookie set this way can be stolen.
+    message_zh: Cookie 会经明文 HTTP 发送（secure(false)）或可被脚本读取（http_only(false)）；以此设置的会话 Cookie 可能被窃取。
+    remediation: Set secure(true) and http_only(true) on session and authentication cookies.
+    remediation_zh: 会话和认证 Cookie 设置 secure(true) 与 http_only(true)。
+  - id: rs-cookie-samesite-none
+    title: Rust cookie with SameSite=None
+    title_zh: Rust Cookie 设置 SameSite=None
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1275
+    owasp: A01:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bSameSite::None\b'
+    notPattern: '{{COMMENT}}|[=!]=\s*(?:Some\(\s*)?(?:\w+::)?SameSite::None'
+    message: SameSite=None sends the cookie on cross-site requests; check that state-changing endpoints have CSRF protection.
+    message_zh: SameSite=None 会在跨站请求中发送该 Cookie；需确认修改状态的接口有 CSRF 防护。
+    remediation: Use SameSite::Lax or Strict for session cookies unless a cross-site flow needs them.
+    remediation_zh: 除非跨站流程需要，会话 Cookie 使用 SameSite::Lax 或 Strict。
+  - id: rs-open-redirect
+    title: Rust redirect to a request value
+    title_zh: Rust 重定向到请求中的值
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-601
+    owasp: A01:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bRedirect::(?:to|temporary|permanent|see_other|found|moved)\s*\(\s*(?![\s"])[^;\n]{0,200}(?<!\.)\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|uri|target|callback|location|dest\w{0,20})\b|(?:\bheader::LOCATION|"Location")\s*,\s*(?![\s"])[^;\n]{0,200}(?<!\.)\b(?:query|params|form|next|redirect\w{0,20}|return_to|return_url|url|target|callback)\b'
+    notPattern: '{{COMMENT}}'
+    message: The redirect target comes from the request; an attacker can send users to a site of their choice from a trusted link.
+    message_zh: 重定向目标来自请求；攻击者可借助可信链接把用户引导到任意网站。
+    remediation: Redirect only to relative paths you have validated, or map the value to an allowlist of targets.
+    remediation_zh: 只重定向到经过校验的相对路径，或把该值映射到白名单中的目标。
+  - id: rs-html-format
+    title: Rust HTML response built with format!
+    title_zh: Rust 使用 format! 构造 HTML 响应
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bHtml\s*\(\s*(?:&\s*)?format!\s*\(|\.body\s*\(\s*(?:&\s*)?format!\s*\(\s*r?#{0,3}"\s*<|\bRawHtml\s*\(\s*(?:&\s*)?format!\s*\(|\bcontent::RawHtml\s*\(\s*format!\s*\('
+    notPattern: '{{COMMENT}}|\bhtml_escape\b|\bencode_text\b|\bescape\w{0,20}\s*\('
+    message: An HTML response is built with format!, which does not escape; a request value inserted into it is cross-site scripting.
+    message_zh: HTML 响应由不做转义的 format! 构造；插入其中的请求值会造成跨站脚本。
+    remediation: Render with an escaping template engine (askama, maud, tera) or escape each value with html_escape::encode_text.
+    remediation_zh: 使用会自动转义的模板引擎（askama、maud、tera）渲染，或用 html_escape::encode_text 转义每个值。
+
+  # ---- Untrusted input sizes and deserialisation ----
+  - id: rs-deserialize-unbounded
+    title: Rust binary deserialisation without a size limit
+    title_zh: Rust 无大小限制的二进制反序列化
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bbincode::(?:deserialize|deserialize_from|decode_from_slice|decode_from_std_read|serde::decode_from_slice|serde::decode_from_std_read)(?:::<[^()\n]{0,80}>)?\s*\(|\bserde_pickle::(?:from_slice|from_reader|from_value)(?:::<[^()\n]{0,80}>)?\s*\(|\brmp_serde::(?:from_slice|from_read|decode::from_read|decode::from_slice)(?:::<[^()\n]{0,80}>)?\s*\('
+    notPattern: '{{COMMENT}}|\.with_limit\b|\bwith_limit\s*::'
+    message: Binary formats read lengths from the input; on request data without a limit a small message can make the server allocate gigabytes.
+    message_zh: 二进制格式从输入中读取长度；对请求数据不设限制时，一条很小的消息就可能让服务器分配数 GB 内存。
+    remediation: Limit the body size first and use a decoder with a limit (bincode::config::standard().with_limit::<N>(), DefaultOptions::new().with_limit(n)).
+    remediation_zh: 先限制请求体大小，再使用带限制的解码配置（bincode::config::standard().with_limit::<N>()、DefaultOptions::new().with_limit(n)）。
+  - id: rs-read-unbounded
+    title: Rust network stream read to the end without a limit
+    title_zh: Rust 无限制地读取整个网络流
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-400
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:stream|socket|sock|conn|connection|tcp\w{0,10}|client|tls_stream|reader|body)\.read_to_(?:end|string)\s*\('
+    notPattern: '{{COMMENT}}|\.take\s*\('
+    filePattern: '\b(?:TcpStream|UnixStream|TcpListener|TlsStream|tokio::net)\b'
+    message: read_to_end / read_to_string on a network stream reads until the peer stops; a peer that keeps sending exhausts memory.
+    message_zh: 对网络流调用 read_to_end / read_to_string 会一直读到对端停止；持续发送数据的对端可耗尽内存。
+    remediation: Wrap the reader with .take(max_bytes) or read into a fixed-size buffer.
+    remediation_zh: 用 .take(最大字节数) 包装读取器，或读入固定大小的缓冲区。
+  - id: rs-alloc-untrusted-len
+    title: Rust allocation sized by a decoded length
+    title_zh: Rust 按解码出的长度分配内存
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-789
+    languages: [rust]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bVec::with_capacity\s*\(\s*(?:[^;\n()]{0,80}\b(?:read_u(?:16|32|64)|read_i(?:32|64)|from_(?:be|le|ne)_bytes|get_u(?:16|32|64)(?:_le)?)\b|(?:len|length|size|count|n|\w{1,30}_(?:len|length|size|count))\s+as\s+usize\s*\))|\bvec!\s*\[\s*0(?:u8)?\s*;\s*(?:len|length|size|n|\w{1,30}_(?:len|length|size))\s+as\s+usize\s*\]'
+    notPattern: '{{COMMENT}}|\.min\s*\(|\bmin\s*\('
+    message: The buffer size comes from a length field decoded from input; a forged length makes the process allocate until it aborts.
+    message_zh: 缓冲区大小来自从输入中解码出的长度字段；伪造的长度会让进程持续分配内存直至崩溃。
+    remediation: Check the length against a maximum before allocating, or cap the capacity with .min(MAX).
+    remediation_zh: 分配前将长度与上限比较，或用 .min(MAX) 限制容量。

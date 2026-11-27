@@ -1332,6 +1332,356 @@
       "kind": "finding"
     },
     {
+      "file": "rust/src/auth.rs",
+      "line": 5,
+      "ruleId": "rs-jwt-hardcoded-secret",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/auth.rs",
+      "line": 10,
+      "ruleId": "rs-jwt-signature-disabled",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/auth.rs",
+      "line": 11,
+      "ruleId": "rs-jwt-exp-disabled",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/auth.rs",
+      "line": 16,
+      "ruleId": "rs-jwt-unverified-decode",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/auth.rs",
+      "line": 20,
+      "ruleId": "rs-bcrypt-low-cost",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 6,
+      "ruleId": "rs-hardcoded-secret",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 9,
+      "ruleId": "rs-weak-hash",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 13,
+      "ruleId": "rs-weak-password-hash",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 17,
+      "ruleId": "rs-weak-cipher",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 22,
+      "ruleId": "rs-weak-cipher",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 26,
+      "ruleId": "rs-fixed-nonce",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/crypto.rs",
+      "line": 31,
+      "ruleId": "rs-insecure-rng-secret",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 7,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 8,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 13,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 14,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 18,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 23,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 27,
+      "ruleId": "rs-sql-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 31,
+      "ruleId": "rs-sql-built-string",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 33,
+      "ruleId": "rs-sql-built-string",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 5,
+      "ruleId": "rs-command-shell-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 10,
+      "ruleId": "rs-command-shell-injection",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 14,
+      "ruleId": "rs-command-dynamic-program",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/files.rs",
+      "line": 9,
+      "ruleId": "rs-path-traversal",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/files.rs",
+      "line": 17,
+      "ruleId": "rs-zip-slip",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/files.rs",
+      "line": 28,
+      "ruleId": "rs-tar-slip",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/files.rs",
+      "line": 29,
+      "ruleId": "rs-tar-slip",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 5,
+      "ruleId": "rs-static-mut",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 8,
+      "ruleId": "rs-transmute",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 12,
+      "ruleId": "rs-from-raw-parts",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 17,
+      "ruleId": "rs-mem-uninitialized",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 21,
+      "ruleId": "rs-get-unchecked",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 25,
+      "ruleId": "rs-vec-set-len",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/memory.rs",
+      "line": 29,
+      "ruleId": "rs-copy-nonoverlapping",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/tls.rs",
+      "line": 6,
+      "ruleId": "rs-tls-accept-invalid",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/tls.rs",
+      "line": 10,
+      "ruleId": "rs-tls-accept-invalid",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/tls.rs",
+      "line": 15,
+      "ruleId": "rs-openssl-verify-none",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/tls.rs",
+      "line": 20,
+      "ruleId": "rs-rustls-custom-verifier",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/tls.rs",
+      "line": 25,
+      "ruleId": "rs-rustls-custom-verifier",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 10,
+      "ruleId": "rs-cors-permissive",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 14,
+      "ruleId": "rs-cors-any-origin-credentials",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 18,
+      "ruleId": "rs-cookie-insecure",
+      "language": "rust",
+      "kind": "finding"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 18,
+      "ruleId": "rs-cookie-samesite-none",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 22,
+      "ruleId": "rs-open-redirect",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 26,
+      "ruleId": "rs-html-format",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 30,
+      "ruleId": "rs-deserialize-unbounded",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 35,
+      "ruleId": "rs-read-unbounded",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/web.rs",
+      "line": 40,
+      "ruleId": "rs-alloc-untrusted-len",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 18,
+      "ruleId": "rs-command-shell-api",
+      "language": "rust",
+      "kind": "hotspot"
+    },
+    {
       "file": "deps/package.json",
       "line": 7,
       "ruleId": "dep-missing-lockfile",
@@ -1374,6 +1724,48 @@
       "file": "go/xss.go",
       "line": 8,
       "ruleId": "go-opengrep-template-html",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 7,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 8,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 23,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/db.rs",
+      "line": 38,
+      "ruleId": "rs-opengrep-sql-format",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 5,
+      "ruleId": "rs-opengrep-shell-command",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 10,
+      "ruleId": "rs-opengrep-shell-command",
+      "confidence": "medium"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 18,
+      "ruleId": "rs-opengrep-shell-command",
       "confidence": "medium"
     },
     {

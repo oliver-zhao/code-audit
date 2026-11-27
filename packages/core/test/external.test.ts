@@ -714,7 +714,7 @@ describe("bundled opengrep rules", () => {
         counts.set(language, (counts.get(language) ?? 0) + 1);
       }
     }
-    for (const language of ["python", "javascript", "java", "go", "csharp", "c"]) {
+    for (const language of ["python", "javascript", "java", "go", "csharp", "c", "rust"]) {
       expect(counts.get(language)).toBeGreaterThanOrEqual(2);
     }
   });

@@ -1077,6 +1077,8 @@ describe("evidence of credential rules", () => {
       "py-hardcoded-secret",
       "py-secret-key-literal",
       "py-static-iv",
+      "rs-hardcoded-secret",
+      "rs-jwt-hardcoded-secret",
       "tf-hardcoded-credentials",
     ]);
   });
