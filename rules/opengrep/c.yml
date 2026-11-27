@@ -35,25 +35,29 @@ rules:
     patterns:
       - pattern-either:
           - pattern: printf($FMT)
+          - pattern: std::printf($FMT)
+          - pattern: std::fprintf($STREAM, $FMT)
           - pattern: fprintf($STREAM, $FMT)
           - pattern: dprintf($FD, $FMT)
           - pattern: sprintf($BUF, $FMT)
           - pattern: snprintf($BUF, $SIZE, $FMT)
           - pattern: syslog($PRIORITY, $FMT)
-      # Not a literal, not an ALL_CAPS macro, not a gettext-style lookup
+      # Not a literal, not an ALL_CAPS macro (alone or pasted before a literal,
+      # SD_WARNING "text"), not a gettext-style lookup
       # (_("..."), gettext(...)), not a macro parameter (_s, __VA_ARGS__) and
       # not a choice between literals (cond ? "a" : "b").
       - metavariable-regex:
           metavariable: $FMT
-          regex: '^(?![_"])(?![A-Z][A-Z0-9_]*$)(?!(?:N_|Q_|C_|gettext|dgettext|dcgettext|ngettext)\s*\()(?![^?]*\?)'
+          regex: '^(?![_"])(?![A-Z][A-Z0-9_]*\s*(?:$|"))(?!(?:N_|Q_|C_|gettext|dgettext|dcgettext|ngettext)\s*\()(?![^?]*\?)'
 
   - id: c-opengrep-command-from-input
     mode: taint
     languages: [c, cpp]
     severity: ERROR
     message: >-
-      Data from argv, getenv or optarg reaches the command string of system()
-      or popen(), which runs it through /bin/sh (command injection, CWE-78).
+      Data from argv, getenv or optarg reaches the command string of system(),
+      popen() or `sh -c`, which runs it through the shell (command injection,
+      CWE-78).
       Run the program with execv/posix_spawn and an argument array instead.
     metadata:
       cwe: "CWE-78"
@@ -61,6 +65,7 @@ rules:
       category: security
     pattern-sources:
       - pattern: getenv(...)
+      - pattern: std::getenv(...)
       - pattern: secure_getenv(...)
       - pattern: argv[$I]
       - pattern: optarg
@@ -77,9 +82,23 @@ rules:
       - pattern: strcat($TO, $FROM)
         from: $FROM
         to: $TO
+    # A number parsed from the input cannot carry shell syntax.
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: atoi(...)
+          - pattern: atol(...)
+          - pattern: atoll(...)
+          - pattern: strtol(...)
+          - pattern: strtoll(...)
+          - pattern: strtoul(...)
+          - pattern: strtoull(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
               - pattern: system($CMD)
+              - pattern: std::system($CMD)
               - pattern: popen($CMD, $MODE)
+              - pattern: execl("/bin/sh", $ARG0, "-c", $CMD, ...)
+              - pattern: execlp("sh", $ARG0, "-c", $CMD, ...)
+              - pattern: execl("/bin/bash", $ARG0, "-c", $CMD, ...)
           - focus-metavariable: $CMD

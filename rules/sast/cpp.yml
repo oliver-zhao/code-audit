@@ -18,9 +18,15 @@ definitions:
   # word, and most prose in comments ("do not use gets()").
   # Used right after the function name: the lookbehind spans the name, an
   # optional std:: or :: qualifier and the space before it.
-  CSA: '(?<=(?:^|[\n;{}(,=!&|?:)]|\breturn|\belse|\bdo)\s{0,80}(?:std::|::)?[A-Za-z_]\w{0,40})'
+  # The second lookbehind drops a call that follows a // comment marker on
+  # the same line (no quote in between, so "http://..." does not count).
+  CSA: '(?<=(?:^|[\n;{}(,=!&|?:)]|\breturn|\belse|\bdo)\s{0,80}(?:std::|::)?[A-Za-z_]\w{0,40})(?<!//[^\n"]{0,200})'
+  # A line that is (the continuation of) a comment. Until the C lexer exists
+  # every rule ignores matches on such lines; a dereference such as `*p = x`
+  # is not a comment (no blank after the star).
+  COMMENT: '^\s*(?:\*(?:\s|/|$)|//|/\*)'
   # Data that comes straight from the process environment or command line.
-  EXT: '(?:\bargv\s*\[|(?<![\w.>])(?:getenv|_wgetenv|secure_getenv|_tgetenv)\s*\(|\boptarg\b)'
+  EXT: '(?:\bargv\s*\[|(?<![\w.>])(?:std::)?(?:getenv|_wgetenv|secure_getenv|_tgetenv)\s*\(|\boptarg\b)'
   # The next argument is not a string literal (plain, wide, UTF or _T/TEXT).
   NOLIT: '(?!\s*(?:(?:[LuU]8?)?"|(?:_T|TEXT|_TEXT|__T)\s*\())'
   # A non-format argument before the format: no top-level comma, nested
@@ -29,15 +35,20 @@ definitions:
   # A plain variable used as the whole format argument: a name with member
   # access or indexing. ALL_CAPS names are macros and usually literals; names
   # with a leading underscore (__VA_ARGS__, _s) are macro parameters.
-  FARG: '(?![A-Z][A-Z0-9_]*\s*\))[A-Za-z]\w{0,60}(?:\s*(?:\.|->)\s*[A-Za-z_]\w{0,60}|\s*\[[^\[\];]{1,40}\]){0,4}'
+  # A cast to a character pointer, an address-of and a constant or variable
+  # offset (`(const char *)buf`, `&buf[1]`, `buf + 1`) are allowed around it.
+  FARG: '(?:\(\s*(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:char|wchar_t|TCHAR|WCHAR|CHAR|gchar)\s*\*\s*\)\s*|&\s*)?(?![A-Z][A-Z0-9_]*\s*[)+,])[A-Za-z]\w{0,60}(?:\s*(?:\.|->)\s*[A-Za-z_]\w{0,60}|\s*\[[^\[\];]{1,40}\]){0,4}(?:\s*\+\s*(?:\d{1,6}|[a-z_]\w{0,40}))?'
   # Functions whose first, second or third argument is the format.
-  P1: '(?:printf|wprintf|_tprintf|printw)'
-  P2: '(?:fprintf|fwprintf|_ftprintf|dprintf|sprintf|_stprintf|_swprintf|wsprintf[AW]?|asprintf|syslog|wprintw)'
-  P3: '(?:snprintf|_snprintf|_sntprintf|swprintf|_snwprintf|StringCchPrintf[AW]?|StringCbPrintf[AW]?)'
+  P1: '(?:printf|wprintf|_tprintf|printw|printf_s|wprintf_s|_tprintf_s)'
+  P2: '(?:fprintf|fwprintf|_ftprintf|fprintf_s|fwprintf_s|_ftprintf_s|dprintf|sprintf|_stprintf|_swprintf|wsprintf[AW]?|asprintf|syslog|wprintw)'
+  P3: '(?:snprintf|_snprintf|_sntprintf|swprintf|_snwprintf|sprintf_s|swprintf_s|_stprintf_s|StringCchPrintf[AW]?|StringCbPrintf[AW]?)'
+  # The format is the fourth argument (after the count, e.g. _TRUNCATE).
+  P4: '(?:_snprintf_s|_snwprintf_s|_sntprintf_s)'
   # Unbounded string copy and concatenation (no destination size).
   COPYFN: '(?:strcpy|strcat|wcscpy|wcscat|_mbscpy|_mbscat|_tcscpy|_tcscat|lstrcpy[AW]?|lstrcat[AW]?|StrCpy[AW]?|StrCat[AW]?|stpcpy|wcpcpy)'
   # A format string literal with a %s (or %ls, %S) that has no precision.
   UNBOUNDED_S: '(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%[-+ #0]{0,5}(?:\d{1,4}|\*)?[hlw]?[sS]'
+  FMTCALL: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},|{{P4}}{{CSA}}\s*\({{OARG}},{{OARG}},{{OARG}},)'
   SHELLRUN: '(?:system|_wsystem|_tsystem|popen|_popen|_wpopen|_tpopen)'
 rules:
   # ---------------------------------------------------------------- copies
@@ -52,6 +63,7 @@ rules:
     flags: ""
     pattern: '\b{{COPYFN}}{{CSA}}\s*\(\s*[^,;]{1,200},\s*{{EXT}}'
     group: cpp-copy
+    notPattern: '{{COMMENT}}'
     message: strcpy/strcat (or a Windows variant) copies argv, getenv or optarg data without a size limit; a long value overflows the destination buffer.
     message_zh: strcpy/strcat（或其 Windows 变体）不限长度地复制 argv、getenv 或 optarg 数据，过长的值会溢出目标缓冲区。
     remediation: Check the length first and copy with a bounded function (snprintf, strlcpy, strcpy_s) or use std::string.
@@ -71,6 +83,7 @@ rules:
     flags: ""
     pattern: '\b{{COPYFN}}{{CSA}}\s*\(\s*[^,;]{1,200},{{NOLIT}}(?!\s*[A-Z][A-Z0-9_]*\s*\))'
     group: cpp-copy
+    notPattern: '{{COMMENT}}'
     message: strcpy/strcat (or a Windows variant) copies a runtime string without a destination size. Confirm the source length is checked against the destination capacity.
     message_zh: strcpy/strcat（或其 Windows 变体）在不知道目标大小的情况下复制运行时字符串。需确认源长度已按目标容量校验。
     remediation: Use a bounded copy (snprintf, strlcpy, strcpy_s) or std::string.
@@ -88,6 +101,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:gets|_getws|_getts){{CSA}}\s*\('
+    notPattern: '{{COMMENT}}'
     message: gets cannot limit the input length and has been removed from the C standard; any long input line overflows the buffer.
     message_zh: gets 无法限制输入长度，已被 C 标准移除，任何过长的输入行都会溢出缓冲区。
     remediation: Use fgets(buffer, sizeof(buffer), stdin) and handle newlines and truncation.
@@ -108,6 +122,7 @@ rules:
       - '\b(?:sprintf|_stprintf|_swprintf|wsprintf[AW]?){{CSA}}\s*\(\s*[^,;]{1,200},\s*{{UNBOUNDED_S}}'
       - '{{EXT}}'
     group: cpp-sprintf
+    notPattern: '{{COMMENT}}'
     message: sprintf formats argv, getenv or optarg data through a %s without precision into a fixed buffer; a long value overflows it.
     message_zh: sprintf 以无精度的 %s 把 argv、getenv 或 optarg 数据写入固定缓冲区，过长的值会造成溢出。
     remediation: Use snprintf with the destination size and check the return value for truncation.
@@ -127,6 +142,7 @@ rules:
     flags: ""
     pattern: '\b(?:(?:sprintf|_stprintf|_swprintf|wsprintf[AW]?){{CSA}}\s*\(\s*[^,;]{1,200},\s*{{UNBOUNDED_S}}|(?:vsprintf|_vstprintf|wvsprintf[AW]?){{CSA}}\s*\()'
     group: cpp-sprintf
+    notPattern: '{{COMMENT}}'
     message: sprintf with an unbounded %s, vsprintf or wsprintf writes a string of unknown length into a buffer whose size it does not know. Confirm the inputs are bounded.
     message_zh: 带无界 %s 的 sprintf、vsprintf 或 wsprintf 把未知长度的字符串写入其不知道大小的缓冲区。需确认输入长度有界。
     remediation: Use snprintf/vsnprintf (or StringCchPrintf on Windows) with the destination size, or a precision such as %.63s.
@@ -143,9 +159,28 @@ rules:
     owasp: A03:2021
     languages: [c, cpp]
     flags: ""
-    pattern: '\b(?:scanf|fscanf|sscanf|wscanf|fwscanf|swscanf|vscanf|vfscanf|vsscanf|_tscanf|_ftscanf|_stscanf){{CSA}}\s*\([^;"]{0,200}(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%(?:\d{1,2}\$)?l?(?:s|S|\[)'
+    pattern: '\b(?:scanf|fscanf|wscanf|fwscanf|vscanf|vfscanf|_tscanf|_ftscanf){{CSA}}\s*\([^;"]{0,200}(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%(?:\d{1,2}\$)?l?(?:s|S|\[)'
+    notPattern: '{{COMMENT}}'
     message: A scanf-family %s or %[ conversion without a field width writes as many characters as the input contains; long input overflows the buffer.
     message_zh: scanf 系列中未指定宽度的 %s 或 %[ 会写入输入中的全部字符，过长的输入会溢出缓冲区。
+    remediation: Give a width one less than the buffer size (%63s for char buf[64]), use fgets, or use %ms (POSIX) and free the result.
+    remediation_zh: 指定比缓冲区小一的宽度（char buf[64] 用 %63s），或改用 fgets，或使用 %ms（POSIX）并释放结果。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-sscanf-unbounded-string
+    title: C/C++ sscanf-family %s or %[ without a field width
+    title_zh: C/C++ sscanf 系列的 %s 或 %[ 未指定宽度
+    severity: high
+    confidence: low
+    cwe: CWE-120
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:sscanf|swscanf|vsscanf|_stscanf){{CSA}}\s*\([^;"]{0,200}(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%(?:\d{1,2}\$)?l?(?:s|S|\[)'
+    notPattern: '{{COMMENT}}'
+    message: An sscanf %s or %[ conversion without a field width copies a whole word of the source string; it overflows the buffer unless the buffer is at least as long as the source.
+    message_zh: sscanf 中未指定宽度的 %s 或 %[ 会复制源字符串中的整个单词；除非缓冲区不短于源字符串，否则会溢出。
     remediation: Give a width one less than the buffer size (%63s for char buf[64]), use fgets, or use %ms (POSIX) and free the result.
     remediation_zh: 指定比缓冲区小一的宽度（char buf[64] 用 %63s），或改用 fgets，或使用 %ms（POSIX）并释放结果。
     references:
@@ -161,10 +196,10 @@ rules:
     owasp: A03:2021
     languages: [c, cpp]
     flags: ""
-    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},)\s*{{FARG}}\s*\)'
+    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},|{{P4}}{{CSA}}\s*\({{OARG}},{{OARG}},{{OARG}},)\s*{{FARG}}\s*\)'
     group: cpp-format
     # A macro body forwards its parameter; the call sites decide.
-    notPattern: '^\s*#\s*define\b|\\\s*$'
+    notPattern: '{{COMMENT}}|^\s*#\s*define\b|\\\s*$'
     message: A variable is passed as the format string with no arguments after it. If the text contains % directives (from input, a file or the network) the call reads or writes memory.
     message_zh: 变量被直接用作格式串且其后没有参数。若文本中含有 % 指令（来自输入、文件或网络），调用会读写内存。
     remediation: Use a constant format, for example printf("%s", text) or fputs(text, stream).
@@ -181,10 +216,10 @@ rules:
     owasp: A03:2021
     languages: [c, cpp]
     flags: ""
-    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},)\s*[A-Za-z_][\w.>\[\]-]{0,80}\.(?:c_str|data)\s*\(\s*\)\s*\)'
+    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},|{{P4}}{{CSA}}\s*\({{OARG}},{{OARG}},{{OARG}},)\s*[A-Za-z_][\w.>\[\]-]{0,80}\.(?:c_str|data)\s*\(\s*\)\s*\)'
     group: cpp-format
     # A macro body forwards its parameter; the call sites decide.
-    notPattern: '^\s*#\s*define\b|\\\s*$'
+    notPattern: '{{COMMENT}}|^\s*#\s*define\b|\\\s*$'
     message: The contents of a run-time string (c_str()/data()) are the format string. Any % in the string is interpreted as a conversion.
     message_zh: 运行时字符串的内容（c_str()/data()）被当作格式串，其中任何 % 都会被解释为转换说明。
     remediation: Use printf("%s", s.c_str()), or stream the string with std::cout / fmt::print("{}", s).
@@ -205,11 +240,31 @@ rules:
     filePattern: '^\s*#\s*include\s*<err\.h>'
     group: cpp-format
     # A macro body forwards its parameter; the call sites decide.
-    notPattern: '^\s*#\s*define\b|\\\s*$'
+    notPattern: '{{COMMENT}}|^\s*#\s*define\b|\\\s*$'
     message: A variable is the format string of err/errx/warn/warnx with no arguments after it; % directives in the text are interpreted.
     message_zh: 变量被用作 err/errx/warn/warnx 的格式串且其后没有参数，文本中的 % 指令会被解释。
     remediation: Use a constant format, for example warnx("%s", text).
     remediation_zh: 使用常量格式串，例如 warnx("%s", text)。
+    references:
+      - CWE-134
+      - OWASP A03:2021
+  - id: cpp-format-string-variable
+    title: C/C++ printf-family format string is a variable followed by arguments
+    title_zh: C/C++ printf 系列的格式串是变量且其后带参数
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-134
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '{{FMTCALL}}\s*{{FARG}}\s*,'
+    group: cpp-format
+    notPattern: '{{COMMENT}}|^\s*#\s*define\b|\\\s*$'
+    message: The format string is a variable and arguments follow it, as in a logging wrapper. Confirm the format always comes from the program and never from input, a file or the network.
+    message_zh: 格式串是变量且其后带参数（常见于日志封装函数）。需确认格式串始终来自程序本身，而不是输入、文件或网络。
+    remediation: Keep formats constant at the call sites and mark wrappers with __attribute__((format(printf, n, m))) so the compiler checks them.
+    remediation_zh: 在调用处保持格式串为常量，并为封装函数标注 __attribute__((format(printf, n, m)))，让编译器检查。
     references:
       - CWE-134
       - OWASP A03:2021
@@ -225,6 +280,7 @@ rules:
     flags: ""
     pattern: '\b{{SHELLRUN}}{{CSA}}\s*\([^;]{0,300}?{{EXT}}'
     group: cpp-command
+    notPattern: '{{COMMENT}}'
     message: system/popen runs its argument through /bin/sh (cmd.exe on Windows); argv, getenv or optarg data in the command allows command injection.
     message_zh: system/popen 通过 /bin/sh（Windows 上为 cmd.exe）执行参数，命令中含有 argv、getenv 或 optarg 数据会导致命令注入。
     remediation: Avoid the shell; run the program with execv/posix_spawn and an argument array, and allowlist the inputs.
@@ -243,6 +299,7 @@ rules:
     flags: ""
     pattern: '\b{{SHELLRUN}}{{CSA}}\s*\([^;]{0,300}?(?:"\s*\+\s*[A-Za-z_(]|[\w)\]]\s*\+\s*(?:[LuU]8?)?"|\+[^;]{1,200}\)\s*\.\s*c_str\s*\()'
     group: cpp-command
+    notPattern: '{{COMMENT}}'
     message: The shell command is built by string concatenation at run time; a value containing shell metacharacters changes the command.
     message_zh: shell 命令在运行时通过字符串拼接构造，含有 shell 元字符的值会改变命令。
     remediation: Run the program with execv/posix_spawn and an argument array instead of a shell string, and allowlist the inputs.
@@ -261,6 +318,7 @@ rules:
     flags: ""
     pattern: '\b(?:execl|execlp|execle){{CSA}}\s*\(\s*"(?:(?:/usr)?/bin/)?(?:ba|da|z|k)?sh"\s*,\s*(?:"[^"]{0,40}"|[^,;"]{1,80})\s*,\s*"-c"\s*,(?!\s*"(?:[^"\\]|\\.){0,300}"\s*[,)])'
     group: cpp-command
+    notPattern: '{{COMMENT}}'
     message: A shell is started with -c and a command string built at run time, which is the same as system() with that string.
     message_zh: 以 -c 和运行时构造的命令字符串启动 shell，等同于用该字符串调用 system()。
     remediation: Exec the target program directly with an argument array (execv/posix_spawn) and allowlist the inputs.
@@ -280,6 +338,7 @@ rules:
     flags: ""
     pattern: '\b{{SHELLRUN}}{{CSA}}\s*\((?!\s*(?:[LuU]8?)?"(?:[^"\\]|\\.){0,400}"\s*[,)]|\s*(?:NULL|nullptr|0)\s*\))'
     group: cpp-command
+    notPattern: '{{COMMENT}}'
     message: system/popen runs a command string that is not a literal through the shell. Confirm the command is not built from untrusted input.
     message_zh: system/popen 通过 shell 执行非字面量的命令字符串。需确认命令不由不可信输入构造。
     remediation: Use execv/posix_spawn with an argument array and allowlist inputs.
@@ -298,6 +357,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\bCreateProcess(?:[AW]?{{CSA}}\s*\(|(?:AsUser[AW]?|WithTokenW){{CSA}}\s*\([^,;]{1,80},)\s*(?:NULL|nullptr|0)\s*,(?!\s*(?:[LuU]8?|_T\s*\(\s*|TEXT\s*\(\s*)?"\\")'
+    notPattern: '{{COMMENT}}'
     message: With a NULL application name Windows splits the command line at spaces and tries each prefix as a program ("C:\Program.exe" before "C:\Program Files\..."). Confirm the executable path is quoted or passed as lpApplicationName.
     message_zh: 应用名为 NULL 时，Windows 会按空格切分命令行并依次尝试每个前缀作为程序（先试 "C:\Program.exe"）。需确认可执行文件路径已加引号或通过 lpApplicationName 传入。
     remediation: Pass the full executable path as lpApplicationName, or put the program path in double quotes inside the command line.
@@ -316,6 +376,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:WinExec{{CSA}}\s*\(|ShellExecute[AW]?{{CSA}}\s*\(\s*[^,;]{1,80},\s*[^,;]{1,80},{{NOLIT}})'
+    notPattern: '{{COMMENT}}'
     message: WinExec parses an unquoted command line (it is deprecated), and ShellExecute opens whatever the target names, including URLs and documents with their handler. Confirm the target is not attacker-controlled.
     message_zh: WinExec 会解析未加引号的命令行（已弃用），ShellExecute 会用关联程序打开目标指定的任何内容，包括 URL 和文档。需确认目标不受攻击者控制。
     remediation: Use CreateProcess with a full, quoted application path; allowlist ShellExecute targets.
@@ -335,6 +396,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:memcpy|memmove|wmemcpy|wmemmove|CopyMemory|RtlCopyMemory|MoveMemory|RtlMoveMemory){{CSA}}\s*\(\s*[^,;]{1,120},\s*(?![A-Z][A-Z0-9_]*\s*,)([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,\s*(?:sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))|strlen\s*\(\s*\1\s*\)(?:\s*\+\s*1)?)\s*\)'
+    notPattern: '{{COMMENT}}'
     message: The number of bytes copied is the size of the source, not of the destination; a larger source overflows the destination.
     message_zh: 复制的字节数取自源而不是目标的大小，源更大时会溢出目标。
     remediation: Bound the copy by the destination size (min(dst_size, src_len)) and check it before copying.
@@ -352,6 +414,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:strncpy|wcsncpy|_tcsncpy|_mbsncpy|strncat|wcsncat|_tcsncat|lstrcpyn[AW]?){{CSA}}\s*\(\s*[^,;]{1,120},\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,\s*(?:strlen|wcslen|_tcslen|lstrlen[AW]?)\s*\(\s*\1\s*\)(?:\s*\+\s*1)?\s*\)'
+    notPattern: '{{COMMENT}}'
     message: The size argument is the length of the source string, so the call does not limit the copy to the destination at all and (for strncpy) leaves it without a terminating NUL.
     message_zh: 长度参数是源字符串的长度，因此调用完全没有按目标大小限制复制，并且（对 strncpy）不会写入结尾的 NUL。
     remediation: Pass the destination size, for example snprintf(dst, sizeof dst, "%s", src) or strlcpy(dst, src, sizeof dst).
@@ -369,6 +432,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:strncat|wcsncat|_tcsncat|_mbsncat){{CSA}}\s*\(\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,[^;]{1,200}?,\s*sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))(?:\s*-\s*1)?\s*\)'
+    notPattern: '{{COMMENT}}'
     message: The third argument of strncat is the room left in the destination, not its size; passing sizeof(dest) lets a non-empty destination overflow.
     message_zh: strncat 的第三个参数是目标剩余空间而不是其总大小；传入 sizeof(dest) 时，非空目标会被溢出。
     remediation: Pass sizeof(dest) - strlen(dest) - 1, or use strlcat / snprintf.
@@ -387,7 +451,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:strncpy|wcsncpy|_tcsncpy){{CSA}}\s*\(\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,{{NOLIT}}[^;]{1,200}?,\s*sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))\s*\)'
-    notPattern: '\[\s*sizeof[^\]]{1,80}-\s*1\s*\]\s*=|\[[^\]]{1,80}\]\s*=\s*(?:0|''\\0'')\s*;'
+    notPattern: '{{COMMENT}}|\[\s*sizeof[^\]]{1,80}-\s*1\s*\]\s*=|\[[^\]]{1,80}\]\s*=\s*(?:0|''\\0'')\s*;'
     message: strncpy with the full destination size does not write a terminating NUL when the source is that long. Confirm the last byte is set to 0 afterwards.
     message_zh: 当源字符串足够长时，以整个目标大小调用 strncpy 不会写入结尾 NUL。需确认之后把最后一个字节置为 0。
     remediation: Use strlcpy or snprintf, or copy sizeof(dest) - 1 bytes and set dest[sizeof(dest) - 1] = '\0'.
@@ -406,6 +470,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:__builtin_alloca|_alloca|alloca){{CSA}}\s*\((?!\s*(?:\d+[uUlL]{0,3}|sizeof\s*\([^()]{1,80}\)|[A-Z][A-Z0-9_]*)\s*\))'
+    notPattern: '{{COMMENT}}'
     message: alloca allocates on the stack without any failure report; a large or attacker-influenced size overruns the stack into other memory.
     message_zh: alloca 在栈上分配且不会报告失败；过大或受攻击者影响的大小会使栈越界覆盖其他内存。
     remediation: Bound the size with a small constant limit, or allocate with malloc and check the result.
@@ -424,7 +489,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:malloc{{CSA}}\s*\(|realloc{{CSA}}\s*\([^,;]{1,120},)[^;]{0,160}?(?:\b[a-z_]\w{0,60}|\))\s*\*\s*(?:\(\s*)?(?:[a-z_]\w{0,60}\b(?!\s*\()|sizeof\b)'
-    notPattern: '\bSIZE_MAX\b|__builtin_mul_overflow|\bckd_mul\b|\bst_mult\b'
+    notPattern: '{{COMMENT}}|\bSIZE_MAX\b|__builtin_mul_overflow|\bckd_mul\b|\bst_mult\b'
     message: The allocation size is a product of run-time values; if it overflows, a short buffer is allocated and later writes run past it.
     message_zh: 分配大小是运行时值的乘积；一旦溢出就会分配过小的缓冲区，后续写入将越界。
     remediation: Use calloc(n, size) or reallocarray, or check n <= SIZE_MAX / size before multiplying.
@@ -444,6 +509,7 @@ rules:
     # Located at realloc( so the regex is cheap; the lookbehind checks that
     # the same pointer is on the left of the assignment.
     pattern: '\brealloc\s*\(\s*(\*?[A-Za-z_]\w{0,60}(?:(?:->|\.)\w{1,60}){0,4})\s*,(?<=(?<![\w.>])\1\s*=\s*(?:\([^()]{1,60}\)\s*)?realloc\s*\(\s*\1\s*,)'
+    notPattern: '{{COMMENT}}'
     message: When realloc fails it returns NULL and keeps the old block; assigning the result to the same pointer loses the only reference to that block.
     message_zh: realloc 失败时返回 NULL 并保留原内存块；把结果赋给同一指针会丢失对原内存块的唯一引用。
     remediation: Assign to a temporary, check it for NULL, then replace the pointer.
@@ -462,6 +528,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:memset|ZeroMemory|bzero){{CSA}}\s*\(\s*(?:&\s*)?\w{0,30}(?:[Pp]assword|PASSWORD|[Pp]asswd|PASSWD|[Pp]assphrase|[Ss]ecret|SECRET|[Pp]riv(?:ate)?_?[Kk]ey)\w{0,20}\s*,'
+    notPattern: '{{COMMENT}}'
     message: A compiler may remove a memset of a buffer that is not read again, leaving the secret in memory. Confirm the buffer is wiped with a call the optimizer keeps.
     message_zh: 编译器可能删除对之后不再读取的缓冲区的 memset，使密钥留在内存中。需确认使用了不会被优化掉的清除函数。
     remediation: Use explicit_bzero, memset_s, SecureZeroMemory or OPENSSL_cleanse.
@@ -473,7 +540,7 @@ rules:
   - id: cpp-path-traversal
     title: C/C++ fopen of a command-line or environment path
     title_zh: C/C++ 用 fopen 打开来自命令行或环境变量的路径
-    severity: high
+    severity: medium
     confidence: low
     cwe: CWE-22
     owasp: A01:2021
@@ -481,6 +548,7 @@ rules:
     flags: ""
     pattern: '\b(?:fopen|_wfopen|_tfopen|freopen|open){{CSA}}\s*\(\s*{{EXT}}'
     group: cpp-file
+    notPattern: '{{COMMENT}}'
     message: A path from argv, getenv or optarg is opened as is. In a program that runs with more privilege than its caller (setuid, service, CGI) this reaches any file.
     message_zh: 来自 argv、getenv 或 optarg 的路径被原样打开。若程序权限高于调用者（setuid、服务、CGI），可访问任意文件。
     remediation: Normalize the path and verify its realpath stays inside the allowed directory, or map names through an allowlist.
@@ -500,6 +568,7 @@ rules:
     flags: ""
     pattern: '\b(?:fopen|_wfopen|_tfopen){{CSA}}\s*\({{NOLIT}}'
     group: cpp-file
+    notPattern: '{{COMMENT}}'
     message: The file path comes from a runtime value; confirm it stays inside the allowed directory after normalization.
     message_zh: 文件路径来自运行时值；需确认规范化后仍位于允许目录内。
     remediation: Normalize the path and verify its realpath stays inside the allowed directory.
@@ -517,6 +586,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:tmpnam|tmpnam_r|tmpnam_s|tempnam|_tempnam|_wtempnam|_ttempnam|mktemp|_mktemp|_mktemp_s|_wmktemp|_tmktemp){{CSA}}\s*\('
+    notPattern: '{{COMMENT}}'
     message: These functions return a name, not an open file; another process can create that file (or a symlink) before the program opens it.
     message_zh: 这些函数只返回文件名而非已打开的文件；在程序打开之前，其他进程可抢先创建该文件（或符号链接）。
     remediation: Use mkstemp/mkdtemp (or tmpfile), which create the file atomically with safe permissions.
@@ -536,6 +606,7 @@ rules:
     flags: ""
     pattern: '\b(?:access|_access|_waccess|eaccess|euidaccess|faccessat){{CSA}}\s*\([^;]{1,200}?(?:\b[RWX]_OK\b|,\s*[246]\s*\))'
     filePattern: '\b(?:f?open|creat|_wopen|_open|fopen_s|_wfopen|CreateFile[AW]?)\s*\('
+    notPattern: '{{COMMENT}}'
     message: The file is checked with access() and opened later by name; between the two calls the path can be replaced (for example with a symlink), and access() uses the real rather than the effective user.
     message_zh: 先用 access() 检查文件，之后再按名称打开；两次调用之间路径可被替换（例如换成符号链接），且 access() 使用的是真实用户而非有效用户。
     remediation: Open the file first and check the open descriptor (fstat), or drop privileges before opening; use O_NOFOLLOW where possible.
@@ -552,7 +623,8 @@ rules:
     owasp: A04:2021
     languages: [c, cpp]
     flags: ""
-    pattern: '\b(?:setuid|setgid|seteuid|setegid|setreuid|setregid|setresuid|setresgid)(?<=(?:^|[\n;{}]|\belse|\bdo|\))\s{0,80}(?:\(\s*void\s*\)\s*)?\w{6,9})\s*\([^;{}]{0,160}\)\s*;'
+    pattern: '\b(?:setuid|setgid|seteuid|setegid|setreuid|setregid|setresuid|setresgid)(?<=(?:^|[\n;{}]|\belse|\bdo|(?<!\(\s*void\s*)\))\s{0,80}\w{6,9})\s*\([^;{}]{0,160}\)\s*;'
+    notPattern: '{{COMMENT}}'
     message: Dropping privileges can fail (for example on RLIMIT_NPROC); when the result is not checked the program continues with its old privileges.
     message_zh: 降权可能失败（例如触及 RLIMIT_NPROC）；不检查返回值时，程序会以原有权限继续运行。
     remediation: Check the return value and abort on failure; afterwards verify with getuid/geteuid that the old ID cannot be regained.
@@ -571,6 +643,7 @@ rules:
     flags: ""
     pattern: '\bchroot{{CSA}}\s*\((?!\s*"\."\s*\))'
     fileAbsentPattern: '\bchdir\s*\(\s*"/"\s*\)'
+    notPattern: '{{COMMENT}}'
     message: The file calls chroot but never chdir("/"); the working directory stays outside the new root, so relative paths can still reach the old file system.
     message_zh: 文件调用了 chroot 但从未调用 chdir("/")；当前目录仍在新根之外，相对路径仍可访问原文件系统。
     remediation: Call chdir("/") right after chroot (or chdir into the jail and chroot(".")), and drop root privileges afterwards.
@@ -582,15 +655,17 @@ rules:
     title: C/C++ umask(0)
     title_zh: C/C++ umask(0)
     severity: medium
-    confidence: medium
+    confidence: low
+    kind: hotspot
     cwe: CWE-732
     owasp: A01:2021
     languages: [c, cpp]
     flags: ""
     # A statement of its own: `old = umask(0); umask(old);` only reads the mask.
     pattern: '\bumask(?<=(?:^|[\n;{}]|\belse|\bdo|\))\s{0,80}(?:\(\s*void\s*\)\s*)?umask)\s*\(\s*0+\s*\)\s*;'
-    message: umask(0) removes the default permission mask; files later created with mode 0666 or 0777 become writable by every user.
-    message_zh: umask(0) 取消默认权限掩码；之后以 0666 或 0777 创建的文件对所有用户可写。
+    notPattern: '{{COMMENT}}'
+    message: umask(0) removes the default permission mask; files later created with mode 0666 or 0777 become writable by every user. Confirm every later open/mkdir passes a restrictive mode.
+    message_zh: umask(0) 取消默认权限掩码；之后以 0666 或 0777 创建的文件对所有用户可写。需确认之后的 open/mkdir 都指定了严格的权限。
     remediation: Use a restrictive mask such as umask(077) or umask(022), and pass explicit modes to open/mkdir.
     remediation_zh: 使用 umask(077) 或 umask(022) 等严格掩码，并为 open/mkdir 显式指定权限。
     references:
@@ -608,6 +683,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:srand|srandom|srand48|seed48){{CSA}}\s*\(\s*(?:\([^()]{1,30}\)\s*)?(?:std::)?time\s*\(|\b(?:std::)?(?:mt19937(?:_64)?|default_random_engine|minstd_rand0?)\s+\w{1,40}\s*[({]\s*(?:\([^()]{1,30}\)\s*)?(?:std::)?time\s*\('
+    notPattern: '{{COMMENT}}'
     message: The generator is seeded with the current time, which an attacker can guess; its output must not be used for keys, tokens or session IDs.
     message_zh: 随机数生成器以当前时间为种子，攻击者可以猜到；其输出不得用于密钥、令牌或会话 ID。
     remediation: For security values use getrandom/arc4random/BCryptGenRandom or RAND_bytes; std::random_device is not guaranteed to be secure either.
@@ -626,6 +702,7 @@ rules:
     flags: ""
     # Located at the rand() call; the lookbehind checks the assigned name.
     pattern: '(?<![\w.>])(?:rand|random|drand48|lrand48|mrand48)\s*\(\s*\)(?<=(?<![\w.>])(?:(?:[a-z0-9]{1,30}_)?(?:token|nonce|salt|secret|password|passwd|otp|challenge|iv|session_?id)|(?:[a-z0-9]{1,30}_)?(?:session|secret|private|priv|crypt|cipher|aes|des|hmac|enc|encryption|signing|master|wrap|api|auth)_?key|[a-z][a-zA-Z0-9]{0,30}(?:Token|Nonce|Salt|Secret|Password|Otp|Challenge|Iv|IV|SessionId)|(?:session|secret|private|priv|crypt|cipher|aes|hmac|enc|encryption|signing|master|wrap|api|auth)Key|(?:[A-Z0-9]{1,30}_)?(?:TOKEN|NONCE|SALT|SECRET|PASSWORD|IV|SESSION_KEY|SECRET_KEY|AES_KEY|HMAC_KEY))\s*(?:\[[^\]]{0,40}\])?\s*=(?!=)[^;=]{0,60}?(?:rand|random|drand48|lrand48|mrand48)\s*\(\s*\))'
+    notPattern: '{{COMMENT}}'
     message: A security value is filled from rand()/random(), whose output is predictable from a few samples or from the seed.
     message_zh: 安全相关的值由 rand()/random() 生成，其输出可由少量样本或种子推测出来。
     remediation: Use a cryptographic generator, getrandom/arc4random_buf/BCryptGenRandom or RAND_bytes.
@@ -645,6 +722,7 @@ rules:
     flags: ""
     pattern: '\b(?:(?:MD[245]|SHA1)(?:_Init|_Update|_Final)?|EVP_md[245]){{CSA}}\s*\('
     group: cpp-hash
+    notPattern: '{{COMMENT}}'
     message: MD2/MD4/MD5/SHA-1 are broken for collision resistance and unsuitable for signatures, certificates or password storage.
     message_zh: MD2/MD4/MD5/SHA-1 的抗碰撞性已被攻破，不适用于签名、证书或口令存储。
     remediation: Use SHA-256 or stronger through the EVP API; for passwords use a password hash (Argon2, scrypt, PBKDF2).
@@ -663,6 +741,7 @@ rules:
     flags: ""
     pattern: '\bEVP_(?:Sign|DigestSign|Verify|DigestVerify)Init(?:_ex)?{{CSA}}\s*\([^;]{0,200}?\bEVP_sha1\s*\(|\b(?:RSA_sign|RSA_verify|ECDSA_sign|ECDSA_verify|DSA_sign|DSA_verify){{CSA}}\s*\(\s*NID_sha1\b'
     group: cpp-hash
+    notPattern: '{{COMMENT}}'
     message: The signature uses SHA-1, for which practical chosen-prefix collisions exist; a forged document can carry a valid signature.
     message_zh: 签名使用 SHA-1，而 SHA-1 已存在实用的选择前缀碰撞攻击，伪造文档可带有有效签名。
     remediation: Sign and verify with SHA-256 or stronger (EVP_sha256).
@@ -681,6 +760,7 @@ rules:
     flags: ""
     pattern: '\b(?:DES_(?:ecb|ecb3|ncbc|cbc|pcbc|cfb|cfb64|ofb|ofb64|ede2|ede3|xcbc|set_key|set_key_checked|set_key_unchecked|key_sched)\w{0,20}|EVP_des_\w{1,30}|EVP_rc4\w{0,20}|EVP_rc2_\w{1,20}|EVP_bf_\w{1,10}|EVP_idea_\w{1,10}|EVP_cast5_\w{1,10}|RC4_set_key|RC4|BF_set_key){{CSA}}\s*\('
     group: cpp-cipher
+    notPattern: '{{COMMENT}}'
     message: DES, 3DES, RC4, RC2, Blowfish, IDEA and CAST5 have short keys or 64-bit blocks or known biases; data encrypted with them can be recovered.
     message_zh: DES、3DES、RC4、RC2、Blowfish、IDEA 和 CAST5 密钥短、分组为 64 位或存在已知偏差，加密的数据可被恢复。
     remediation: Use AES-GCM or ChaCha20-Poly1305 through the EVP API.
@@ -699,6 +779,7 @@ rules:
     flags: ""
     pattern: '\b(?:EVP_\w{2,30}_ecb|AES_ecb_encrypt){{CSA}}\s*\('
     group: cpp-cipher
+    notPattern: '{{COMMENT}}'
     message: ECB encrypts equal plaintext blocks to equal ciphertext blocks, which leaks the structure of the data and allows block reordering.
     message_zh: ECB 模式把相同的明文块加密成相同的密文块，会泄露数据结构并允许重排数据块。
     remediation: Use an authenticated mode such as AES-GCM (EVP_aes_256_gcm) or ChaCha20-Poly1305.
@@ -716,7 +797,8 @@ rules:
     owasp: A02:2021
     languages: [c, cpp]
     flags: ""
-    pattern: '\bSSL(?:_CTX)?_set_verify{{CSA}}\s*\([^,;]{1,120},\s*SSL_VERIFY_NONE\b'
+    pattern: '\bSSL(?:_CTX)?_set_verify{{CSA}}\s*\([^,;]{1,120},\s*(?:SSL_VERIFY_NONE\b|0\s*,)'
+    notPattern: '{{COMMENT}}'
     message: With SSL_VERIFY_NONE a TLS client accepts any certificate, so a man in the middle can read and change the traffic. On a server context it only means client certificates are not requested; confirm which side this is.
     message_zh: 使用 SSL_VERIFY_NONE 时 TLS 客户端接受任何证书，中间人可读取并篡改流量。若是服务端上下文，则仅表示不要求客户端证书；需确认是哪一端。
     remediation: On clients use SSL_VERIFY_PEER with a trust store (SSL_CTX_set_default_verify_paths) and check the host name (SSL_set1_host).
@@ -734,6 +816,9 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\bcurl_easy_setopt{{CSA}}\s*\([^,;]{1,120},\s*CURLOPT_(?:PROXY_|DOH_)?SSL_VERIFY(?:PEER|HOST)\s*,\s*(?:\(long\)\s*)?(?:0L?|FALSE|false)\s*\)'
+    # Test suites talk to local servers with throw-away certificates.
+    pathExclude: '(?:^|/)tests?/'
+    notPattern: '{{COMMENT}}'
     message: libcurl is told not to verify the server certificate or host name, so a man in the middle can impersonate the server.
     message_zh: libcurl 被设置为不校验服务器证书或主机名，中间人可以冒充服务器。
     remediation: Keep CURLOPT_SSL_VERIFYPEER at 1 and CURLOPT_SSL_VERIFYHOST at 2; point CURLOPT_CAINFO at the right CA bundle instead.
@@ -751,6 +836,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\b(?:SSLv2|SSLv3|TLSv1|TLSv1_1)_(?:client_|server_)?method{{CSA}}\s*\(|\bSSL(?:_CTX)?_set_min_proto_version{{CSA}}\s*\([^,;]{1,120},\s*(?:SSL3_VERSION|TLS1_VERSION|TLS1_1_VERSION)\b'
+    notPattern: '{{COMMENT}}'
     message: The connection is pinned to, or allows, SSLv2, SSLv3, TLS 1.0 or TLS 1.1, which are deprecated (RFC 8996) and have practical attacks.
     message_zh: 连接被固定为或允许 SSLv2、SSLv3、TLS 1.0 或 TLS 1.1，这些协议已被弃用（RFC 8996）且存在实用攻击。
     remediation: Use TLS_client_method/TLS_server_method and SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION).
@@ -767,8 +853,11 @@ rules:
     owasp: A07:2021
     languages: [c, cpp]
     flags: i
-    pattern: '(?:\b(?:char|wchar_t|tchar|char8_t|char16_t|char32_t)\s+(?:const\s+)?[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s*\[[^\]]{0,10}\]\s*=\s*|#\s*define\s+[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s+)(?:[lu]8?)?"(?![^"]{0,200}example)(?<secret>[^"\\\s%]{6,200})"'
+    pattern: '(?:\b(?:char|wchar_t|tchar|char8_t|char16_t|char32_t)\s+(?:const\s+)?[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s*\[[^\]]{0,10}\]\s*=\s*|#\s*define\s+[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s+)(?:[lu]8?)?"(?![^"]{0,200}(?:example|password|passwd|passphrase|secret|private_?key|api_?key|access_?key|token))(?![\w-]{1,100}(?:\.[\w-]{1,100}){1,10}")(?![a-z]{1,100}(?:[-_][a-z]{1,100}){0,10}")(?<secret>[^"\\\s%]{6,200})"'
     redactEvidence: true
+    # Not a value that names the keyword itself, a dotted or reverse-DNS
+    # identifier (D-Bus error names) or plain words joined by - or _.
+    notPattern: '{{COMMENT}}'
     message: A credential is compiled into the program; anyone with the binary or the source can read it, and changing it needs a new release.
     message_zh: 凭据被编译进程序；任何拿到二进制或源码的人都能读取，且更换凭据需要发布新版本。
     remediation: Load the credential at run time from a secrets store, a protected configuration file or the environment, and rotate the exposed value.
@@ -789,6 +878,7 @@ rules:
     flags: ""
     pattern: '(?<![\w.>])(?:std::)?cin\s*>>(?!\s*(?:std::)?setw\b)\s*[A-Za-z_]\w{0,60}\s*(?:;|>>)'
     filePattern: '\bchar\s+[A-Za-z_]\w*\s*\[[^\]]{1,20}\]'
+    notPattern: '{{COMMENT}}'
     message: Before C++20, reading into a char array with >> writes a whole word whatever the array size. The file declares a char array; confirm this target is not one, or that a width is set.
     message_zh: 在 C++20 之前，用 >> 读入字符数组会写入整个单词而不管数组大小。该文件声明了字符数组；需确认目标不是字符数组，或已设置宽度。
     remediation: Read into std::string, or use std::cin >> std::setw(sizeof buf) >> buf.
@@ -806,6 +896,7 @@ rules:
     languages: [cpp]
     flags: ""
     pattern: '(?<![\w.>])(?:std::)?auto_ptr\s*<'
+    notPattern: '{{COMMENT}}'
     message: std::auto_ptr was removed in C++17; its copy transfers ownership silently, which leads to null dereferences and double frees in containers and algorithms.
     message_zh: std::auto_ptr 已在 C++17 中移除；其复制会悄悄转移所有权，在容器和算法中容易导致空指针解引用和重复释放。
     remediation: Use std::unique_ptr (and std::move where ownership is transferred).
@@ -824,6 +915,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\bIsBad(?:Read|Write|HugeRead|HugeWrite|Code|String)Ptr{{CSA}}\s*\('
+    notPattern: '{{COMMENT}}'
     message: The IsBad*Ptr functions are banned by Microsoft; the answer is stale as soon as it returns, and probing can hit a guard page and break stack growth.
     message_zh: IsBad*Ptr 系列函数已被微软禁用；其结果在返回时即已过时，探测还可能触碰保护页并破坏栈增长。
     remediation: Remove the check; validate pointers by design (ownership, sizes) and handle access violations where they occur.
@@ -842,7 +934,7 @@ rules:
     languages: [c, cpp]
     flags: ""
     pattern: '\bLoadLibrary(?:Ex)?[AW]?{{CSA}}\s*\(\s*(?:[LuU]8?|_T\s*\(\s*|TEXT\s*\(\s*)?"(?![A-Za-z]:|\\\\|/)[^"\\/:]{1,100}"'
-    notPattern: 'LOAD_LIBRARY_SEARCH_(?:SYSTEM32|APPLICATION_DIR|DEFAULT_DIRS|DLL_LOAD_DIR)'
+    notPattern: '{{COMMENT}}|LOAD_LIBRARY_SEARCH_(?:SYSTEM32|APPLICATION_DIR|DEFAULT_DIRS|DLL_LOAD_DIR)'
     message: A DLL is loaded by bare name, so Windows searches the application directory and possibly the current directory; a planted DLL there is loaded instead.
     message_zh: 以裸名称加载 DLL 时，Windows 会搜索应用目录并可能搜索当前目录，攻击者放置在那里的 DLL 会被加载。
     remediation: Use LoadLibraryEx with LOAD_LIBRARY_SEARCH_SYSTEM32 (or a full path), and call SetDefaultDllDirectories at start-up.
