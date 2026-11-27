@@ -1,0 +1,27 @@
+package com.example.web;
+
+import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.multipart.MultipartFile;
+
+@Controller
+public class UploadController {
+    private final Path uploads = Paths.get("/srv/uploads");
+
+    @PostMapping("/upload")
+    public String upload(@RequestParam("file") MultipartFile file) throws Exception {
+        file.transferTo(new File("/srv/uploads/" + file.getOriginalFilename()));
+        file.transferTo(uploads.resolve(file.getOriginalFilename()));
+        return "redirect:/files";
+    }
+
+    @GetMapping("/login/done")
+    public String afterLogin(@RequestParam("returnTo") String returnTo) {
+        return "redirect:" + returnTo;
+    }
+}

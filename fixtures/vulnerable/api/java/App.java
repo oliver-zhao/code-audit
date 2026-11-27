@@ -4,8 +4,8 @@ import java.sql.PreparedStatement;
 public class App {
     public static void main(String[] args) throws Exception {
         PreparedStatement st = null;
-        st.executeQuery("SELECT 1");
-        new ProcessBuilder("ls").start();
-        new File("/data/static.txt");
+        st.executeQuery(args[0]);
+        new ProcessBuilder(args[1]).start();
+        new File(args[2]);
     }
 }
