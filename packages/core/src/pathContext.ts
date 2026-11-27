@@ -43,11 +43,15 @@ const TEST_DIRS = new Set([
 ]);
 const DOCS_DIRS = new Set(["docs", "doc"]);
 const EXAMPLE_DIRS = new Set(["examples", "example", "samples", "demo", "tutorial"]);
-const VENDORED_DIRS = new Set(["vendor", "third_party", "node_modules", "bower_components"]);
+const VENDORED_DIRS = new Set(["vendor", "third_party", "node_modules", "bower_components", "compiled"]);
+/** Vendored only below a `public/` directory: `public/libraries/`, `public/vendor/`, `public/lib/`. */
+const PUBLIC_VENDORED_DIRS = new Set(["libraries", "vendor", "lib"]);
+/** Test directories named `test-<something>/` (for example `test-node/`, `test-electron/`). */
+const TEST_DIR_PREFIX = /^test-[\w-]+$/;
 const GENERATED_DIRS = new Set(["dist", "build"]);
 
 const TEST_FILE =
-  /^(?:test_.*\.py|.*_test\.(?:go|py)|conftest\.py|.*\.(?:test|spec)\.(?:[cm]?[jt]sx?))$/;
+  /^(?:test_.*\.py|.*_test\.(?:go|py)|conftest\.py|.*\.(?:test|spec)\.(?:[cm]?[jt]sx?)|.*_test\.[\w.]*[jt]sx?)$/;
 const DOCS_FILE = /\.(?:md|rst|adoc)$/;
 const GENERATED_FILE = /(?:\.min\.(?:js|css)|_pb2(?:_grpc)?\.pyi?|\.pb\.go)$/;
 
@@ -74,8 +78,11 @@ export function classifyPath(relPath: string): PathContext | undefined {
   const { dirs, base } = segmentsOf(relPath);
   const inDir = (names: Set<string>): boolean => dirs.some((dir) => names.has(dir));
   if (inDir(VENDORED_DIRS)) return "vendored";
+  if (dirs.some((dir, index) => index > 0 && dirs[index - 1] === "public" && PUBLIC_VENDORED_DIRS.has(dir))) {
+    return "vendored";
+  }
   if (inDir(GENERATED_DIRS) || GENERATED_FILE.test(base)) return "generated";
-  if (inDir(TEST_DIRS) || TEST_FILE.test(base)) return "test";
+  if (inDir(TEST_DIRS) || dirs.some((dir) => TEST_DIR_PREFIX.test(dir)) || TEST_FILE.test(base)) return "test";
   if (inDir(EXAMPLE_DIRS)) return "example";
   if (inDir(DOCS_DIRS) || DOCS_FILE.test(base)) return "docs";
   return undefined;

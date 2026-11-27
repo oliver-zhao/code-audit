@@ -54,6 +54,7 @@ rules:
           - pattern: req.headers
           - pattern: req.cookies
           - pattern: req.files
+          - pattern: req.file
           - pattern: req.param(...)
           - pattern: req.get(...)
           - pattern: req.header(...)
@@ -61,6 +62,31 @@ rules:
           - pattern: ctx.params
           - pattern: ctx.request.body
           - pattern: ctx.request.query
+          - pattern: ctx.request.files
+          - pattern: $R.nextUrl.searchParams.get(...)
+      # Fastify / hapi: `request` is a source only in a (request, reply) handler.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQUEST.query
+              - pattern: $REQUEST.body
+              - pattern: $REQUEST.params
+              - pattern: $REQUEST.headers
+              - pattern: $REQUEST.payload
+          - pattern-either:
+              - pattern-inside: |
+                  ($REQUEST, $REPLY, ...) => { ... }
+              - pattern-inside: |
+                  async ($REQUEST, $REPLY, ...) => { ... }
+              - pattern-inside: |
+                  function $F($REQUEST, $REPLY, ...) { ... }
+              - pattern-inside: |
+                  async function $F($REQUEST, $REPLY, ...) { ... }
+          - metavariable-regex:
+              metavariable: $REQUEST
+              regex: ^(request|req)$
+          - metavariable-regex:
+              metavariable: $REPLY
+              regex: ^(reply|h|rep|res)$
     pattern-sanitizers: &js-number-sanitizers
       - pattern-either:
           - pattern: parseInt(...)
@@ -132,7 +158,46 @@ rules:
       confidence: MEDIUM
       category: security
     options: *js-options
-    pattern-sources: *js-sources
+    # Upload objects (req.file, req.files) are left out: their .path is a
+    # server-side temporary file, not a client-chosen path.
+    pattern-sources:
+      - pattern-either:
+          - pattern: req.query
+          - pattern: req.body
+          - pattern: req.params
+          - pattern: req.headers
+          - pattern: req.cookies
+          - pattern: req.param(...)
+          - pattern: req.get(...)
+          - pattern: req.header(...)
+          - pattern: ctx.query
+          - pattern: ctx.params
+          - pattern: ctx.request.body
+          - pattern: ctx.request.query
+          - pattern: $R.nextUrl.searchParams.get(...)
+      # Fastify / hapi: `request` is a source only in a (request, reply) handler.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQUEST.query
+              - pattern: $REQUEST.body
+              - pattern: $REQUEST.params
+              - pattern: $REQUEST.headers
+              - pattern: $REQUEST.payload
+          - pattern-either:
+              - pattern-inside: |
+                  ($REQUEST, $REPLY, ...) => { ... }
+              - pattern-inside: |
+                  async ($REQUEST, $REPLY, ...) => { ... }
+              - pattern-inside: |
+                  function $F($REQUEST, $REPLY, ...) { ... }
+              - pattern-inside: |
+                  async function $F($REQUEST, $REPLY, ...) { ... }
+          - metavariable-regex:
+              metavariable: $REQUEST
+              regex: ^(request|req)$
+          - metavariable-regex:
+              metavariable: $REPLY
+              regex: ^(reply|h|rep|res)$
     pattern-sanitizers:
       - pattern-either:
           - pattern: path.basename(...)
@@ -186,6 +251,7 @@ rules:
           - pattern: parseInt(...)
           - pattern: Number(...)
           - pattern: JSON.stringify(...)
+          - pattern: $X.length
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -234,7 +300,15 @@ rules:
       category: security
     options: *js-options
     pattern-sources: *js-sources
-    pattern-sanitizers: *js-number-sanitizers
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: parseInt(...)
+          - pattern: parseFloat(...)
+          - pattern: Number(...)
+          - pattern: $C.escape(...)
+          - pattern: $C.escapeId(...)
+          - pattern: $C.format(...)
+          - pattern: escape(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -244,4 +318,27 @@ rules:
               - pattern: $DB.whereRaw($SQL, ...)
               - pattern: $DB.$queryRawUnsafe($SQL, ...)
               - pattern: $DB.$executeRawUnsafe($SQL, ...)
+          # Query-builder entry points such as strapi.db.query(uid).findOne(...)
+          # take a model name, not SQL.
+          - pattern-not-inside: strapi.db.query(...)
+          - pattern-not-inside: $DB.query($SQL).findOne(...)
+          - pattern-not-inside: $DB.query($SQL).findMany(...)
+          - pattern-not-inside: $DB.query($SQL).findPage(...)
+          - pattern-not-inside: $DB.query($SQL).findWithCount(...)
+          - pattern-not-inside: $DB.query($SQL).create(...)
+          - pattern-not-inside: $DB.query($SQL).createMany(...)
+          - pattern-not-inside: $DB.query($SQL).update(...)
+          - pattern-not-inside: $DB.query($SQL).updateMany(...)
+          - pattern-not-inside: $DB.query($SQL).delete(...)
+          - pattern-not-inside: $DB.query($SQL).deleteMany(...)
+          - pattern-not-inside: $DB.query($SQL).count(...)
+          - pattern-not-inside: $DB.query($SQL).upsert(...)
+          - pattern-not-inside: $DB.query($SQL).populate(...)
+          - pattern-not-inside: $DB.query($SQL).load(...)
+          - pattern-not-inside: $DB.query($SQL).clone(...)
+          # Only database handles: not validate.query, router.query, ...
+          # (metavariable-regex is anchored at the start.)
+          - metavariable-regex:
+              metavariable: $DB
+              regex: (?i)^(.*\.)?(db|database|sequelize|knex|pool|conn|connection|client|pg|mysql\w*|sqlite\w*|prisma|manager|entityManager|queryRunner|dataSource|trx|tx|transaction|repo\w*|repository)$
           - focus-metavariable: $SQL
