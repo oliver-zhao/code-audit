@@ -12,6 +12,8 @@ import requests
 from django.db import connection
 from django.db.models.expressions import RawSQL
 from django.http import FileResponse, HttpResponse, HttpResponseRedirect
+from django.utils.html import escape
+from ldap3.utils.conv import escape_filter_chars
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
@@ -100,3 +102,31 @@ def formula(request):
     body = request.body.decode("utf-8")
     value = int(body) * 2
     return HttpResponse(str(value))
+
+
+def greeting(request):
+    name = request.GET.get("name", "")
+    return HttpResponse(f"<p>Hello {escape(name)}</p>")
+
+
+def plain_greeting(request):
+    name = request.GET.get("name", "")
+    return HttpResponse("Hello " + name, content_type="text/plain")
+
+
+def order_where(request):
+    customer = request.GET["customer"]
+    rows = orders.find({"customer": customer})
+    return HttpResponse(str(len(list(rows))))
+
+
+def staff_lookup(request, username):
+    search_filter = f"(uid={escape_filter_chars(username)})"
+    conn.search("ou=staff,dc=example,dc=com", search_filter)
+    return HttpResponse(str(len(conn.entries)))
+
+
+def word_search(request):
+    import re
+
+    return HttpResponse(str(bool(re.search("^[a-z]+$", request.GET.get("q", "")))))

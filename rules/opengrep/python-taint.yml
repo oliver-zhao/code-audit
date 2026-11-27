@@ -527,3 +527,146 @@ rules:
               - pattern: PIL.ImageMath.eval($CODE, ...)
               - pattern: PIL.ImageMath.unsafe_eval($CODE, ...)
           - focus-metavariable: $CODE
+
+  - id: py-taint-xss
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data is written into an HTML response body without escaping
+      (reflected cross-site scripting). Render a template with autoescaping, or
+      escape the value with html.escape(), markupsafe.escape() or
+      django.utils.html.escape().
+    metadata:
+      cwe: "CWE-79"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: html.escape(...)
+      - pattern: markupsafe.escape(...)
+      - pattern: flask.escape(...)
+      - pattern: django.utils.html.escape(...)
+      - pattern: django.utils.html.conditional_escape(...)
+      - pattern: django.utils.html.format_html(...)
+      - pattern: bleach.clean(...)
+      - pattern: json.dumps(...)
+      - pattern: flask.jsonify(...)
+      - pattern: flask.render_template(...)
+      - pattern: django.shortcuts.render(...)
+      - pattern: django.template.loader.render_to_string(...)
+      # Rendered templates escape their variables, and objects read back from
+      # the database are not request text (the request value only selected
+      # them).
+      - pattern: $TEMPLATE.render(...)
+      - pattern: django.shortcuts.get_object_or_404(...)
+      - pattern: django.shortcuts.get_list_or_404(...)
+      - pattern: $MODEL.objects.$QUERY(...)
+    pattern-sinks:
+      # Only the body argument is a sink. A body that is itself a call
+      # (str(rows), ", ".join(...), template.render(...)) is not reported: the
+      # rule targets request text formatted into markup, and taint also flows
+      # through database and template calls whose output is not request text.
+      # A response with an explicit content type, media type or mimetype is
+      # not reported either. mark_safe() / Markup() are left to the built-in
+      # rules: on Django the source definition treats every parameter of a
+      # helper shaped like a view as request data, and mark_safe(obj.field)
+      # on such a helper was the main false positive on the Django sources.
+      - patterns:
+          - pattern-either:
+              - pattern: django.http.HttpResponse($BODY, ...)
+              - pattern: django.http.HttpResponse(content=$BODY, ...)
+              - pattern: django.http.HttpResponseBadRequest($BODY, ...)
+              - pattern: django.http.HttpResponseNotFound($BODY, ...)
+              - pattern: django.http.HttpResponseForbidden($BODY, ...)
+              - pattern: flask.make_response($BODY, ...)
+              - pattern: flask.Response($BODY, ...)
+              - pattern: starlette.responses.HTMLResponse($BODY, ...)
+              - pattern: starlette.responses.HTMLResponse(content=$BODY, ...)
+              - pattern: fastapi.responses.HTMLResponse($BODY, ...)
+              - pattern: fastapi.responses.HTMLResponse(content=$BODY, ...)
+          - pattern-not: $RESP($FN(...), ...)
+          - pattern-not: $RESP(..., content_type=$CT, ...)
+          - pattern-not: $RESP(..., mimetype=$CT, ...)
+          - pattern-not: $RESP(..., media_type=$CT, ...)
+          - focus-metavariable: $BODY
+
+  - id: py-taint-nosql
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data becomes a whole MongoDB query document or the JavaScript of
+      a $where clause (NoSQL injection). Build the filter from fixed keys, check
+      that each value is a plain string or number, and do not use $where.
+    metadata:
+      cwe: "CWE-943"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: str(...)
+      - pattern: bson.ObjectId(...)
+      - pattern: bson.objectid.ObjectId(...)
+    pattern-sinks:
+      # The filter (first argument) when it is not a dict literal written at
+      # the call site: a literal {"name": value} is the normal form, and only
+      # the whole document lets the caller inject operators reliably.
+      - patterns:
+          - pattern-either:
+              - pattern: $COLL.$METHOD($FILTER, ...)
+              - pattern: $DB.$NAME.find($FILTER, ...)
+              - pattern: $DB[$NAME].find($FILTER, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(find_one|find_one_and_update|find_one_and_delete|find_one_and_replace|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate)$
+          - pattern-not: $X.$M({...}, ...)
+          - pattern-not: $X.$M([...], ...)
+          - focus-metavariable: $FILTER
+      # The JavaScript of a $where clause.
+      - patterns:
+          - pattern-inside: '{..., "$where": $CODE, ...}'
+          - focus-metavariable: $CODE
+
+  - id: py-taint-ldap
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Request data reaches an LDAP search filter without escaping (LDAP
+      injection). Escape each value with ldap.filter.escape_filter_chars() or
+      ldap3.utils.conv.escape_filter_chars() before building the filter.
+    metadata:
+      cwe: "CWE-90"
+      confidence: MEDIUM
+      category: security
+    options: *py-options
+    pattern-sources: *py-sources
+    pattern-sanitizers:
+      - *py-safe-conversions
+      - pattern: ldap.filter.escape_filter_chars(...)
+      - pattern: ldap3.utils.conv.escape_filter_chars(...)
+      - pattern: escape_filter_chars(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              # python-ldap: search*(base, scope, filterstr, ...)
+              - pattern: $CONN.search_s($BASE, $SCOPE, $FILTER, ...)
+              - pattern: $CONN.search_st($BASE, $SCOPE, $FILTER, ...)
+              - pattern: $CONN.search_ext($BASE, $SCOPE, $FILTER, ...)
+              - pattern: $CONN.search_ext_s($BASE, $SCOPE, $FILTER, ...)
+              - pattern: $CONN.search($BASE, $SCOPE, $FILTER, ...)
+              - pattern: $CONN.search_s(..., filterstr=$FILTER, ...)
+              # ldap3: search(search_base, search_filter, ...)
+              - pattern: $CONN.search($BASE, $FILTER, ...)
+              - pattern: $CONN.search(..., search_filter=$FILTER, ...)
+          - pattern-not: re.search(...)
+          - pattern-not: regex.search(...)
+          - metavariable-regex:
+              metavariable: $CONN
+              regex: ^(?!(re|regex)$)
+          - focus-metavariable: $FILTER

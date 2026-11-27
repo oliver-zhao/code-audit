@@ -99,3 +99,21 @@ def formula(request):
     body = request.body.decode("utf-8")
     value = eval(body)  # expect: py-taint-eval
     return HttpResponse(str(value))
+
+
+def greeting(request):
+    name = request.GET.get("name", "")
+    return HttpResponse(f"<p>Hello {name}</p>")  # expect: py-taint-xss
+
+
+def order_where(request):
+    customer = request.GET["customer"]
+    clause = "this.customer == '" + customer + "'"
+    rows = orders.find({"$where": clause})  # expect: py-taint-nosql
+    return HttpResponse(str(len(list(rows))))
+
+
+def staff_lookup(request, username):
+    search_filter = f"(uid={username})"
+    conn.search("ou=staff,dc=example,dc=com", search_filter)  # expect: py-taint-ldap
+    return HttpResponse(str(len(conn.entries)))

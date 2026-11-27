@@ -1,0 +1,544 @@
+version: 1
+# Built-in Python rules, second set: web framework gaps (XSS, SSRF, NoSQL,
+# CORS, Django settings), cryptographic parameters, archives, XML, LDAP and
+# ML / LLM tooling. Written for code-audit (Apache-2.0); not copied from
+# Bandit, Semgrep or any other rule set. See python.yml for the conventions
+# (logical lines, regex cost, codeOnly, finding vs hotspot policy).
+definitions:
+  # Same request fragments as python.yml (definitions are per file).
+  REQ: '\brequest\.(?:args|form|forms|values|json|data|files|cookies|headers|GET|POST|COOKIES|META|FILES|body|query|query_params|path_params|get_json|params|query_string|view_args|match_info|get_data)\b|\bself\.get_(?:query_|body_)?arguments?\('
+  FIRSTREQ: '(?:\s*[\w.]{1,100}\(){0,4}[^,()]{0,200}?(?:{{REQ}})'
+  STARTREQ: '(?:\s*[\w.]{1,100}\(){0,4}\s*(?:{{REQ}})'
+  STR: '[rbu]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27)'
+  FSTR: '(?:f|fr|rf)(?:"(?:"")?[^"\n]{0,400}\{|\x27(?:\x27\x27)?[^\x27\n]{0,400}\{)'
+  DYN: '(?:(?:{{STR}}\s*){0,20}{{FSTR}}|(?:{{STR}}\s*){1,20}(?:\+|%\s*[\w(\[{]|\.format\()|[\w.\[\]]{1,200}\s*(?:\+\s*[rbuf]{0,2}["\x27]|%\s*[\w(]|\.format\())'
+  DYNARG: '(?:\s*(?:{{DYN}})|{{FIRSTREQ}})'
+  TESTPATH: '(?:^|/)(?:tests?|testing)/|(?:^|/)(?:test_[^/]*|[^/]*_tests?|conftest)\.py$'
+  SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:examples?|samples?|docs?|tutorials?|demos?)/'
+  # A module that defines web views (the request object is in scope).
+  WEBFILE: '^\s*(?:from|import)\s+(?:flask|django|fastapi|starlette|aiohttp\.web|tornado\.web|bottle|quart|sanic)\b'
+  # An outbound HTTP call by module function.
+  HTTPCALL: '(?:\b(?:requests|httpx|aiohttp|urllib3)\.(?:get|post|put|delete|patch|head|options|request)|\b(?:urllib\.request\.|urllib2\.|urllib\.)?urlopen|\burllib\.request\.Request)\s*\('
+  # Django response classes that send HTML by default (not redirects).
+  HTMLRESP: '(?<![\w.])(?:HttpResponse(?:BadRequest|NotFound|Forbidden|ServerError|Gone)?|HTMLResponse|make_response)\s*\('
+rules:
+  # ---- Cross-site scripting ----
+  - id: py-xss-response-request
+    codeOnly: true
+    title: HTML response built from request data
+    title_zh: 由请求数据构造的 HTML 响应
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    patterns:
+      - '{{HTMLRESP}}(?:\s*content\s*=)?{{DYNARG}}'
+      - '{{REQ}}'
+    notPattern: '\b(?:mimetype|content_type|media_type)\s*=\s*["\x27](?!text/html)|\b(?:json\.dumps|jsonify|\w{0,20}escape|quote|bleach\.clean|format_html|redirect|url_for|send_file|send_from_directory|render_template|render)\s*\('
+    group: py-xss
+    message: A request value is written into the body of an HTML response (Django HttpResponse, Starlette/FastAPI HTMLResponse, Flask make_response) without escaping, which allows reflected cross-site scripting.
+    message_zh: 请求值未经转义写入 HTML 响应体（Django HttpResponse、Starlette/FastAPI HTMLResponse、Flask make_response），可造成反射型跨站脚本。
+    remediation: Render a template with autoescaping, or escape the value with django.utils.html.escape / markupsafe.escape / html.escape.
+    remediation_zh: 使用开启自动转义的模板渲染，或用 django.utils.html.escape / markupsafe.escape / html.escape 转义该值。
+  - id: py-xss-return-html
+    title: View returns HTML built from request data
+    title_zh: 视图返回由请求数据构造的 HTML
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '{{WEBFILE}}'
+    patterns:
+      - '^\s*return\s+(?:\(\s*)?{{DYN}}'
+      - '{{REQ}}'
+      - '<[a-z][\w-]{0,20}[\s>/]'
+    notPattern: '\b(?:\w{0,20}escape|html\.escape|bleach\.clean|json\.dumps|jsonify|format_html)\s*\('
+    group: py-xss
+    message: A view returns an HTML string with a request value formatted into it; Flask and similar frameworks send a returned string as text/html, so the value is rendered as markup (reflected cross-site scripting).
+    message_zh: 视图返回的 HTML 字符串中格式化插入了请求值；Flask 等框架将返回的字符串作为 text/html 发送，该值会被当作标记渲染（反射型跨站脚本）。
+    remediation: Render a template with autoescaping, or escape the value (markupsafe.escape) before formatting it into HTML.
+    remediation_zh: 使用开启自动转义的模板渲染，或在格式化进 HTML 前转义该值（markupsafe.escape）。
+  - id: py-html-response-dynamic
+    codeOnly: true
+    title: HTML response body built with string formatting
+    title_zh: HTML 响应体由字符串格式化构造
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    patterns:
+      - '{{HTMLRESP}}(?:\s*content\s*=)?\s*{{DYN}}'
+      - '<[a-zA-Z!][\w-]{0,20}'
+    notPattern: '\b(?:\w{0,20}escape|html\.escape|bleach\.clean|format_html)\s*\('
+    group: py-xss
+    message: The body of an HTML response is built with an f-string, concatenation, % or .format(); confirm every interpolated value is escaped or constant.
+    message_zh: HTML 响应体由 f-string、拼接、% 或 .format() 构造；需确认每个插入的值都已转义或为常量。
+    remediation: Render a template with autoescaping, or use format_html / markupsafe.escape for each value.
+    remediation_zh: 使用开启自动转义的模板渲染，或对每个值使用 format_html / markupsafe.escape。
+  - id: py-format-html-prebuilt
+    codeOnly: true
+    title: Django format_html given an already formatted string
+    title_zh: Django format_html 接收已格式化的字符串
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    pattern: '\bformat_html\s*\(\s*{{DYN}}'
+    group: py-html-safe
+    message: format_html escapes only its arguments; here the format string itself is built with an f-string, concatenation, % or .format(), so the values formatted into it are marked safe without escaping.
+    message_zh: format_html 只转义其参数；此处格式字符串本身由 f-string、拼接、% 或 .format() 构造，被插入的值未经转义就被标记为安全。
+    remediation: Keep the format string constant and pass every value as an argument, for example format_html("<b>{}</b>", value).
+    remediation_zh: 保持格式字符串为常量，并把每个值作为参数传入，例如 format_html("<b>{}</b>", value)。
+
+  # ---- Server-side request forgery ----
+  - id: py-ssrf-host-request
+    codeOnly: true
+    title: Outbound request to a host taken from the request
+    title_zh: 出站请求的主机来自请求
+    severity: high
+    confidence: high
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [python]
+    pattern: '{{HTTPCALL}}\s*(?:["\x27][A-Za-z]{3,7}["\x27]\s*,\s*)?(?:url\s*=\s*)?(?:(?:f|fr|rf)["\x27](?:[a-z][a-z0-9+.-]{0,15}://)?\{[^}\n]{0,200}?(?:{{REQ}})|[rbu]{0,2}["\x27][a-z][a-z0-9+.-]{0,15}://["\x27]\s*\+\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}}))'
+    group: py-ssrf
+    message: The scheme or host of an outbound HTTP call is formatted from a request value, so a caller can make the server reach internal addresses.
+    message_zh: 出站 HTTP 调用的协议或主机由请求值格式化而来，调用方可让服务器访问内部地址。
+    remediation: Keep scheme and host fixed (or check the host against an allowlist) and block private and loopback addresses.
+    remediation_zh: 固定协议和主机（或使用白名单校验主机），并阻断私网和环回地址。
+  - id: py-ssrf-api
+    codeOnly: true
+    title: Outbound request to a URL held in a variable in a web module
+    title_zh: Web 模块中向变量所存 URL 发起出站请求
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [python]
+    filePattern: '{{WEBFILE}}'
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '{{HTTPCALL}}\s*(?:url\s*=\s*)?(?:[a-z_]\w{0,40}\.)?(?:[a-z]\w{0,30}_)?(?:url|uri|link|endpoint|webhook|callback|target|location|host|address)\s*[,)]'
+    group: py-ssrf
+    message: A module that handles web requests sends an HTTP request to a URL held in a variable; confirm the URL cannot be chosen by the caller (server-side request forgery).
+    message_zh: 处理 Web 请求的模块向变量中的 URL 发起 HTTP 请求；需确认调用方无法指定该 URL（服务端请求伪造）。
+    remediation: Build the URL from a fixed scheme and host, or validate the host against an allowlist and block private addresses.
+    remediation_zh: 由固定协议和主机构造 URL，或使用白名单校验主机并阻断私网地址。
+
+  # ---- NoSQL, LDAP, regular expressions, mass assignment ----
+  - id: py-nosql-where
+    title: MongoDB $where built with string formatting
+    title_zh: MongoDB $where 由字符串格式化构造
+    severity: high
+    confidence: medium
+    cwe: CWE-943
+    owasp: A03:2021
+    languages: [python]
+    pattern: '["\x27]\$where["\x27]\s*:{{DYNARG}}'
+    message: The JavaScript expression of a $where query is built with an f-string, concatenation, % or .format() (or from request data), so the value can change the server-side JavaScript.
+    message_zh: $where 查询的 JavaScript 表达式由 f-string、拼接、% 或 .format() 构造（或来自请求数据），插入的值可改变服务端 JavaScript。
+    remediation: Replace $where with query operators ($eq, $regex with an escaped pattern) and pass values as data.
+    remediation_zh: 用查询操作符（$eq、使用转义模式的 $regex）替代 $where，并把值作为数据传入。
+  - id: py-nosql-request-filter
+    codeOnly: true
+    title: MongoDB query document taken from request JSON
+    title_zh: MongoDB 查询文档来自请求 JSON
+    severity: high
+    confidence: medium
+    cwe: CWE-943
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '\b(?:pymongo|motor|mongoengine|MongoClient|PyMongo|mongomock)\b'
+    pattern: '\.(?:find|find_one|find_one_and_(?:update|delete|replace)|update_one|update_many|delete_one|delete_many|replace_one|count_documents|aggregate|distinct)\s*\((?:{{STARTREQ}}|\s*\{(?:[^(){}]|\([^(){}]{0,100}\)){0,400}?\brequest\.(?:json|get_json)\b)'
+    message: 'A MongoDB filter is the request body itself, or contains values taken from request JSON. JSON can carry objects such as {"$ne": null}, so the caller can change the query (operator injection, for example a login bypass).'
+    message_zh: 'MongoDB 过滤条件就是请求体本身，或包含取自请求 JSON 的值。JSON 可携带 {"$ne": null} 之类的对象，调用方可改变查询（操作符注入，例如绕过登录）。'
+    remediation: Build the filter from fixed keys and check that each value is a string (or the expected scalar type) before querying.
+    remediation_zh: 用固定键构造过滤条件，并在查询前确认每个值都是字符串（或预期的标量类型）。
+  - id: py-ldap-filter-built
+    title: LDAP filter string built with string formatting
+    title_zh: LDAP 过滤器字符串由字符串格式化构造
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-90
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '^\s*(?:from|import)\s+ldap3?\b'
+    pattern: '^\s*[\w.]{0,80}(?:filter|filt|flt|query|search)\w{0,40}\s*=\s*(?:\(\s*)?(?:f["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}\{|["\x27][^"\x27\n]{0,200}\([\w-]{1,60}=[^"\x27\n]{0,200}["\x27]\s*(?:\+|%\s*[\w(]|\.format\())'
+    notPattern: 'escape_filter_chars|escape_rdn'
+    message: An LDAP filter such as "(uid=" + value + ")" is assembled into a variable with concatenation, %, .format() or an f-string; unless the value was escaped earlier, filter metacharacters in it change the query when the filter is used.
+    message_zh: LDAP 过滤器（如 "(uid=" + value + ")"）通过拼接、%、.format() 或 f-string 组装到变量中；除非该值已事先转义，使用该过滤器时值中的元字符会改变查询。
+    remediation: Escape every value with ldap.filter.escape_filter_chars (or ldap3.utils.conv.escape_filter_chars).
+    remediation_zh: 使用 ldap.filter.escape_filter_chars（或 ldap3.utils.conv.escape_filter_chars）转义每个值。
+  - id: py-regex-request
+    codeOnly: true
+    title: Regular expression compiled from request data
+    title_zh: 正则表达式由请求数据编译
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1333
+    owasp: A05:2021
+    languages: [python]
+    pattern: '\bre\.(?:compile|match|search|fullmatch|findall|finditer|sub|subn|split)\s*\({{STARTREQ}}'
+    notPattern: '\bre\.escape\s*\('
+    message: A regular expression pattern is taken from the request. A crafted pattern can take exponential time (ReDoS) or match more than intended.
+    message_zh: 正则表达式模式来自请求。构造的模式可能耗费指数级时间（ReDoS）或匹配超出预期的内容。
+    remediation: Escape user text with re.escape, or match it with plain string operations; use a timeout-capable engine for user-supplied patterns.
+    remediation_zh: 使用 re.escape 转义用户文本，或改用普通字符串操作；用户提供的模式应使用支持超时的引擎。
+  - id: py-mass-assignment
+    codeOnly: true
+    title: Object created or updated from all request fields
+    title_zh: 使用请求的全部字段创建或更新对象
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-915
+    owasp: A08:2021
+    languages: [python]
+    pattern: '[(,]\s*\*\*\s*(?:[\w.]{1,100}\(\s*)?(?:{{REQ}})'
+    message: Every field of the request is passed as keyword arguments (Model(**request.json), objects.create(**request.POST.dict()), filter(**request.GET.dict())), so a caller can set fields such as is_admin or query on fields it should not see.
+    message_zh: 请求的所有字段被作为关键字参数传入（Model(**request.json)、objects.create(**request.POST.dict())、filter(**request.GET.dict())），调用方可设置 is_admin 等字段，或按不应可见的字段查询。
+    remediation: Copy an explicit list of allowed fields, or validate the body with a form or schema that declares them.
+    remediation_zh: 只复制明确允许的字段，或用声明了字段的表单/Schema 校验请求体。
+
+  # ---- CORS and framework settings ----
+  - id: py-cors-credentials-default-origin
+    codeOnly: true
+    title: flask-cors with credentials and the default wildcard origin
+    title_zh: flask-cors 启用凭证且使用默认通配源
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    fileAbsentPattern: '\bCORS_(?:ORIGINS|RESOURCES)\b'
+    pattern: '(?<![\w.])CORS\s*\([^)]{0,600}\bsupports_credentials\s*=\s*True\b'
+    notPattern: '\b(?:origins|resources)\s*='
+    group: py-cors
+    message: flask-cors allows every origin by default; with supports_credentials=True it echoes the caller's Origin together with Access-Control-Allow-Credentials, so any site can read authenticated responses.
+    message_zh: flask-cors 默认允许所有源；设置 supports_credentials=True 后它会回显调用方的 Origin 并附带 Access-Control-Allow-Credentials，任意站点都能读取已认证的响应。
+    remediation: Pass origins= with the exact trusted origins whenever supports_credentials=True.
+    remediation_zh: 启用 supports_credentials=True 时，通过 origins= 明确列出可信源。
+  - id: py-cors-regex-any
+    codeOnly: true
+    title: CORS origin regex that matches any origin, with credentials
+    title_zh: CORS 源正则匹配任意源且携带凭证
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [python]
+    patterns:
+      - '\b(?:allow_origin_regex|origins)\s*=\s*(?:\[\s*)?r?["\x27]\^?(?:https?://)?\.[*+]\$?["\x27]'
+      - '\b(?:supports_credentials|allow_credentials)\s*=\s*True\b'
+    group: py-cors
+    message: The allowed-origin regular expression matches every origin and credentials are allowed, so any site can read authenticated responses.
+    message_zh: 允许源的正则匹配所有源且允许凭证，任意站点都能读取已认证的响应。
+    remediation: Anchor the regex to your own domains (for example ^https://([a-z0-9-]+\.)?example\.com$) or list origins explicitly.
+    remediation_zh: 把正则锚定到自有域名（例如 ^https://([a-z0-9-]+\.)?example\.com$），或明确列出源。
+  - id: py-django-weak-password-hasher
+    title: Django PASSWORD_HASHERS starts with a weak hasher
+    title_zh: Django PASSWORD_HASHERS 首选弱哈希器
+    severity: high
+    confidence: medium
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{SAMPLEPATH}}|(?:^|/)(?:test|tests|testing|ci)[^/]*\.py$|(?:^|/)settings/(?:test|ci)[^/]*\.py$'
+    pattern: '\bPASSWORD_HASHERS\s*=\s*[\[(]\s*["\x27]django\.contrib\.auth\.hashers\.(?:(?:Unsalted)?(?:MD5|SHA1)|Crypt)PasswordHasher["\x27]'
+    message: The first entry of PASSWORD_HASHERS hashes every new or changed password; MD5, SHA1, unsalted and crypt hashers are fast to brute-force.
+    message_zh: PASSWORD_HASHERS 的第一项用于哈希所有新设置或修改的口令；MD5、SHA1、无盐和 crypt 哈希器很容易被暴力破解。
+    remediation: Put Argon2PasswordHasher, PBKDF2PasswordHasher or ScryptPasswordHasher first; keep weak hashers only after them for upgrading old hashes.
+    remediation_zh: 把 Argon2PasswordHasher、PBKDF2PasswordHasher 或 ScryptPasswordHasher 放在首位；弱哈希器只可放在其后用于升级旧哈希。
+  - id: py-django-xframe-exempt
+    title: Clickjacking protection disabled for a Django view
+    title_zh: Django 视图禁用了点击劫持防护
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1021
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '^\s*@(?:\w+\.)*xframe_options_exempt\b|(?<![\w.])xframe_options_exempt\s*\('
+    message: xframe_options_exempt removes the X-Frame-Options header for this view, so other sites can frame it; confirm the page has no state-changing actions or is meant to be embedded.
+    message_zh: xframe_options_exempt 会去掉该视图的 X-Frame-Options 头，其他站点可将其嵌入框架；需确认页面没有改变状态的操作，或本就需要被嵌入。
+    remediation: Prefer xframe_options_sameorigin, or a Content-Security-Policy frame-ancestors list of trusted sites.
+    remediation_zh: 优先使用 xframe_options_sameorigin，或使用列出可信站点的 Content-Security-Policy frame-ancestors。
+
+  # ---- Cryptographic parameters and protocols ----
+  - id: py-jwt-hardcoded-key
+    codeOnly: true
+    title: JWT signed or verified with a literal key
+    title_zh: JWT 使用字面量密钥签名或校验
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{SAMPLEPATH}}'
+    pattern: '\bjwt\.(?:encode|decode)\s*\((?:[^,(){}]|\([^()]{0,200}\)|\{[^{}]{0,300}\}){1,300},\s*(?:key\s*=\s*)?b?["\x27](?<secret>[^"\x27\n]{4,200})["\x27]\s*[,)]'
+    notPattern: '-----BEGIN|\bPUBLIC\b'
+    redactEvidence: true
+    message: The HMAC key used to sign or verify JSON Web Tokens is a literal in the source; anyone with the code can forge tokens.
+    message_zh: 用于签名或校验 JSON Web Token 的 HMAC 密钥是源码中的字面量；拿到代码的人都能伪造令牌。
+    remediation: Load the key from the environment or a secret manager and rotate the committed value.
+    remediation_zh: 从环境变量或密钥管理器加载密钥，并轮换已提交的值。
+  - id: py-ssl-insecure-version
+    codeOnly: true
+    title: Obsolete SSL/TLS protocol version selected
+    title_zh: 选择了过时的 SSL/TLS 协议版本
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bssl\.PROTOCOL_(?:SSLv2|SSLv3|TLSv1|TLSv1_1)\b|\bTLSVersion\.(?:SSLv3|TLSv1|TLSv1_1)\b|\bSSL\.(?:SSLv2|SSLv3|TLSv1|TLSv1_1)_METHOD\b'
+    notPattern: '[!=]=\s*(?:ssl\.|SSL\.)?(?:PROTOCOL_|TLSVersion\.|SSLv|TLSv)|\b(?:hasattr|getattr)\s*\(|\bOP_NO_'
+    message: SSLv2, SSLv3, TLS 1.0 and TLS 1.1 have known weaknesses and are disabled by current clients and servers.
+    message_zh: SSLv2、SSLv3、TLS 1.0 和 TLS 1.1 存在已知弱点，当前客户端和服务器均已禁用。
+    remediation: Use ssl.create_default_context() (or PROTOCOL_TLS_CLIENT / PROTOCOL_TLS_SERVER) with minimum_version = ssl.TLSVersion.TLSv1_2.
+    remediation_zh: 使用 ssl.create_default_context()（或 PROTOCOL_TLS_CLIENT / PROTOCOL_TLS_SERVER），并设置 minimum_version = ssl.TLSVersion.TLSv1_2。
+  - id: py-weak-key-size
+    codeOnly: true
+    title: RSA/DSA key shorter than 2048 bits or weak elliptic curve
+    title_zh: RSA/DSA 密钥短于 2048 位或椭圆曲线强度不足
+    severity: medium
+    confidence: medium
+    cwe: CWE-326
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:rsa|dsa)\.generate_private_key\s*\((?:(?:[^()]|\([^()]{0,200}\)){0,300}?\bkey_size\s*=\s*|\s*(?:public_exponent\s*=\s*)?\d{1,6}\s*,\s*)(?:256|384|512|768|1024|1536)\b|\b(?:RSA|DSA)\.generate\s*\(\s*(?:bits\s*=\s*)?(?:256|384|512|768|1024|1536)\b|\brsa\.newkeys\s*\(\s*(?:256|384|512|768|1024|1536)\b|\bec\.(?:SECP192R1|SECT163K1|SECT163R2)\s*\('
+    message: The generated key is too short (RSA/DSA below 2048 bits) or uses a curve below 224 bits and can be broken with current resources.
+    message_zh: 生成的密钥过短（RSA/DSA 低于 2048 位）或使用低于 224 位的曲线，可被当前计算资源破解。
+    remediation: Use RSA keys of at least 2048 bits (3072 for long-term use), or Ed25519 / P-256.
+    remediation_zh: 使用至少 2048 位（长期使用 3072 位）的 RSA 密钥，或 Ed25519 / P-256。
+  - id: py-pbkdf2-low-iterations
+    codeOnly: true
+    title: PBKDF2 with fewer than 10,000 iterations
+    title_zh: PBKDF2 迭代次数少于 10,000
+    severity: medium
+    confidence: medium
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\b(?:PBKDF2HMAC|pbkdf2_hmac)\s*\((?:[^()]|\([^()]{0,200}\)){0,600}?\biterations\s*=\s*\d{1,4}(?![\d_.*])|\bpbkdf2_hmac\s*\((?:[^,()]|\([^()]{0,200}\)){1,200},(?:[^,()]|\([^()]{0,200}\)){1,200},(?:[^,()]|\([^()]{0,200}\)){1,200},\s*\d{1,4}(?![\d_.*])'
+    message: PBKDF2 with a few thousand iterations or fewer is cheap to brute-force on GPUs when it protects passwords.
+    message_zh: 用于保护口令时，迭代次数仅数千次或更少的 PBKDF2 很容易被 GPU 暴力破解。
+    remediation: Use at least 600,000 iterations for PBKDF2-HMAC-SHA256, or argon2 / scrypt.
+    remediation_zh: PBKDF2-HMAC-SHA256 至少使用 600,000 次迭代，或改用 argon2 / scrypt。
+  - id: py-timing-unsafe-compare
+    codeOnly: true
+    title: Secret, token or signature compared with ==
+    title_zh: 使用 == 比较密钥、令牌或签名
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-208
+    owasp: A02:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:(?<![\w.])[\w.]{0,60}(?:signature|_sig|\bsig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)|\.(?:hex)?digest\s*\(\s*\))\s*[!=]=\s*(?!(?:None|True|False|0|1)\b|[rbuf]{0,2}["\x27]|[\[{(]|len\b)[A-Za-z_]|(?<![\w.])[A-Za-z_][\w.]{0,80}\s*[!=]=\s*(?:[\w.]{0,60}(?:signature|_sig|hmac|_mac|digest|(?:csrf|auth|access|api|reset|session|bearer|refresh|secret|verification|confirm|confirmation)_?token|api_?key|secret)\b|[\w.]{1,80}\.(?:hex)?digest\s*\(\s*\))'
+    notPattern: '\bcompare_digest\b|\bconstant_time_compare\b|\bother\.|(?:_type|_kind|_name|_len|_length|_count|_id|_index|_version|_algorithm|_alg|_size|_method|_format|_field|_header|_class|_mode|_url|_path|_file)\s*[!=]=|[!=]=\s*[\w.]{0,60}(?:sha\d{0,3}|md5|checksum|crc\d{0,2}|_hash)\b|(?:sha\d{0,3}|md5|checksum|_hash)\s*[!=]='
+    message: A signature, HMAC digest, token or secret is compared with == or !=, which returns as soon as a byte differs; the timing can reveal how much of a guessed value is right.
+    message_zh: 签名、HMAC 摘要、令牌或密钥使用 == 或 != 比较，遇到第一个不同字节即返回；耗时差异可泄露猜测值正确的部分。
+    remediation: Compare with hmac.compare_digest (or secrets.compare_digest / Django constant_time_compare).
+    remediation_zh: 使用 hmac.compare_digest（或 secrets.compare_digest / Django 的 constant_time_compare）比较。
+  - id: py-cleartext-protocol
+    codeOnly: true
+    title: Telnet or plain FTP client
+    title_zh: 使用 Telnet 或明文 FTP 客户端
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-319
+    owasp: A02:2021
+    languages: [python]
+    flags: ''
+    filePattern: '^\s*(?:from|import)\s+(?:telnetlib|ftplib)\b'
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\btelnetlib\.|\bftplib\.|(?<![\w.]))(?:Telnet|FTP)\s*\('
+    message: Telnet and FTP send credentials and data in clear text; confirm the connection never leaves a trusted network.
+    message_zh: Telnet 和 FTP 以明文发送凭证和数据；需确认连接不会离开可信网络。
+    remediation: Use SSH (paramiko) or FTP_TLS / SFTP.
+    remediation_zh: 改用 SSH（paramiko）或 FTP_TLS / SFTP。
+
+  # ---- Command execution and exposed functions ----
+  - id: py-paramiko-exec-dynamic
+    codeOnly: true
+    title: Remote command for SSH exec_command built with string formatting
+    title_zh: SSH exec_command 的远程命令由字符串格式化构造
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [python]
+    filePattern: '\bparamiko\b'
+    pattern: '\.exec_command\s*\({{DYNARG}}'
+    notPattern: '\bshlex\.quote\s*\(|\bquote\s*\('
+    message: The command run on the remote host is built with an f-string, concatenation, % or .format() (or taken from the request); the remote shell parses metacharacters in the value.
+    message_zh: 在远程主机执行的命令由 f-string、拼接、% 或 .format() 构造（或来自请求）；远程 shell 会解析值中的元字符。
+    remediation: Quote every value with shlex.quote, or validate it against an allowlist.
+    remediation_zh: 用 shlex.quote 转义每个值，或按白名单校验。
+  - id: py-xmlrpc-dotted-names
+    codeOnly: true
+    title: XML-RPC instance registered with allow_dotted_names
+    title_zh: XML-RPC 实例以 allow_dotted_names 注册
+    severity: high
+    confidence: high
+    cwe: CWE-749
+    owasp: A04:2021
+    languages: [python]
+    pattern: '\bregister_instance\s*\([^)]{0,300}\ballow_dotted_names\s*=\s*True\b'
+    message: allow_dotted_names lets clients walk attributes of the registered object and reach module globals, which can lead to code execution.
+    message_zh: allow_dotted_names 允许客户端遍历已注册对象的属性并访问模块全局对象，可导致代码执行。
+    remediation: Leave allow_dotted_names off and register explicit functions.
+    remediation_zh: 保持 allow_dotted_names 关闭，显式注册函数。
+
+  # ---- Templates ----
+  - id: py-mako-autoescape-missing
+    codeOnly: true
+    title: Mako template without an HTML escape filter
+    title_zh: Mako 模板未设置 HTML 转义过滤器
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    filePattern: '^\s*(?:from|import)\s+mako\b'
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?:\bmako\.(?:template|lookup)\.|(?<![\w.]))(?:Template|TemplateLookup)\s*\('
+    notPattern: 'default_filters'
+    message: Mako does not escape expressions by default; confirm the templates do not render untrusted values into HTML.
+    message_zh: Mako 默认不转义表达式；需确认模板不会把不可信值渲染进 HTML。
+    remediation: Pass default_filters=["h"] (or escape each expression with |h).
+    remediation_zh: 传入 default_filters=["h"]（或对每个表达式使用 |h）。
+
+  # ---- Archives and XML ----
+  - id: py-unpack-archive
+    codeOnly: true
+    title: shutil.unpack_archive without a filter
+    title_zh: shutil.unpack_archive 未设置 filter
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\bshutil\.unpack_archive\s*\('
+    notPattern: '\bfilter\s*='
+    group: py-extractall
+    message: shutil.unpack_archive extracts tar archives with the member names and links they contain (before Python 3.14), so a crafted archive can write outside the destination; confirm the archive is trusted.
+    message_zh: shutil.unpack_archive 会按 tar 归档中的成员名和链接解压（Python 3.14 之前），恶意归档可写到目标目录之外；需确认归档可信。
+    remediation: Pass filter="data" (Python 3.12+) or validate member paths with tarfile before extracting.
+    remediation_zh: 传入 filter="data"（Python 3.12+），或先用 tarfile 校验成员路径再解压。
+  - id: py-lxml-parse-default
+    codeOnly: true
+    title: lxml parse without an explicit hardened parser
+    title_zh: lxml 解析未显式使用加固的解析器
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-611
+    owasp: A05:2021
+    languages: [python]
+    flags: ''
+    filePattern: '^\s*(?:from\s+lxml\b|import\s+lxml\b)'
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<![\w.])(?:etree|lxml\.etree|objectify)\.(?:parse|fromstring|XML|iterparse|XMLID)\s*\('
+    notPattern: '\bparser\s*=|\((?:[^,()]|\([^()]{0,100}\)){1,200},\s*(?!\w{1,40}\s*=)[A-Za-z_]|defused'
+    group: py-lxml
+    message: lxml parses with its default parser here (it resolves entities, and before lxml 5 also external ones); confirm the document is trusted or pass a parser with resolve_entities=False.
+    message_zh: 此处 lxml 使用默认解析器（会解析实体，lxml 5 之前还会解析外部实体）；需确认文档可信，或传入 resolve_entities=False 的解析器。
+    remediation: Pass parser=etree.XMLParser(resolve_entities=False, no_network=True), or use defusedxml for untrusted XML.
+    remediation_zh: 传入 parser=etree.XMLParser(resolve_entities=False, no_network=True)，或对不可信 XML 使用 defusedxml。
+
+  # ---- ML and LLM tooling ----
+  - id: py-hf-trust-remote-code
+    codeOnly: true
+    title: Model loaded with trust_remote_code=True
+    title_zh: 以 trust_remote_code=True 加载模型
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A08:2021
+    languages: [python]
+    pathExclude: '{{SAMPLEPATH}}|(?:^|/)(?:scripts?|benchmarks?|notebooks?)/|(?:^|/)convert_[^/]*\.py$'
+    # Located at the call so that notPattern sees every argument: a call
+    # pinned to a full commit hash with revision= is the remediation. String
+    # literals are skipped whole, so an error message that mentions the option
+    # is not a match.
+    pattern: '[\w.]{1,100}\((?:[^()"\x27]|{{STR}}|\([^()]{0,200}\)){0,600}?(?<![\w.])trust_remote_code\s*=\s*True\b'
+    notPattern: '\brevision\s*=\s*["\x27][0-9a-f]{40}["\x27]'
+    message: trust_remote_code=True downloads and runs Python code from the model repository, and the call is not pinned to a commit with revision=; whoever controls that repository (or the model name) runs code in this process.
+    message_zh: trust_remote_code=True 会下载并运行模型仓库中的 Python 代码，且该调用未用 revision= 固定到某个提交；控制该仓库（或模型名）的人即可在本进程中执行代码。
+    remediation: Use a model supported natively by the library, or pin revision= to a reviewed commit and keep the model name fixed.
+    remediation_zh: 使用库原生支持的模型，或把 revision= 固定到已审查的提交并固定模型名。
+  - id: py-langchain-dangerous-option
+    codeOnly: true
+    title: LangChain dangerous capability enabled
+    title_zh: 启用了 LangChain 危险能力
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [python]
+    pathExclude: '{{TESTPATH}}'
+    pattern: '\ballow_dangerous_(?:code|requests|deserialization)\s*=\s*True\b'
+    message: allow_dangerous_code / allow_dangerous_requests / allow_dangerous_deserialization let model output (or a loaded file) run Python code, reach arbitrary URLs or unpickle data.
+    message_zh: allow_dangerous_code / allow_dangerous_requests / allow_dangerous_deserialization 使模型输出（或加载的文件）可执行 Python 代码、访问任意 URL 或反序列化数据。
+    remediation: Run such tools in a sandbox without credentials or network access, and load only index files you created.
+    remediation_zh: 在没有凭证和网络访问的沙箱中运行此类工具，并只加载自己生成的索引文件。
+  - id: py-llm-code-tool
+    codeOnly: true
+    title: LLM agent given a Python or shell execution tool
+    title_zh: LLM 代理被赋予 Python 或 shell 执行工具
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [python]
+    flags: ''
+    pathExclude: '{{TESTPATH}}'
+    pattern: '(?<![\w.])(?:PythonREPLTool|PythonAstREPLTool|PythonREPL|ShellTool|BashProcess)\s*\(|\bload_tools\s*\([^)]{0,300}["\x27](?:terminal|python_repl|shell)["\x27]'
+    message: The agent can run Python or shell commands chosen by the model; prompt injection in any input the model reads becomes code execution.
+    message_zh: 代理可以执行模型选择的 Python 或 shell 命令；模型读取的任何输入中的提示注入都会变成代码执行。
+    remediation: Run the tool in an isolated sandbox without secrets, or replace it with narrow, validated functions.
+    remediation_zh: 在无机密信息的隔离沙箱中运行该工具，或改用范围窄且经过校验的函数。
+  - id: py-llm-output-exec
+    codeOnly: true
+    title: Model output executed as code or a command
+    title_zh: 模型输出被作为代码或命令执行
+    severity: critical
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [python]
+    pattern: '(?:(?<![\w.])(?:eval|exec)|\bos\.(?:system|popen)|\bsubprocess\.(?:run|call|Popen|check_output|check_call|getoutput))\s*\(\s*(?:[\w.\[\]]{0,120}\.choices\[\s*0\s*\]\.(?:message\.content|text)|(?:[a-z_]\w{0,40}\.)?\w{0,30}(?:llm|gpt|completion|generated|assistant|agent|ai|model)_(?:output|response|result|reply|answer|code|text|content|cmd|command)\b|(?:[a-z_]\w{0,40}\.)?(?:completion|chat_completion|llm_response|ai_message)\.(?:content|text|output_text)\b)'
+    group: py-eval
+    message: Text produced by a language model is executed as Python code or a shell command; anything that can steer the model (prompt injection) controls what runs.
+    message_zh: 语言模型生成的文本被作为 Python 代码或 shell 命令执行；任何能左右模型的内容（提示注入）都能控制执行内容。
+    remediation: Do not execute model output; map it to a fixed set of actions, or run it in an isolated sandbox.
+    remediation_zh: 不要执行模型输出；把它映射到固定操作集合，或在隔离沙箱中运行。

@@ -100,6 +100,9 @@ const TAINT_RULE_IDS = [
   "py-taint-redirect",
   "py-taint-deserialization",
   "py-taint-eval",
+  "py-taint-xss",
+  "py-taint-nosql",
+  "py-taint-ldap",
 ];
 
 describe.skipIf(!hasAll)("real external tools", () => {

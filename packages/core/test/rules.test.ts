@@ -1111,6 +1111,7 @@ describe("evidence of credential rules", () => {
       "k8s-secret-in-env",
       "k8s-secret-literal-data",
       "py-hardcoded-secret",
+      "py-jwt-hardcoded-key",
       "py-secret-key-literal",
       "py-static-iv",
       "rs-hardcoded-secret",

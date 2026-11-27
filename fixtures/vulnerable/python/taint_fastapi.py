@@ -11,7 +11,7 @@ import subprocess
 import httpx
 import yaml
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from jinja2 import Environment
 from sqlalchemy import text
 
@@ -84,3 +84,21 @@ async def manifest(request: Request):
 async def rule(expression: str):
     compiled = compile(expression, "<rule>", "eval")  # expect: py-taint-eval
     return {"compiled": bool(compiled)}
+
+
+@app.get("/hello/{name}")
+async def hello(name: str):
+    return HTMLResponse(content="<h1>Hello " + name + "</h1>")  # expect: py-taint-xss
+
+
+@app.post("/orders/search")
+async def order_search(request: Request):
+    criteria = await request.json()
+    order = await orders.find_one(criteria)  # expect: py-taint-nosql
+    return {"id": str(order["_id"])}
+
+
+@app.get("/people")
+async def people(uid: str):
+    entries = conn.search_s("dc=example,dc=com", 2, "(uid=" + uid + ")")  # expect: py-taint-ldap
+    return {"count": len(entries)}

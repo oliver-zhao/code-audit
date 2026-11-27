@@ -467,10 +467,11 @@ rules:
     cwe: CWE-502
     owasp: A08:2021
     languages: [python]
-    pattern: '(?:\b(?:c?pickle|_pickle|dill|marshal|cloudpickle)\.loads?|\bjsonpickle\.decode)\s*\({{FIRSTREQ}}'
+    pattern: '(?:\b(?:c?pickle|_pickle|dill|marshal|cloudpickle|joblib)\.loads?|\bjsonpickle\.decode|\b(?:pd|pandas)\.read_pickle|\btorch\.load|\bshelve\.open)\s*\({{FIRSTREQ}}'
+    notPattern: 'weights_only\s*=\s*True'
     group: py-deser
-    message: pickle, dill, marshal or jsonpickle deserializes a value read from the request, which lets the sender execute arbitrary code.
-    message_zh: pickle、dill、marshal 或 jsonpickle 反序列化来自请求的值，发送方可执行任意代码。
+    message: pickle, dill, marshal, jsonpickle, joblib, shelve, pandas.read_pickle or torch.load deserializes a value read from the request, which lets the sender execute arbitrary code.
+    message_zh: pickle、dill、marshal、jsonpickle、joblib、shelve、pandas.read_pickle 或 torch.load 反序列化来自请求的值，发送方可执行任意代码。
     remediation: Use JSON or another data-only format for anything that crosses a trust boundary.
     remediation_zh: 跨信任边界的数据改用 JSON 等纯数据格式。
     references:
@@ -487,10 +488,10 @@ rules:
     owasp: A08:2021
     languages: [python]
     pathExclude: '{{TESTPATH}}'
-    pattern: '\b(?:c?pickle|_pickle|dill|marshal|cloudpickle)\.loads?\s*\(|\bpickle\.Unpickler\s*\(|\bjsonpickle\.decode\s*\(|\bshelve\.open\s*\(|\bjoblib\.load\s*\('
+    pattern: '\b(?:c?pickle|_pickle|dill|marshal|cloudpickle)\.loads?\s*\(|\bpickle\.Unpickler\s*\(|\bjsonpickle\.decode\s*\(|\bshelve\.open\s*\(|\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\('
     group: py-deser
-    message: pickle, dill, marshal, jsonpickle, shelve and joblib can run code while loading; confirm the data comes from a trusted source.
-    message_zh: pickle、dill、marshal、jsonpickle、shelve 和 joblib 在加载时可执行代码；需确认数据来源可信。
+    message: pickle, dill, marshal, jsonpickle, shelve, joblib and pandas.read_pickle can run code while loading; confirm the data comes from a trusted source.
+    message_zh: pickle、dill、marshal、jsonpickle、shelve、joblib 和 pandas.read_pickle 在加载时可执行代码；需确认数据来源可信。
     remediation: Use JSON or a restricted format; if pickle is unavoidable, verify integrity (HMAC) and restrict the source.
     remediation_zh: 改用 JSON 或受限格式；如必须使用 pickle，需做完整性校验（HMAC）并限制来源。
   - id: py-yaml-load
@@ -673,7 +674,8 @@ rules:
     cwe: CWE-732
     owasp: A01:2021
     languages: [python]
-    pattern: '\bos\.chmod\s*\([^)\n]{0,300},\s*0o?[0-7]{2,3}[2367]\s*\)'
+    pattern: '\bos\.chmod\s*\([^)\n]{0,300},\s*0o?[0-7]{2,3}[2367]\s*\)|\bos\.chmod\s*\([^)\n]{0,300}\bstat\.S_I(?:WOTH|RWXO)\b'
+    notPattern: '~'
     message: The mode grants write access to every local user.
     message_zh: 该权限模式允许所有本地用户写入。
     remediation: Use the least privilege mode, typically 0o600 or 0o640.

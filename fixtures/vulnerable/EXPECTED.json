@@ -2193,6 +2193,258 @@
       "kind": "finding"
     },
     {
+      "file": "python/rules_extra_misc.py",
+      "line": 21,
+      "ruleId": "py-ssl-insecure-version",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 25,
+      "ruleId": "py-weak-key-size",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 26,
+      "ruleId": "py-pbkdf2-low-iterations",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 27,
+      "ruleId": "py-pbkdf2-low-iterations",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 33,
+      "ruleId": "py-timing-unsafe-compare",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 39,
+      "ruleId": "py-cleartext-protocol",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 40,
+      "ruleId": "py-cleartext-protocol",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 45,
+      "ruleId": "py-paramiko-exec-dynamic",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 50,
+      "ruleId": "py-xmlrpc-dotted-names",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 54,
+      "ruleId": "py-mako-autoescape-missing",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 59,
+      "ruleId": "py-unpack-archive",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 63,
+      "ruleId": "py-lxml-parse-default",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 67,
+      "ruleId": "py-hf-trust-remote-code",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 71,
+      "ruleId": "py-langchain-dangerous-option",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 72,
+      "ruleId": "py-langchain-dangerous-option",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 73,
+      "ruleId": "py-llm-code-tool",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 79,
+      "ruleId": "py-llm-output-exec",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_misc.py",
+      "line": 83,
+      "ruleId": "py-chmod-777",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 16,
+      "ruleId": "py-cors-credentials-default-origin",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 22,
+      "ruleId": "py-xss-return-html",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 27,
+      "ruleId": "py-xss-response-request",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 31,
+      "ruleId": "py-xss-response-request",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 35,
+      "ruleId": "py-html-response-dynamic",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 39,
+      "ruleId": "py-format-html-prebuilt",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 45,
+      "ruleId": "py-ssrf-host-request",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 47,
+      "ruleId": "py-ssrf-api",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 53,
+      "ruleId": "py-nosql-request-filter",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 54,
+      "ruleId": "py-nosql-request-filter",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 56,
+      "ruleId": "py-nosql-where",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 62,
+      "ruleId": "py-regex-request",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 68,
+      "ruleId": "py-mass-assignment",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 73,
+      "ruleId": "py-ldap-filter-built",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 78,
+      "ruleId": "py-jwt-hardcoded-key",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 81,
+      "ruleId": "py-django-xframe-exempt",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 87,
+      "ruleId": "py-cors-regex-any",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/rules_extra_web.py",
+      "line": 90,
+      "ruleId": "py-session-cookie-insecure",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
       "file": "python/rules_injection.py",
       "line": 13,
       "ruleId": "py-sql-injection",
@@ -2609,6 +2861,13 @@
       "file": "python/settings.py",
       "line": 4,
       "ruleId": "py-session-cookie-insecure",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "python/settings.py",
+      "line": 5,
+      "ruleId": "py-django-weak-password-hasher",
       "language": "python",
       "kind": "finding"
     },
@@ -6262,6 +6521,24 @@
       "confidence": "high"
     },
     {
+      "file": "python/taint_app.py",
+      "line": 288,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 297,
+      "ruleId": "py-taint-nosql",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_app.py",
+      "line": 308,
+      "ruleId": "py-taint-ldap",
+      "confidence": "medium"
+    },
+    {
       "file": "python/taint_django.py",
       "line": 29,
       "ruleId": "py-taint-sql",
@@ -6346,6 +6623,24 @@
       "confidence": "high"
     },
     {
+      "file": "python/taint_django.py",
+      "line": 106,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 112,
+      "ruleId": "py-taint-nosql",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_django.py",
+      "line": 118,
+      "ruleId": "py-taint-ldap",
+      "confidence": "medium"
+    },
+    {
       "file": "python/taint_fastapi.py",
       "line": 27,
       "ruleId": "py-taint-sql",
@@ -6410,6 +6705,24 @@
       "line": 85,
       "ruleId": "py-taint-eval",
       "confidence": "high"
+    },
+    {
+      "file": "python/taint_fastapi.py",
+      "line": 91,
+      "ruleId": "py-taint-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_fastapi.py",
+      "line": 97,
+      "ruleId": "py-taint-nosql",
+      "confidence": "medium"
+    },
+    {
+      "file": "python/taint_fastapi.py",
+      "line": 103,
+      "ruleId": "py-taint-ldap",
+      "confidence": "medium"
     }
   ]
 }
