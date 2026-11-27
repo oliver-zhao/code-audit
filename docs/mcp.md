@@ -32,7 +32,7 @@ and which no tool call can change:
    and DSH start a project's MCP servers in the project directory.
 
 The base is printed to stderr at start-up
-(`[code-audit] v0.2.0 ready on stdio; base directory: /work/project (working directory)`).
+(`[code-audit] v0.3.0 ready on stdio; base directory: /work/project (working directory)`).
 
 - The `root` of `audit_start` and the `root` argument of every other tool
   must be the base directory or a directory inside it, compared as canonical
@@ -165,7 +165,7 @@ While the scan runs: `runId`, `runDir`, `root`, `phase: "running"`,
   "startedAt": "2026-11-26T16:17:53.104Z",
   "finishedAt": "2026-11-26T16:17:53.154Z",
   "updatedAt": "2026-11-26T16:17:53.154Z",
-  "progress": { "engine": "complete", "files": 1, "rules": 156, "dependencies": 0 },
+  "progress": { "engine": "complete", "files": 1, "rules": 589, "dependencies": 0 },
   "findings": 2,
   "findingCounts": { "critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0 },
   "lowConfidenceCandidates": 0,
@@ -419,7 +419,7 @@ and fingerprint.
     "endLine": 26,
     "evidence": "return os.system(cmd)",
     "source": "hotspot promotion",
-    "provenance": { "engine": "agent", "rule": "py-os-system-api", "version": "0.2.0" },
+    "provenance": { "engine": "agent", "rule": "py-os-system-api", "version": "0.3.0" },
     "fingerprint": "29ea87036c0598180b22ea0dd95ece92618779997c8c493ab777cd4dbb119efd"
   },
   "promoted": true,
@@ -479,4 +479,4 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
   | code-audit-mcp
 ```
 
-prints one line with `"serverInfo":{"name":"code-audit","version":"0.2.0"}`.
+prints one line with `"serverInfo":{"name":"code-audit","version":"0.3.0"}`.

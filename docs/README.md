@@ -18,8 +18,12 @@ Current for this version of the code.
 
 ## Results and known limits
 
-Reports of the two most recent development stages. They are the reference
-for measured results on public repositories and for the list of known limits.
+What changed in release 0.3.0, and its known limits, is in
+[../CHANGELOG.md](../CHANGELOG.md) and the "Limits" section of the
+[README](../README.md#limits). The two reports below come from earlier
+development stages (before 0.3.0). They record measured results on public
+repositories and the known limits at that time; their rule counts and
+results predate the 0.3.0 rule expansion.
 
 | Document | Content |
 |---|---|

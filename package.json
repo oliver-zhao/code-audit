@@ -1,6 +1,6 @@
 {
   "name": "code-audit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Deterministic source-code security scanner (rules, secrets, dependency advisories) with a CLI and an MCP server for agent-assisted review",
   "license": "Apache-2.0",

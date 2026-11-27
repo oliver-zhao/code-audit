@@ -149,7 +149,7 @@ your tool list whose name ends with the bare name.
 
 ## Python
 
-The scanner covers Python with 70+ built-in rules and 8 Opengrep taint rules.
+The scanner covers Python with 100+ built-in rules and 11 Opengrep taint rules.
 It detects code execution, template injection, deserialization, SQL/command
 injection, path traversal, SSRF, weak crypto, JWT misconfiguration, and Django/
 Flask settings issues. The taint engine follows multi-step flows within a

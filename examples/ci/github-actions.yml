@@ -53,7 +53,7 @@ jobs:
       - name: Install code-audit
         # code-audit is not published to npm yet: build it from a pinned
         # checkout. Replace <pin-to-commit-sha> with the commit of the release
-        # you want (for example the commit of tag v0.2.0).
+        # you want (for example the commit of tag v0.3.0).
         run: |
           git clone https://github.com/oliver-zhao/code-audit.git "$RUNNER_TEMP/code-audit"
           cd "$RUNNER_TEMP/code-audit"

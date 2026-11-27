@@ -34,8 +34,8 @@ The scanner itself never calls a model. The split is deliberate:
 **What it is not.** It does **not prove the absence of vulnerabilities**: a
 clean scan means these engines matched nothing, not that the code is safe.
 Findings are **candidates**: most rules look at one statement at a time. It
-does not find authorization and business-logic flaws, XSS in templates, or
-data flow across files (see [Limits](#limits)).
+does not find authorization and business-logic flaws, XSS written in HTML
+template files, or data flow across files (see [Limits](#limits)).
 
 ## Supported languages and files
 
@@ -44,35 +44,43 @@ the rule counts of your build.
 
 | Language / file type | Recognised files | Built-in rules | Dependency files checked against [OSV.dev](https://osv.dev) |
 |---|---|---:|---|
-| **Python** | `.py`, `.pyw` | 70 | `requirements*.txt` (with `-r` includes), `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml` |
-| **JavaScript / TypeScript** | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts` | 12 | `package-lock.json`, `pnpm-lock.yaml` |
-| **Java** | `.java` | 10 | `pom.xml` (direct dependencies with literal versions) |
-| **Go** | `.go` | 10 | `go.mod` |
-| **C#** | `.cs` | 10 | `packages.lock.json` |
-| **Rust** | none (no `.rs` rules yet) | 0 | `Cargo.lock` (with `Cargo.toml` and workspace members for direct/dev scope) |
-| **C / C++** | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | 9 | none |
-| **Dockerfile / Compose** | `Dockerfile*`, compose files | 6 | |
-| **Kubernetes manifests** | `.yml`, `.yaml` | 7 | |
-| **Terraform** | `.tf`, `.tfvars` | 5 | |
-| **GitHub Actions** | `.github/workflows/*.yml` | 4 | |
-| **Agent configuration** | MCP server configs, skills, `AGENTS.md`, hooks, agent settings | 10 | |
-| **Dependency hygiene** | manifests, Dockerfiles, shell scripts | 3 | |
+| **Python** | `.py`, `.pyw` | 102 | `requirements*.txt` (with `-r` includes), `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml` |
+| **JavaScript / TypeScript** | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts` | 67 | `package-lock.json`, `pnpm-lock.yaml` |
+| **Java** | `.java`; Spring Boot `application*.yml` / `bootstrap*.yml` | 78 | `pom.xml` (direct dependencies with literal versions) |
+| **Go** | `.go` | 50 | `go.mod` |
+| **C# / .NET** | `.cs`, Razor `.cshtml` / `.razor`, `web.config` and other `*.config`, `appsettings*.json` | 57 | `packages.lock.json`, `*.csproj` / `*.fsproj` / `*.vbproj` (`PackageReference`), `Directory.Build.props` / `.targets`, `Directory.Packages.props`, `packages.config` |
+| **Rust** | `.rs` | 38 | `Cargo.lock` (with `Cargo.toml` and workspace members for direct/dev scope) |
+| **C / C++** | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | 46 | none |
+| **Dockerfile** | `Dockerfile`, `Dockerfile.*`, `*.dockerfile` | 13 | |
+| **Docker Compose** | compose files | 10 | |
+| **Kubernetes manifests** | `.yml`, `.yaml` with `apiVersion` or `securityContext` | 26 | |
+| **Terraform** | `.tf`, `.tfvars` (AWS, Azure, GCP) | 35 | |
+| **GitHub Actions** | `.github/workflows/*.yml` | 18 | |
+| **Agent configuration** | MCP server configs, agent settings and hooks, `.codex/config.toml`, skills, instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, ..., `.cursorrules`, `.windsurfrules`, `.clinerules`, `.rules`, Cursor `.mdc`) | 38 | |
+| **Dependency hygiene** | `package.json`, Markdown, JSON, YAML, Dockerfiles, shell scripts (`.sh`, `.bash`, `.zsh`, `.ksh`), requirements files, `.npmrc`, `.yarnrc`, `pip.conf`, `*.ini`, `*.cfg`, `uv.toml` | 11 | |
+| **Other recognised files** | HTML and templates (`.html`, `.jinja`, `.j2`, `.twig`, `.vue`, `.svelte`, `.ejs`, `.hbs`, ...), `.properties`, `.xml` (other than .NET `*.config`) | 0 (counted in coverage; secret detection only) | |
 | **Secrets** | every text file | detectors, not rules | |
 
-156 built-in rules in total: 113 report **findings** and 43 report
+589 built-in rules in total: 381 report **findings** and 208 report
 **hotspots** (a dangerous API with no visible attacker input: a reading list
-for the reviewer, never counted). Python is the most developed language: its
-rules match logical lines, ignore comments and docstrings, and cover SQL,
-command and code injection, template injection, deserialization, file
-handling, SSRF, redirects, TLS and crypto, JWT, XML, and Flask / Django
-configuration. The other languages have a small set of pattern rules for the
-most common injection and crypto mistakes.
+for the reviewer, never counted). Source files are matched one statement at
+a time, with comments ignored and a call split over several lines seen as
+one: Python on logical lines (docstrings ignored too), C#, Java,
+JavaScript/TypeScript, Go, C/C++ and Rust through a shared C-family lexer.
+The rules cover injection (SQL, command, code, path), deserialization, SSRF
+and redirects, XSS in responses, TLS, crypto and hard-coded keys, written
+for the APIs of each language's main libraries and frameworks (for example
+Flask and Django, Express, Spring, net/http and gin, ASP.NET Core and EF
+Core, sqlx and diesel, OpenSSL and libcurl). The depth differs per language;
+Python has the most rules. The rule
+files and how matching works are described in [docs/rules.md](docs/rules.md).
 
-With [Opengrep](https://github.com/opengrep/opengrep) installed, 20 more
-bundled rules run (2 each for Python, JavaScript, Java, Go, C#, C, plus 8
-**Python taint rules** that follow request data from Flask, Django and
-FastAPI handlers to SQL, command, path, SSRF, template, redirect,
-deserialization and `eval` sinks inside one file). See [Engines](#engines).
+With [Opengrep](https://github.com/opengrep/opengrep) installed, 47 more
+bundled rules run, 37 of them **taint rules** that follow request data to a
+sink (SQL, command, path, SSRF, template, redirect, XSS, deserialization,
+`eval`) inside one file: Python 13 (11 taint, Flask, Django and FastAPI),
+JavaScript/TypeScript 8 (7), Java 7 (6), Go 7 (7), C# 6 (5), C 4 (1), and
+Rust 2 (commands and SQL built with `format!`). See [Engines](#engines).
 
 Secret detection covers private keys, provider tokens (AWS, GitHub, Slack,
 ...), credentials in URLs, password and key assignments, and credential files
@@ -122,12 +130,14 @@ code-audit doctor
 ```
 
 ```text
-code-audit doctor (0.2.0)
+code-audit doctor (0.3.0)
 Node.js: 24.22.1 OK
-Rules: 156 built-in: 113 finding, 43 hotspot (<checkout>/rules)
-Opengrep rules: 20 (<checkout>/rules/opengrep)
+Rules: 589 built-in: 381 finding, 208 hotspot (<checkout>/rules)
+Opengrep rules: 47 (<checkout>/rules/opengrep)
+Active tier: Tier 0 + Tier 1
 External tools (detection only, not invoked):
   opengrep       missing
+  semgrep        missing
   osv-scanner    missing
   gitleaks       found  /opt/homebrew/bin/gitleaks (8.30.1)
 ```
@@ -241,44 +251,46 @@ SARIF upload, GitHub annotations and incremental scans are described under
 The repository contains a small, deliberately vulnerable project
 ([examples/demo-app](examples/demo-app)): a Flask service, a Node.js file, a
 Dockerfile, a GitHub Actions workflow, old pinned dependencies and fake
-credentials, 107 lines in 6 files.
+credentials, 107 lines in 6 files. The scan also reads the project's
+`README.md` and the committed sample report, so it counts 8 files.
 
 ```sh
-code-audit scan examples/demo-app --no-external --out /tmp/code-audit-demo
+code-audit scan examples/demo-app --offline --no-external --out /tmp/code-audit-demo
 ```
 
 ```text
-code-audit scan completed: 20261127T035043Z-e31e763d
-Files: 6 scanned / 0 skipped, LOC 107
-Rules: 156
-Findings: 22 (critical 5, high 10, medium 7, low 0, info 0) at confidence >= medium
-  by category: code 8, secrets 2, config/IaC 4, dependencies 8
-  dependencies: advisories 8, vulnerable packages 3; advisories/packages by scope: runtime 0/0, dev/optional 0/0, unknown 8/3
-Low-confidence candidates: 1 (not counted above; code 1, secrets 0, config/IaC 0, dependency advisories 0)
+code-audit scan completed: 20261127T143732Z-479f2b6d
+Files: 8 scanned / 0 skipped, LOC 504
+Rules: 589
+Findings: 15 (critical 4, high 9, medium 1, low 1, info 0) at confidence >= medium
+  by category: code 9, secrets 2, config/IaC 4, dependencies 0
+Low-confidence candidates: 0 (not counted above)
 Hotspots: 2 (not counted above)
-Exit code: 1 - 15 findings count toward the exit code (severity >= high, confidence >= medium)
-Duration: 1993 ms
-Report directory: /tmp/code-audit-demo/20261127T035043Z-e31e763d
+Exit code: 1 - 13 findings count toward the exit code (severity >= high, confidence >= medium)
+Duration: 171 ms
+Report directory: /tmp/code-audit-demo/20261127T143732Z-479f2b6d
+warning: offline mode: skipped OSV.dev queries (3 dependencies were not checked for vulnerabilities)
 ```
 
 The command exits with status 1 because findings reached the thresholds; that
-is the expected result here (see [Exit codes](#exit-codes)). A few of the 22:
+is the expected result here (see [Exit codes](#exit-codes)). A few of the 15:
 
 | Finding | Location | Rule |
 |---|---|---|
 | SQL built with an f-string from a request parameter | `app/server.py:21` | `py-sql-injection` (critical) |
 | `pickle.loads(request.data)` | `app/server.py:46` | `py-insecure-deserialization` (critical) |
-| Shell command built by concatenation | `web/tools.js:8` | `js-command-injection` (critical) |
-| `curl ... \| sh` in an image build | `Dockerfile:4` | `dockerfile-curl-sh` (critical) |
+| Request parameter concatenated into a shell command | `web/tools.js:8` | `js-command-injection-request` (critical) |
+| Request parameter passed to `eval` | `web/tools.js:12` | `js-code-injection-request` (critical) |
+| `curl ... \| sh` in an image build | `Dockerfile:4` | `dockerfile-curl-sh` (high) |
 | Issue title interpolated into a `run:` script | `.github/workflows/triage.yml:13` | `gha-script-injection` (high) |
 | AWS access key id | `config/prod.env:4` | `secret-aws-access-key` (high) |
-| pyyaml 5.3.1 → upgrade to 5.4 | `requirements.txt:2` | advisory `GHSA-8q59-q68h-6hv4` (critical) |
 
 The parameterized query at `app/server.py:29` is **not** a finding: it is
-listed as a hotspot for the reviewer and does not count. The dependency
-advisories come from OSV.dev; with `--offline` they are skipped and the report
-says the dependencies were not checked. Advisory data changes over time, so
-your numbers for the dependency rows can differ.
+listed as a hotspot for the reviewer and does not count. With `--offline` the
+three pinned dependencies in `requirements.txt` (flask 2.0.1, pyyaml 5.3.1,
+requests 2.19.1) are listed but not checked, and the warning says so. Run
+without `--offline` to check them against OSV.dev; the advisories it reports
+depend on the advisory data of the day.
 
 The clean counterpart of the test fixtures gives the other result:
 
@@ -295,30 +307,30 @@ Exit code: 0 - 0 findings count toward the exit code (severity >= high, confiden
 
 The complete `report.md` of the demo run above is committed as
 [examples/demo-app/sample-report.md](examples/demo-app/sample-report.md)
-(352 lines). It starts with what fails the build and the top risks:
+(359 lines). It starts with what fails the build and the top risks:
 
 ```markdown
 ## 1. Executive Summary
 
-**15 findings count toward the exit code** (severity ≥ high, confidence ≥ medium); a scan with these thresholds exits 1.
+**13 findings count toward the exit code** (severity ≥ high, confidence ≥ medium); a scan with these thresholds exits 1.
 
 **Findings at confidence ≥ medium**
 
 | Category | Critical | High | Medium | Low | Info | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Code | 3 | 4 | 1 | 0 | 0 | 8 |
+| Code | 4 | 4 | 1 | 0 | 0 | 9 |
 | Secrets | 0 | 2 | 0 | 0 | 0 | 2 |
-| Configuration / IaC | 1 | 2 | 1 | 0 | 0 | 4 |
-| Dependencies (advisories) | 1 | 2 | 5 | 0 | 0 | 8 |
-| **Total** | **5** | **10** | **7** | **0** | **0** | **22** |
+| Configuration / IaC | 0 | 3 | 0 | 1 | 0 | 4 |
+| Dependencies (advisories) | 0 | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **4** | **9** | **1** | **1** | **0** | **15** |
 
 ### Top risks
 
 1. **CRITICAL** · high · Code — Python SQL statement built with string formatting — app/server.py:21
 2. **CRITICAL** · high · Code — Python unpickles request data — app/server.py:46
-3. **CRITICAL** · high · Code — Node.js child\_process command built with concatenation — web/tools.js:8
-4. **CRITICAL** · high · Configuration / IaC — Dockerfile executes a remote script with curl \| sh — Dockerfile:4
-5. **CRITICAL** · high · Dependency — pyyaml 5.3.1 (unknown, direct): 1 advisory, upgrade to 5.4 — requirements.txt
+3. **CRITICAL** · high · Code — Request data in a child\_process shell command — web/tools.js:8
+4. **CRITICAL** · high · Code — Request data evaluated as JavaScript — web/tools.js:12
+5. **HIGH** · high · Secrets — Hardcoded AWS access key — config/prod.env:4
 ```
 
 then lists every finding grouped by rule, with CWE, description, remediation
@@ -340,16 +352,17 @@ cursor.execute(f"SELECT id, name FROM users WHERE name = '{name}'")
 ~~~
 ```
 
-and aggregates dependencies per package:
+and lists the review hotspots separately:
 
 ```markdown
-| Package | Installed | Scope | Relation | Advisories | Max severity | Recommended upgrade | Advisory IDs | Lockfile |
-| --- | --- | --- | --- | ---: | --- | --- | --- | --- |
-| pyyaml | 5.3.1 | unknown | direct | 1 | critical | 5.4 | GHSA-8q59-q68h-6hv4 | requirements.txt:2 |
-| requests | 2.19.1 | unknown | direct | 5 | high | 2.33.0 | GHSA-x84v-xcm2-53pg, GHSA-9hjg-9r4m-mvj7, GHSA-9wx4-h78v-vm56 +2 more | requirements.txt:3 |
-| flask | 2.0.1 | unknown | direct | 2 | high | 2.2.5 \(same major, 1 open\) / 3.1.3 \(fixes all\) | GHSA-m2qf-hxjv-5gpq, GHSA-68rp-wp8r-4726 | requirements.txt:1 |
+| Severity | Rule ID | Title | Count | Locations |
+| --- | --- | --- | ---: | --- |
+| high | py-sql-api | Python executes a SQL statement | 1 | app/server.py:29 |
+| low | py-bind-all | Service bound to all interfaces | 1 | app/server.py:60 |
 ```
 
+With OSV.dev lookups, the dependency section aggregates advisories per
+package version, with the recommended upgrade and the lockfile line.
 Further sections: low-confidence candidates, review hotspots, suppressed
 findings, findings dismissed by review, coverage and limitations (engines
 that ran, files skipped, warnings), and the rules that fired. After an agent
@@ -416,10 +429,10 @@ credential and configuration directories (`~/.ssh`, `~/.aws`, `~/.config`,
 
 | Engine | Needs | What it does |
 |---|---|---|
-| Built-in rules | Node only | 156 rules (113 findings, 43 hotspots); `code-audit doctor` prints the counts of your build. See [docs/rules.md](docs/rules.md). |
+| Built-in rules | Node only | 589 rules (381 findings, 208 hotspots); `code-audit doctor` prints the counts of your build. See [docs/rules.md](docs/rules.md). |
 | Built-in secret detection | Node only | Private keys, provider tokens (AWS, GitHub, Slack, ...), credentials in URLs, password and key assignments, and credential files (`.netrc`, `.pgpass`, `.npmrc`, `.pypirc` / `pip.conf`, Docker `auths`, kubeconfig). Values are masked in every output. |
-| Dependency advisories | Node only, network | Parses `package-lock.json`, `pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `go.mod`, `pom.xml` (direct dependencies with literal versions), `packages.lock.json`, `Cargo.lock` and queries OSV.dev. Only package names and versions are sent. `--offline` skips the queries and the report says so. |
-| Opengrep (optional) | `opengrep` on `PATH` | Runs the 20 bundled Opengrep-syntax rules, including 8 Python taint rules that follow request data to a sink inside one file. Executed for real with Opengrep 1.33.1. |
+| Dependency advisories | Node only, network | Parses `package-lock.json`, `pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `go.mod`, `pom.xml` (direct dependencies with literal versions), `packages.lock.json`, NuGet project files (`*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` / `.targets`, `Directory.Packages.props`, `packages.config`), `Cargo.lock` (with `Cargo.toml`) and queries OSV.dev. Only package names and versions are sent. `--offline` skips the queries and the report says so. |
+| Opengrep (optional) | `opengrep` on `PATH` | Runs the 47 bundled Opengrep-syntax rules, including 37 taint rules (Python, JavaScript/TypeScript, Java, Go, C#, C) that follow request data to a sink inside one file. Every bundled rule was executed for real with Opengrep 1.33.1 on Linux during development; the test suite replays recorded output. |
 | Semgrep (optional) | `semgrep` on `PATH` | Fallback for the same rules when Opengrep is not installed. **Never executed in our testing.** |
 | OSV-Scanner (optional) | `osv-scanner` on `PATH` | A second dependency scan with its own lockfile parsers; results are merged with the built-in ones. Executed for real with 2.7.1. |
 | Gitleaks (optional) | `gitleaks` on `PATH` | Additional secret rules. Executed for real with 8.30.1. |
@@ -643,16 +656,35 @@ The scan prints the reason, for example
 
 ## Limits
 
-- Built-in rules match one statement (Python: one logical line) at a time.
-  They do not follow data across statements or files. The Opengrep taint
-  rules follow data inside one file only, and not through class methods.
-- Not covered: authorization and business logic, XSS in templates, race
-  conditions, cryptographic design, anything that needs to run the code.
+- Built-in rules match one statement at a time. Python is split into logical
+  lines; C#, Java, JavaScript/TypeScript, Go, C/C++ and Rust into statements
+  by a shared C-family lexer; Dockerfiles into instructions (with `\`
+  continuations); XML start tags spanning lines are one unit. Every other
+  file type (YAML, JSON, Terraform, shell, Markdown, Razor, ...) is matched
+  line by line; Terraform HCL is not parsed. When a lexer cannot tell code
+  from strings (an unclosed string, a file ending inside a comment or
+  bracket), it fails open: the region is matched as plain lines, with a
+  warning. Rules do not follow data across statements or files. The Opengrep
+  taint rules follow data inside one file only, and not through class
+  methods.
+- Not covered: authorization and business logic, race conditions,
+  cryptographic design, anything that needs to run the code. XSS is covered
+  in C# and Razor views and by response-XSS rules in Go, Java, JavaScript,
+  Python and Rust, not in HTML template files in general: templates (`.html`,
+  `.jinja`, `.vue`, `.svelte`, ...) are recognised but have no rules, and the
+  `<script>` blocks of Vue and Svelte files are not analysed as JavaScript.
+  Spring Boot settings are checked in `application*.yml` /
+  `bootstrap*.yml`, not in `.properties` files.
 - Dependency results depend on a lockfile or pinned versions; unpinned
   entries are counted in a warning. `pom.xml` is read for direct dependencies
-  with literal versions only. `yarn.lock`, `go.sum` and `composer.lock` are
-  not parsed by the built-in engine. Crates from git repositories or from
-  registries other than crates.io are counted in a warning, not checked.
+  with literal versions only. A NuGet project without its own
+  `packages.lock.json` is checked for its direct references only; version
+  ranges, floating versions and unresolved MSBuild properties are counted in
+  a warning, not checked. Crates from git repositories or from registries
+  other than crates.io are counted in a warning, not checked. `yarn.lock`,
+  `go.sum` and `composer.lock` are not parsed by the built-in engine.
+- Directories named `bin` are excluded by default (like `build`, `dist`,
+  `vendor`, ...), except Cargo's `src/bin`; `--untrusted` reads them.
 - Semgrep is supported as a fallback for Opengrep but has never been executed
   in our testing.
 - Tests pass on macOS (arm64) and Linux (x86_64). **Windows is untested.**
@@ -660,8 +692,11 @@ The scan prints the reason, for example
   (`.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`, `osv-scanner.toml`)
   are honoured by those tools; the scan only warns.
 
-Results on public repositories and the complete list of known limits:
-[docs/M4_REPORT.md](docs/M4_REPORT.md) and [docs/PY1_REPORT.md](docs/PY1_REPORT.md).
+What changed in this release, with its known limits, is in
+[CHANGELOG.md](CHANGELOG.md) (0.3.0). Measured results on public
+repositories and the known limits found then are recorded in the reports of
+earlier development stages, [docs/M4_REPORT.md](docs/M4_REPORT.md) and
+[docs/PY1_REPORT.md](docs/PY1_REPORT.md); their numbers predate 0.3.0.
 
 ## Documentation
 
@@ -679,12 +714,12 @@ pnpm test                   # build, then the whole suite (several minutes)
 pnpm exec vitest run packages/core/test/rules.test.ts     # one file while developing
 ```
 
-The suite has about 650 tests and runs in CI on Node 22 and 24, on Linux and
+The suite has about 1,190 tests and runs in CI on Node 22 and 24, on Linux and
 macOS. What it covers:
 
 | Area | How it is tested |
 |---|---|
-| Rules | `fixtures/vulnerable/` holds one seeded weakness per rule; [fixtures/vulnerable/EXPECTED.json](fixtures/vulnerable/EXPECTED.json) lists the rule, file and line of each, and every one must be reported. `fixtures/clean/` holds safe look-alikes of the same code and must produce **no** finding. For the Python rule files the check runs both ways: nothing unlisted may be reported. |
+| Rules | `fixtures/vulnerable/` holds one seeded weakness per rule; [fixtures/vulnerable/EXPECTED.json](fixtures/vulnerable/EXPECTED.json) lists the rule, file and line of each, and every one must be reported. `fixtures/clean/` holds safe look-alikes of the same code and must produce **no** finding. For the Python and C# rule files the check runs both ways: nothing unlisted may be reported. Per-language rule tests (`packages/core/test/rules-*.test.ts`) add negative cases and multi-line forms. |
 | Rule cost | Every regular expression of every rule file is run against pathological input with a time budget, so a rule that can backtrack catastrophically fails the build. |
 | Dependencies | Lockfile parsers on real-shaped samples; advisory lookups through an injected HTTP client with recorded OSV data, so unit tests use no network. |
 | External scanners | Fake executables replay recorded real output of Opengrep, OSV-Scanner and Gitleaks. A separate file runs the real tools when they are present in `.tools/bin` and is skipped otherwise. |
@@ -699,10 +734,11 @@ code-audit scan fixtures/vulnerable --offline --no-external --no-ignore-file --o
 code-audit scan fixtures/clean      --offline --no-external --out /tmp/ca-clean                          # exits 0
 ```
 
-How the tool behaved on public repositories (flask, requests, httpie and four
-deliberately vulnerable applications), and what each review round found, is
-recorded in [docs/M4_REPORT.md](docs/M4_REPORT.md) and
-[docs/PY1_REPORT.md](docs/PY1_REPORT.md).
+How earlier versions behaved on public repositories (flask, requests, httpie
+and four deliberately vulnerable applications), and what each review round
+found, is recorded in the stage reports [docs/M4_REPORT.md](docs/M4_REPORT.md)
+and [docs/PY1_REPORT.md](docs/PY1_REPORT.md); the changes since are in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 
