@@ -344,6 +344,7 @@ function kindFor(language: Language, isLockfile: boolean, manifest: boolean): In
   if (
     language === "json" ||
     language === "yaml" ||
+    language === "xml" ||
     language === "dockerfile"
   ) {
     return "config";

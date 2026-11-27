@@ -92,8 +92,9 @@ public class OrdersController : Controller
     }
 
     [HttpPost("import")]
-    public IActionResult Import(string archive)
+    public IActionResult Import()
     {
+        const string archive = "/srv/incoming/import.zip";
         var root = Path.GetFullPath("/srv/import");
         using var zip = ZipFile.OpenRead(archive);
         foreach (var entry in zip.Entries)
@@ -112,5 +113,12 @@ public class OrdersController : Controller
     public IActionResult Plugin(string name)
     {
         return Handlers.TryGetValue(name, out var type) ? Ok(type.Name) : NotFound();
+    }
+
+    [HttpGet("back")]
+    public IActionResult Back(string returnUrl)
+    {
+        if (!Url.IsLocalUrl(returnUrl)) return BadRequest();
+        return Redirect(returnUrl);
     }
 }

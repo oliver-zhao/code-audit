@@ -324,6 +324,13 @@
       "kind": "finding"
     },
     {
+      "file": "csharp/WebApp/Reports.cs",
+      "line": 10,
+      "ruleId": "cs-xpath-dynamic",
+      "language": "csharp",
+      "kind": "hotspot"
+    },
+    {
       "file": "csharp/WebApp/Startup.cs",
       "line": 22,
       "ruleId": "cs-jwt-https-metadata-disabled",
@@ -1831,6 +1838,36 @@
     {
       "file": "csharp/WebApp/Controllers/OrdersController.cs",
       "line": 85,
+      "ruleId": "cs-opengrep-aspnet-path",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 48,
+      "ruleId": "cs-opengrep-aspnet-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 49,
+      "ruleId": "cs-opengrep-aspnet-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 50,
+      "ruleId": "cs-opengrep-aspnet-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 51,
+      "ruleId": "cs-opengrep-aspnet-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "csharp/WebApp/Controllers/OrdersController.cs",
+      "line": 96,
       "ruleId": "cs-opengrep-aspnet-path",
       "confidence": "high"
     },

@@ -8,6 +8,7 @@ import {
   csharpLogicalLines,
   emptyLexDiagnostics,
   loadRules,
+  markupLogicalLines,
   scanRules,
   type LogicalLine,
 } from "../src/rules.js";
@@ -416,5 +417,84 @@ describe("C# matching on logical lines", () => {
     const result = scanRules(inventory(project).files, ruleSet);
     expect(result.hits.filter((hit) => hit.rule.id === "cs-sql-injection")).toEqual([]);
     expect(result.suppressed.map((entry) => `${entry.ruleId}:${entry.line}`)).toEqual(["cs-sql-injection:4"]);
+  });
+});
+
+describe("XML and Razor units", () => {
+  it("blanks XML comments, keeps columns and joins a start tag up to its >", () => {
+    const diagnostics = emptyLexDiagnostics();
+    const units = markupLogicalLines(
+      [
+        '<a x="1"> <!-- <customErrors mode="Off" /> --> <b/>',
+        "<!--",
+        '  <compilation debug="true" />',
+        "-->",
+        '<compilation targetFramework="4.8"',
+        '   note="a > b"',
+        '   debug="true" />',
+        "<![CDATA[ <not a tag ]]><c/>",
+      ],
+      "xml",
+      [],
+      diagnostics,
+    ).filter((unit) => unit.text.trim().length > 0);
+    expect(units.map((unit) => [unit.start, unit.offsets.length])).toEqual([
+      [0, 1],
+      [4, 3],
+      [7, 1],
+    ]);
+    expect(units[0]?.text).toBe(`<a x="1"> ${" ".repeat(36)} <b/>`);
+    expect(units[1]?.text).toContain('debug="true"');
+    expect(diagnostics.fallbacks).toEqual([]);
+  });
+
+  it("blanks Razor @* *@ comments, also across lines, and keeps HTML comments", () => {
+    const units = markupLogicalLines(
+      ['<p>@* @Html.Raw(x) *@ ok</p>', "@*", "  @Html.Raw(y)", "*@", "<!-- @Html.Raw(z) -->"],
+      "razor",
+    ).filter((unit) => unit.text.trim().length > 0);
+    expect(units.map((unit) => unit.text.trim())).toEqual([`<p>${" ".repeat(19)}ok</p>`, "<!-- @Html.Raw(z) -->"]);
+  });
+
+  it("fails open at the end of the file and for a start tag that never closes", () => {
+    for (const [lines, language, reason] of [
+      [["<a/>", "<!-- open", '<customErrors mode="Off" />'], "xml", "the file ends inside a comment"],
+      [["@* open", "@Html.Raw(x)"], "razor", "the file ends inside a comment"],
+      [['<compilation note="unclosed', 'debug="true" />'], "xml", "the file ends inside a start tag"],
+    ] as const) {
+      const diagnostics = emptyLexDiagnostics();
+      const units = markupLogicalLines([...lines], language, [], diagnostics);
+      expect(diagnostics.fallbacks[0]?.reason, lines[0]).toBe(reason);
+      expect(units.some((unit) => unit.extra)).toBe(true);
+    }
+    const long = ["<a"];
+    for (let index = 0; index < 120; index += 1) long.push(`  x${index}="1"`);
+    long.push("/>");
+    const diagnostics = emptyLexDiagnostics();
+    const units = markupLogicalLines(long, "xml", [], diagnostics);
+    expect(diagnostics.fallbacks[0]?.reason).toMatch(/start tag stays open/);
+    for (const unit of units) expect(unit.offsets.length).toBeLessThanOrEqual(50);
+  });
+
+  it("lexes hostile markup in linear time", () => {
+    for (const lines of [
+      ["<!--".repeat(250_000)],
+      Array.from({ length: 100_000 }, () => '<a b="'),
+      Array.from({ length: 100_000 }, () => "@* x"),
+    ]) {
+      const started = performance.now();
+      markupLogicalLines(lines, lines[0]?.startsWith("@") ? "razor" : "xml");
+      expect(performance.now() - started).toBeLessThan(5000);
+    }
+  });
+
+  it("classifies .config files as configuration and Razor views as source", () => {
+    const project = path.join(temp, "kinds");
+    writeFile(project, "Web.config", "<configuration />\n");
+    writeFile(project, "Views/Index.cshtml", "<p>@Model.Name</p>\n");
+    const kinds = Object.fromEntries(
+      inventory(project).files.map((file) => [file.relPath, `${file.language}:${file.kind}`]),
+    );
+    expect(kinds).toEqual({ "Web.config": "xml:config", "Views/Index.cshtml": "razor:source" });
   });
 });

@@ -16,14 +16,14 @@ rules:
     title: ASP.NET compiled in debug mode (web.config)
     title_zh: ASP.NET 以调试模式编译（web.config）
     severity: medium
-    confidence: medium
+    confidence: low
     cwe: CWE-489
     owasp: A05:2021
     languages: [xml]
     pathExclude: '{{DEVCONFIG}}'
     pattern: '<compilation\b[^>]{0,600}\bdebug\s*=\s*["\x27]true["\x27]'
-    message: debug="true" disables batch compilation and timeouts and adds debug information to error pages; it is not meant for a deployed site.
-    message_zh: debug="true" 会关闭批量编译和超时设置，并在错误页中加入调试信息；不应用于已部署的网站。
+    message: debug="true" disables batch compilation and timeouts and adds debug information to error pages; it is not meant for a deployed site. Project templates set it and a Web.Release.config transform usually removes it, so confirm what is deployed.
+    message_zh: debug="true" 会关闭批量编译和超时设置，并在错误页中加入调试信息；不应用于已部署的网站。项目模板默认设置该值，通常由 Web.Release.config 转换移除，需确认实际部署的配置。
     remediation: Set debug="false" (or remove it in Web.Release.config with xdt:Transform="RemoveAttributes(debug)").
     remediation_zh: 设置 debug="false"（或在 Web.Release.config 中通过 xdt:Transform="RemoveAttributes(debug)" 移除）。
   - id: cs-config-custom-errors-off
