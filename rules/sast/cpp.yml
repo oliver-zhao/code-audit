@@ -1,20 +1,80 @@
 version: 1
+# C and C++ rules. `.c` files are language c; `.h` and the C++ extensions are
+# cpp; every rule here lists both.
+#
+# Large C code bases call risky APIs all the time, so a `finding` is reserved
+# for forms that are almost always wrong; the bare use of a risky API is a
+# `hotspot`. Most rules are case-sensitive (`flags: ""`) because C identifiers
+# are.
+#
+# The engine matches C/C++ one physical line at a time today, comments
+# included. A C-family lexer will later strip comments and join statements that
+# span lines while ( or [ are open; the patterns below accept line breaks
+# wherever a space may appear, so they stay correct after that change.
+definitions:
+  # A call position: start of the unit or line, or after a token that can
+  # precede an expression. Rejects method calls (`obj.gets(`, `p->gets(`),
+  # declarations (`char *gets(char *)`), `#define` bodies that start with a
+  # word, and most prose in comments ("do not use gets()").
+  # Used right after the function name: the lookbehind spans the name, an
+  # optional std:: or :: qualifier and the space before it.
+  CSA: '(?<=(?:^|[\n;{}(,=!&|?:)]|\breturn|\belse|\bdo)\s{0,80}(?:std::|::)?[A-Za-z_]\w{0,40})'
+  # Data that comes straight from the process environment or command line.
+  EXT: '(?:\bargv\s*\[|(?<![\w.>])(?:getenv|_wgetenv|secure_getenv|_tgetenv)\s*\(|\boptarg\b)'
+  # The next argument is not a string literal (plain, wide, UTF or _T/TEXT).
+  NOLIT: '(?!\s*(?:(?:[LuU]8?)?"|(?:_T|TEXT|_TEXT|__T)\s*\())'
+  # A non-format argument before the format: no top-level comma, nested
+  # parentheses one level deep (sizeof(buf)).
+  OARG: '(?:[^,;()"]|\([^()]{0,80}\)){1,120}'
+  # A plain variable used as the whole format argument: a name with member
+  # access or indexing. ALL_CAPS names are macros and usually literals; names
+  # with a leading underscore (__VA_ARGS__, _s) are macro parameters.
+  FARG: '(?![A-Z][A-Z0-9_]*\s*\))[A-Za-z]\w{0,60}(?:\s*(?:\.|->)\s*[A-Za-z_]\w{0,60}|\s*\[[^\[\];]{1,40}\]){0,4}'
+  # Functions whose first, second or third argument is the format.
+  P1: '(?:printf|wprintf|_tprintf|printw)'
+  P2: '(?:fprintf|fwprintf|_ftprintf|dprintf|sprintf|_stprintf|_swprintf|wsprintf[AW]?|asprintf|syslog|wprintw)'
+  P3: '(?:snprintf|_snprintf|_sntprintf|swprintf|_snwprintf|StringCchPrintf[AW]?|StringCbPrintf[AW]?)'
+  # Unbounded string copy and concatenation (no destination size).
+  COPYFN: '(?:strcpy|strcat|wcscpy|wcscat|_mbscpy|_mbscat|_tcscpy|_tcscat|lstrcpy[AW]?|lstrcat[AW]?|StrCpy[AW]?|StrCat[AW]?|stpcpy|wcpcpy)'
+  # A format string literal with a %s (or %ls, %S) that has no precision.
+  UNBOUNDED_S: '(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%[-+ #0]{0,5}(?:\d{1,4}|\*)?[hlw]?[sS]'
+  SHELLRUN: '(?:system|_wsystem|_tsystem|popen|_popen|_wpopen|_tpopen)'
 rules:
+  # ---------------------------------------------------------------- copies
   - id: cpp-strcpy
-    title: C/C++ uses strcpy
-    title_zh: C/C++ 使用 strcpy
+    title: C/C++ unbounded string copy from command-line or environment data
+    title_zh: C/C++ 将命令行或环境变量数据无界复制到缓冲区
     severity: high
-    confidence: low
+    confidence: medium
     cwe: CWE-120
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bstrcpy\s*\(
-    message: strcpy does not check the destination size and can overflow the buffer.
-    message_zh: strcpy 不检查目标缓冲区大小，可能造成栈/堆溢出。
-    remediation: Use strncpy_s, snprintf, or std::string, and validate capacity and NUL termination.
-    remediation_zh: 使用 strncpy_s、snprintf 或 std::string，并校验目标容量与 NUL 结尾。
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b{{COPYFN}}{{CSA}}\s*\(\s*[^,;]{1,200},\s*{{EXT}}'
+    group: cpp-copy
+    message: strcpy/strcat (or a Windows variant) copies argv, getenv or optarg data without a size limit; a long value overflows the destination buffer.
+    message_zh: strcpy/strcat（或其 Windows 变体）不限长度地复制 argv、getenv 或 optarg 数据，过长的值会溢出目标缓冲区。
+    remediation: Check the length first and copy with a bounded function (snprintf, strlcpy, strcpy_s) or use std::string.
+    remediation_zh: 先检查长度，再用有界函数（snprintf、strlcpy、strcpy_s）复制，或改用 std::string。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-strcpy-api
+    title: C/C++ unbounded string copy from a runtime value
+    title_zh: C/C++ 无界复制运行时字符串
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-120
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b{{COPYFN}}{{CSA}}\s*\(\s*[^,;]{1,200},{{NOLIT}}(?!\s*[A-Z][A-Z0-9_]*\s*\))'
+    group: cpp-copy
+    message: strcpy/strcat (or a Windows variant) copies a runtime string without a destination size. Confirm the source length is checked against the destination capacity.
+    message_zh: strcpy/strcat（或其 Windows 变体）在不知道目标大小的情况下复制运行时字符串。需确认源长度已按目标容量校验。
+    remediation: Use a bounded copy (snprintf, strlcpy, strcpy_s) or std::string.
+    remediation_zh: 使用有界复制（snprintf、strlcpy、strcpy_s）或 std::string。
     references:
       - CWE-120
       - OWASP A03:2021
@@ -22,132 +82,412 @@ rules:
     title: C/C++ uses gets
     title_zh: C/C++ 使用 gets
     severity: critical
-    confidence: low
+    confidence: high
     cwe: CWE-242
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bgets\s*\(
-    message: gets cannot limit input length, has been removed from the C standard, and inevitably risks overflow.
-    message_zh: gets 无法限制输入长度，已被 C 标准移除，必然存在溢出风险。
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:gets|_getws|_getts){{CSA}}\s*\('
+    message: gets cannot limit the input length and has been removed from the C standard; any long input line overflows the buffer.
+    message_zh: gets 无法限制输入长度，已被 C 标准移除，任何过长的输入行都会溢出缓冲区。
     remediation: Use fgets(buffer, sizeof(buffer), stdin) and handle newlines and truncation.
     remediation_zh: 使用 fgets(buffer, sizeof(buffer), stdin) 并处理换行与截断。
     references:
       - CWE-242
       - OWASP A03:2021
   - id: cpp-sprintf
-    title: C/C++ uses sprintf
-    title_zh: C/C++ 使用 sprintf
+    title: C/C++ sprintf writes command-line or environment data with an unbounded %s
+    title_zh: C/C++ sprintf 以无界 %s 写入命令行或环境变量数据
     severity: high
-    confidence: low
+    confidence: medium
     cwe: CWE-120
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bsprintf\s*\(
-    message: sprintf does not check the output buffer size.
-    message_zh: sprintf 不检查输出缓冲区大小。
-    remediation: Use snprintf and pass the destination buffer size.
-    remediation_zh: 使用 snprintf 并传入目标缓冲区大小。
+    languages: [c, cpp]
+    flags: ""
+    patterns:
+      - '\b(?:sprintf|_stprintf|_swprintf|wsprintf[AW]?){{CSA}}\s*\(\s*[^,;]{1,200},\s*{{UNBOUNDED_S}}'
+      - '{{EXT}}'
+    group: cpp-sprintf
+    message: sprintf formats argv, getenv or optarg data through a %s without precision into a fixed buffer; a long value overflows it.
+    message_zh: sprintf 以无精度的 %s 把 argv、getenv 或 optarg 数据写入固定缓冲区，过长的值会造成溢出。
+    remediation: Use snprintf with the destination size and check the return value for truncation.
+    remediation_zh: 使用带目标大小的 snprintf，并检查返回值是否发生截断。
     references:
       - CWE-120
       - OWASP A03:2021
-  - id: cpp-system
-    title: C/C++ system() with a dynamic command
-    title_zh: C/C++ 使用 system
-    severity: critical
-    confidence: high
-    cwe: CWE-78
+  - id: cpp-sprintf-api
+    title: C/C++ sprintf/vsprintf without a destination size
+    title_zh: C/C++ 使用不带目标大小的 sprintf/vsprintf
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-120
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bsystem\s*\([^)\n]{0,600}(?:argv|getenv|input|user|\+)
-    group: cpp-command
-    message: system executes through a shell, so concatenated external input enables command injection.
-    message_zh: system 经 shell 执行命令，拼接外部输入可导致命令注入。
-    remediation: Avoid system/popen; use execve with an argument array and allowlist inputs.
-    remediation_zh: 避免 system/popen；使用 execve 参数数组并对输入做白名单校验。
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:(?:sprintf|_stprintf|_swprintf|wsprintf[AW]?){{CSA}}\s*\(\s*[^,;]{1,200},\s*{{UNBOUNDED_S}}|(?:vsprintf|_vstprintf|wvsprintf[AW]?){{CSA}}\s*\()'
+    group: cpp-sprintf
+    message: sprintf with an unbounded %s, vsprintf or wsprintf writes a string of unknown length into a buffer whose size it does not know. Confirm the inputs are bounded.
+    message_zh: 带无界 %s 的 sprintf、vsprintf 或 wsprintf 把未知长度的字符串写入其不知道大小的缓冲区。需确认输入长度有界。
+    remediation: Use snprintf/vsnprintf (or StringCchPrintf on Windows) with the destination size, or a precision such as %.63s.
+    remediation_zh: 使用带目标大小的 snprintf/vsnprintf（Windows 上用 StringCchPrintf），或使用 %.63s 这类精度限制。
     references:
-      - CWE-78
+      - CWE-120
       - OWASP A03:2021
+  - id: cpp-scanf-unbounded-string
+    title: C/C++ scanf-family %s or %[ without a field width
+    title_zh: C/C++ scanf 系列的 %s 或 %[ 未指定宽度
+    severity: high
+    confidence: medium
+    cwe: CWE-120
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:scanf|fscanf|sscanf|wscanf|fwscanf|swscanf|vscanf|vfscanf|vsscanf|_tscanf|_ftscanf|_stscanf){{CSA}}\s*\([^;"]{0,200}(?:[LuU]8?)?"(?:[^"\\]|\\.){0,300}?(?<!%)%(?:\d{1,2}\$)?l?(?:s|S|\[)'
+    message: A scanf-family %s or %[ conversion without a field width writes as many characters as the input contains; long input overflows the buffer.
+    message_zh: scanf 系列中未指定宽度的 %s 或 %[ 会写入输入中的全部字符，过长的输入会溢出缓冲区。
+    remediation: Give a width one less than the buffer size (%63s for char buf[64]), use fgets, or use %ms (POSIX) and free the result.
+    remediation_zh: 指定比缓冲区小一的宽度（char buf[64] 用 %63s），或改用 fgets，或使用 %ms（POSIX）并释放结果。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  # ------------------------------------------------------------ format strings
   - id: cpp-format-string
-    title: C/C++ format string controlled by external input
-    title_zh: C/C++ 格式化字符串参数可控
+    title: C/C++ printf-family format string is a variable
+    title_zh: C/C++ printf 系列的格式串是变量
     severity: high
     confidence: medium
     cwe: CWE-134
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bprintf\s*\(\s*(?:argv\[|user|input|buf)
-    message: External input is used as the printf format string, which can read and write memory.
-    message_zh: 外部输入被当作 printf 的格式串，可读写内存。
-    remediation: Use a fixed format string, for example printf("%s", input).
-    remediation_zh: 使用固定格式串，例如 printf("%s", input)。
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},)\s*{{FARG}}\s*\)'
+    group: cpp-format
+    # A macro body forwards its parameter; the call sites decide.
+    notPattern: '^\s*#\s*define\b|\\\s*$'
+    message: A variable is passed as the format string with no arguments after it. If the text contains % directives (from input, a file or the network) the call reads or writes memory.
+    message_zh: 变量被直接用作格式串且其后没有参数。若文本中含有 % 指令（来自输入、文件或网络），调用会读写内存。
+    remediation: Use a constant format, for example printf("%s", text) or fputs(text, stream).
+    remediation_zh: 使用常量格式串，例如 printf("%s", text) 或 fputs(text, stream)。
     references:
       - CWE-134
       - OWASP A03:2021
-  - id: cpp-path-traversal
-    title: C/C++ file path from external input
-    title_zh: C/C++ 文件路径来自外部输入
+  - id: cpp-format-string-cstr
+    title: C++ std::string contents used as a printf format
+    title_zh: C++ 将 std::string 内容用作 printf 格式串
     severity: high
-    confidence: high
-    cwe: CWE-22
-    owasp: A01:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bfopen\s*\(\s*(?:argv\[|user|input|path|filename)
-    group: cpp-file
-    message: External input is used directly as a file path and may escape the directory.
-    message_zh: 外部输入直接作为文件路径，可能穿越目录。
-    remediation: Normalize the path and verify its realpath stays inside the allowed directory; map names through an allowlist.
-    remediation_zh: 规范化路径并校验 realpath 位于允许目录内；使用白名单映射文件名。
+    confidence: medium
+    cwe: CWE-134
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:{{P1}}{{CSA}}\s*\(|{{P2}}{{CSA}}\s*\({{OARG}},|{{P3}}{{CSA}}\s*\({{OARG}},{{OARG}},)\s*[A-Za-z_][\w.>\[\]-]{0,80}\.(?:c_str|data)\s*\(\s*\)\s*\)'
+    group: cpp-format
+    # A macro body forwards its parameter; the call sites decide.
+    notPattern: '^\s*#\s*define\b|\\\s*$'
+    message: The contents of a run-time string (c_str()/data()) are the format string. Any % in the string is interpreted as a conversion.
+    message_zh: 运行时字符串的内容（c_str()/data()）被当作格式串，其中任何 % 都会被解释为转换说明。
+    remediation: Use printf("%s", s.c_str()), or stream the string with std::cout / fmt::print("{}", s).
+    remediation_zh: 使用 printf("%s", s.c_str())，或通过 std::cout / fmt::print("{}", s) 输出。
     references:
-      - CWE-22
-      - OWASP A01:2021
-  - id: cpp-weak-hash
-    title: C/C++ weak hash algorithm (MD5/SHA1)
-    title_zh: C/C++ 使用 MD5/SHA1
+      - CWE-134
+      - OWASP A03:2021
+  - id: cpp-format-string-err
+    title: C/C++ err/warn format string is a variable
+    title_zh: C/C++ err/warn 的格式串是变量
     severity: medium
-    confidence: low
-    cwe: CWE-328
-    owasp: A02:2021
-    languages:
-      - c
-      - cpp
-    pattern: \b(?:MD5|SHA1)(?:_Init)?\s*\(
-    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
-    message_zh: MD5/SHA1 不适合安全用途。
-    remediation: Use SHA-256/SHA-512, for example through the OpenSSL EVP API.
-    remediation_zh: 使用 SHA-256/SHA-512，例如 OpenSSL EVP 接口。
+    confidence: medium
+    cwe: CWE-134
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:(?:warn|warnx){{CSA}}\s*\(|(?:err|errx){{CSA}}\s*\({{OARG}},)\s*{{FARG}}\s*\)'
+    filePattern: '^\s*#\s*include\s*<err\.h>'
+    group: cpp-format
+    # A macro body forwards its parameter; the call sites decide.
+    notPattern: '^\s*#\s*define\b|\\\s*$'
+    message: A variable is the format string of err/errx/warn/warnx with no arguments after it; % directives in the text are interpreted.
+    message_zh: 变量被用作 err/errx/warn/warnx 的格式串且其后没有参数，文本中的 % 指令会被解释。
+    remediation: Use a constant format, for example warnx("%s", text).
+    remediation_zh: 使用常量格式串，例如 warnx("%s", text)。
     references:
-      - CWE-328
-      - OWASP A02:2021
+      - CWE-134
+      - OWASP A03:2021
+  # --------------------------------------------------------------- commands
+  - id: cpp-system
+    title: C/C++ system()/popen() with command-line or environment data
+    title_zh: C/C++ system()/popen() 使用命令行或环境变量数据
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b{{SHELLRUN}}{{CSA}}\s*\([^;]{0,300}?{{EXT}}'
+    group: cpp-command
+    message: system/popen runs its argument through /bin/sh (cmd.exe on Windows); argv, getenv or optarg data in the command allows command injection.
+    message_zh: system/popen 通过 /bin/sh（Windows 上为 cmd.exe）执行参数，命令中含有 argv、getenv 或 optarg 数据会导致命令注入。
+    remediation: Avoid the shell; run the program with execv/posix_spawn and an argument array, and allowlist the inputs.
+    remediation_zh: 避免经过 shell；用 execv/posix_spawn 及参数数组执行程序，并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cpp-system-concat
+    title: C++ system()/popen() with a concatenated command string
+    title_zh: C++ system()/popen() 使用拼接的命令字符串
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b{{SHELLRUN}}{{CSA}}\s*\([^;]{0,300}?(?:"\s*\+\s*[A-Za-z_(]|[\w)\]]\s*\+\s*(?:[LuU]8?)?"|\+[^;]{1,200}\)\s*\.\s*c_str\s*\()'
+    group: cpp-command
+    message: The shell command is built by string concatenation at run time; a value containing shell metacharacters changes the command.
+    message_zh: shell 命令在运行时通过字符串拼接构造，含有 shell 元字符的值会改变命令。
+    remediation: Run the program with execv/posix_spawn and an argument array instead of a shell string, and allowlist the inputs.
+    remediation_zh: 改用 execv/posix_spawn 及参数数组执行程序，而不是 shell 字符串，并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: cpp-exec-shell-c
+    title: C/C++ exec of a shell with -c and a non-literal command
+    title_zh: C/C++ 以 -c 和非字面量命令执行 shell
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:execl|execlp|execle){{CSA}}\s*\(\s*"(?:(?:/usr)?/bin/)?(?:ba|da|z|k)?sh"\s*,\s*(?:"[^"]{0,40}"|[^,;"]{1,80})\s*,\s*"-c"\s*,(?!\s*"(?:[^"\\]|\\.){0,300}"\s*[,)])'
+    group: cpp-command
+    message: A shell is started with -c and a command string built at run time, which is the same as system() with that string.
+    message_zh: 以 -c 和运行时构造的命令字符串启动 shell，等同于用该字符串调用 system()。
+    remediation: Exec the target program directly with an argument array (execv/posix_spawn) and allowlist the inputs.
+    remediation_zh: 直接用参数数组 exec 目标程序（execv/posix_spawn），并对输入做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
   - id: cpp-system-api
-    title: C/C++ calls system()
-    title_zh: C/C++ 调用 system
+    title: C/C++ system()/popen() with a runtime command
+    title_zh: C/C++ system()/popen() 执行运行时命令
     severity: high
     confidence: low
     kind: hotspot
     cwe: CWE-78
     owasp: A03:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bsystem\s*\(
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b{{SHELLRUN}}{{CSA}}\s*\((?!\s*(?:[LuU]8?)?"(?:[^"\\]|\\.){0,400}"\s*[,)]|\s*(?:NULL|nullptr|0)\s*\))'
     group: cpp-command
-    message: A system call is present; confirm the command is not built from untrusted input.
-    message_zh: 出现 system 调用；需确认命令不由不可信输入构造。
-    remediation: Use execve with an argument array and allowlist inputs.
-    remediation_zh: 改用 execve 参数数组并对输入做白名单校验。
+    message: system/popen runs a command string that is not a literal through the shell. Confirm the command is not built from untrusted input.
+    message_zh: system/popen 通过 shell 执行非字面量的命令字符串。需确认命令不由不可信输入构造。
+    remediation: Use execv/posix_spawn with an argument array and allowlist inputs.
+    remediation_zh: 改用 execv/posix_spawn 参数数组并对输入做白名单校验。
     references:
       - CWE-78
       - OWASP A03:2021
+  - id: cpp-createprocess-unquoted
+    title: Windows CreateProcess with a NULL application name and an unquoted command line
+    title_zh: Windows CreateProcess 应用名为 NULL 且命令行未加引号
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-428
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bCreateProcess(?:[AW]?{{CSA}}\s*\(|(?:AsUser[AW]?|WithTokenW){{CSA}}\s*\([^,;]{1,80},)\s*(?:NULL|nullptr|0)\s*,(?!\s*(?:[LuU]8?|_T\s*\(\s*|TEXT\s*\(\s*)?"\\")'
+    message: With a NULL application name Windows splits the command line at spaces and tries each prefix as a program ("C:\Program.exe" before "C:\Program Files\..."). Confirm the executable path is quoted or passed as lpApplicationName.
+    message_zh: 应用名为 NULL 时，Windows 会按空格切分命令行并依次尝试每个前缀作为程序（先试 "C:\Program.exe"）。需确认可执行文件路径已加引号或通过 lpApplicationName 传入。
+    remediation: Pass the full executable path as lpApplicationName, or put the program path in double quotes inside the command line.
+    remediation_zh: 将完整可执行文件路径作为 lpApplicationName 传入，或在命令行中用双引号包住程序路径。
+    references:
+      - CWE-428
+      - OWASP A03:2021
+  - id: cpp-winexec-api
+    title: Windows WinExec or ShellExecute with a runtime target
+    title_zh: Windows WinExec 或 ShellExecute 执行运行时目标
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:WinExec{{CSA}}\s*\(|ShellExecute[AW]?{{CSA}}\s*\(\s*[^,;]{1,80},\s*[^,;]{1,80},{{NOLIT}})'
+    message: WinExec parses an unquoted command line (it is deprecated), and ShellExecute opens whatever the target names, including URLs and documents with their handler. Confirm the target is not attacker-controlled.
+    message_zh: WinExec 会解析未加引号的命令行（已弃用），ShellExecute 会用关联程序打开目标指定的任何内容，包括 URL 和文档。需确认目标不受攻击者控制。
+    remediation: Use CreateProcess with a full, quoted application path; allowlist ShellExecute targets.
+    remediation_zh: 改用带完整、加引号应用路径的 CreateProcess；对 ShellExecute 的目标做白名单校验。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  # ------------------------------------------------------------------ memory
+  - id: cpp-copy-size-from-source
+    title: C/C++ memcpy/memmove size taken from the source buffer
+    title_zh: C/C++ memcpy/memmove 的长度取自源缓冲区
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-806
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:memcpy|memmove|wmemcpy|wmemmove|CopyMemory|RtlCopyMemory|MoveMemory|RtlMoveMemory){{CSA}}\s*\(\s*[^,;]{1,120},\s*(?![A-Z][A-Z0-9_]*\s*,)([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,\s*(?:sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))|strlen\s*\(\s*\1\s*\)(?:\s*\+\s*1)?)\s*\)'
+    message: The number of bytes copied is the size of the source, not of the destination; a larger source overflows the destination.
+    message_zh: 复制的字节数取自源而不是目标的大小，源更大时会溢出目标。
+    remediation: Bound the copy by the destination size (min(dst_size, src_len)) and check it before copying.
+    remediation_zh: 以目标大小限制复制长度（min(dst_size, src_len)），并在复制前校验。
+    references:
+      - CWE-806
+      - OWASP A03:2021
+  - id: cpp-strncpy-source-length
+    title: C/C++ strncpy/strncat bounded by the source length
+    title_zh: C/C++ strncpy/strncat 以源字符串长度为上限
+    severity: high
+    confidence: medium
+    cwe: CWE-806
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:strncpy|wcsncpy|_tcsncpy|_mbsncpy|strncat|wcsncat|_tcsncat|lstrcpyn[AW]?){{CSA}}\s*\(\s*[^,;]{1,120},\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,\s*(?:strlen|wcslen|_tcslen|lstrlen[AW]?)\s*\(\s*\1\s*\)(?:\s*\+\s*1)?\s*\)'
+    message: The size argument is the length of the source string, so the call does not limit the copy to the destination at all and (for strncpy) leaves it without a terminating NUL.
+    message_zh: 长度参数是源字符串的长度，因此调用完全没有按目标大小限制复制，并且（对 strncpy）不会写入结尾的 NUL。
+    remediation: Pass the destination size, for example snprintf(dst, sizeof dst, "%s", src) or strlcpy(dst, src, sizeof dst).
+    remediation_zh: 传入目标大小，例如 snprintf(dst, sizeof dst, "%s", src) 或 strlcpy(dst, src, sizeof dst)。
+    references:
+      - CWE-806
+      - OWASP A03:2021
+  - id: cpp-strncat-full-size
+    title: C/C++ strncat bounded by the full destination size
+    title_zh: C/C++ strncat 以整个目标大小为上限
+    severity: high
+    confidence: medium
+    cwe: CWE-120
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:strncat|wcsncat|_tcsncat|_mbsncat){{CSA}}\s*\(\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,[^;]{1,200}?,\s*sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))(?:\s*-\s*1)?\s*\)'
+    message: The third argument of strncat is the room left in the destination, not its size; passing sizeof(dest) lets a non-empty destination overflow.
+    message_zh: strncat 的第三个参数是目标剩余空间而不是其总大小；传入 sizeof(dest) 时，非空目标会被溢出。
+    remediation: Pass sizeof(dest) - strlen(dest) - 1, or use strlcat / snprintf.
+    remediation_zh: 传入 sizeof(dest) - strlen(dest) - 1，或改用 strlcat / snprintf。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-strncpy-no-nul
+    title: C/C++ strncpy with the full destination size may leave it unterminated
+    title_zh: C/C++ strncpy 以整个目标大小复制可能缺少结尾 NUL
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-170
+    owasp: A03:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:strncpy|wcsncpy|_tcsncpy){{CSA}}\s*\(\s*([A-Za-z_]\w{0,60}(?:(?:\.|->)\w{1,60}){0,3})\s*,{{NOLIT}}[^;]{1,200}?,\s*sizeof\s*(?:\(\s*\1\s*\)|\s\1(?![\w.\[>-]))\s*\)'
+    notPattern: '\[\s*sizeof[^\]]{1,80}-\s*1\s*\]\s*=|\[[^\]]{1,80}\]\s*=\s*(?:0|''\\0'')\s*;'
+    message: strncpy with the full destination size does not write a terminating NUL when the source is that long. Confirm the last byte is set to 0 afterwards.
+    message_zh: 当源字符串足够长时，以整个目标大小调用 strncpy 不会写入结尾 NUL。需确认之后把最后一个字节置为 0。
+    remediation: Use strlcpy or snprintf, or copy sizeof(dest) - 1 bytes and set dest[sizeof(dest) - 1] = '\0'.
+    remediation_zh: 使用 strlcpy 或 snprintf，或复制 sizeof(dest) - 1 字节并设置 dest[sizeof(dest) - 1] = '\0'。
+    references:
+      - CWE-170
+      - OWASP A03:2021
+  - id: cpp-alloca-dynamic
+    title: C/C++ alloca with a non-constant size
+    title_zh: C/C++ alloca 使用非常量大小
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-770
+    owasp: A04:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:__builtin_alloca|_alloca|alloca){{CSA}}\s*\((?!\s*(?:\d+[uUlL]{0,3}|sizeof\s*\([^()]{1,80}\)|[A-Z][A-Z0-9_]*)\s*\))'
+    message: alloca allocates on the stack without any failure report; a large or attacker-influenced size overruns the stack into other memory.
+    message_zh: alloca 在栈上分配且不会报告失败；过大或受攻击者影响的大小会使栈越界覆盖其他内存。
+    remediation: Bound the size with a small constant limit, or allocate with malloc and check the result.
+    remediation_zh: 用较小的常量上限约束大小，或改用 malloc 并检查结果。
+    references:
+      - CWE-770
+      - OWASP A04:2021
+  - id: cpp-malloc-multiply
+    title: C/C++ allocation size computed by an unchecked multiplication
+    title_zh: C/C++ 分配大小由未检查的乘法计算
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-190
+    owasp: A04:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:malloc{{CSA}}\s*\(|realloc{{CSA}}\s*\([^,;]{1,120},)[^;]{0,160}?(?:\b[a-z_]\w{0,60}|\))\s*\*\s*(?:\(\s*)?(?:[a-z_]\w{0,60}\b(?!\s*\()|sizeof\b)'
+    notPattern: '\bSIZE_MAX\b|__builtin_mul_overflow|\bckd_mul\b|\bst_mult\b'
+    message: The allocation size is a product of run-time values; if it overflows, a short buffer is allocated and later writes run past it.
+    message_zh: 分配大小是运行时值的乘积；一旦溢出就会分配过小的缓冲区，后续写入将越界。
+    remediation: Use calloc(n, size) or reallocarray, or check n <= SIZE_MAX / size before multiplying.
+    remediation_zh: 使用 calloc(n, size) 或 reallocarray，或在相乘前检查 n <= SIZE_MAX / size。
+    references:
+      - CWE-190
+      - OWASP A04:2021
+  - id: cpp-realloc-self-assign
+    title: C/C++ p = realloc(p, ...) leaks the block when realloc fails
+    title_zh: C/C++ p = realloc(p, ...) 在 realloc 失败时泄漏内存
+    severity: low
+    confidence: medium
+    cwe: CWE-401
+    owasp: A04:2021
+    languages: [c, cpp]
+    flags: ""
+    # Located at realloc( so the regex is cheap; the lookbehind checks that
+    # the same pointer is on the left of the assignment.
+    pattern: '\brealloc\s*\(\s*(\*?[A-Za-z_]\w{0,60}(?:(?:->|\.)\w{1,60}){0,4})\s*,(?<=(?<![\w.>])\1\s*=\s*(?:\([^()]{1,60}\)\s*)?realloc\s*\(\s*\1\s*,)'
+    message: When realloc fails it returns NULL and keeps the old block; assigning the result to the same pointer loses the only reference to that block.
+    message_zh: realloc 失败时返回 NULL 并保留原内存块；把结果赋给同一指针会丢失对原内存块的唯一引用。
+    remediation: Assign to a temporary, check it for NULL, then replace the pointer.
+    remediation_zh: 先赋给临时变量并检查是否为 NULL，再替换原指针。
+    references:
+      - CWE-401
+      - OWASP A04:2021
+  - id: cpp-memset-secret
+    title: C/C++ memset clears a password or secret buffer
+    title_zh: C/C++ 用 memset 清除口令或密钥缓冲区
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-14
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:memset|ZeroMemory|bzero){{CSA}}\s*\(\s*(?:&\s*)?\w{0,30}(?:[Pp]assword|PASSWORD|[Pp]asswd|PASSWD|[Pp]assphrase|[Ss]ecret|SECRET|[Pp]riv(?:ate)?_?[Kk]ey)\w{0,20}\s*,'
+    message: A compiler may remove a memset of a buffer that is not read again, leaving the secret in memory. Confirm the buffer is wiped with a call the optimizer keeps.
+    message_zh: 编译器可能删除对之后不再读取的缓冲区的 memset，使密钥留在内存中。需确认使用了不会被优化掉的清除函数。
+    remediation: Use explicit_bzero, memset_s, SecureZeroMemory or OPENSSL_cleanse.
+    remediation_zh: 使用 explicit_bzero、memset_s、SecureZeroMemory 或 OPENSSL_cleanse。
+    references:
+      - CWE-14
+      - OWASP A02:2021
+  # ------------------------------------------------- files, privileges, misc
+  - id: cpp-path-traversal
+    title: C/C++ fopen of a command-line or environment path
+    title_zh: C/C++ 用 fopen 打开来自命令行或环境变量的路径
+    severity: high
+    confidence: low
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:fopen|_wfopen|_tfopen|freopen|open){{CSA}}\s*\(\s*{{EXT}}'
+    group: cpp-file
+    message: A path from argv, getenv or optarg is opened as is. In a program that runs with more privilege than its caller (setuid, service, CGI) this reaches any file.
+    message_zh: 来自 argv、getenv 或 optarg 的路径被原样打开。若程序权限高于调用者（setuid、服务、CGI），可访问任意文件。
+    remediation: Normalize the path and verify its realpath stays inside the allowed directory, or map names through an allowlist.
+    remediation_zh: 规范化路径并校验 realpath 位于允许目录内，或通过白名单映射文件名。
+    references:
+      - CWE-22
+      - OWASP A01:2021
   - id: cpp-fopen-api
     title: C/C++ opens a runtime file path with fopen
     title_zh: C/C++ 使用 fopen 打开运行时路径
@@ -156,10 +496,9 @@ rules:
     kind: hotspot
     cwe: CWE-22
     owasp: A01:2021
-    languages:
-      - c
-      - cpp
-    pattern: \bfopen\s*\(
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:fopen|_wfopen|_tfopen){{CSA}}\s*\({{NOLIT}}'
     group: cpp-file
     message: The file path comes from a runtime value; confirm it stays inside the allowed directory after normalization.
     message_zh: 文件路径来自运行时值；需确认规范化后仍位于允许目录内。
@@ -168,3 +507,346 @@ rules:
     references:
       - CWE-22
       - OWASP A01:2021
+  - id: cpp-insecure-tempfile
+    title: C/C++ temporary file name from tmpnam/tempnam/mktemp
+    title_zh: C/C++ 使用 tmpnam/tempnam/mktemp 生成临时文件名
+    severity: medium
+    confidence: medium
+    cwe: CWE-377
+    owasp: A01:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:tmpnam|tmpnam_r|tmpnam_s|tempnam|_tempnam|_wtempnam|_ttempnam|mktemp|_mktemp|_mktemp_s|_wmktemp|_tmktemp){{CSA}}\s*\('
+    message: These functions return a name, not an open file; another process can create that file (or a symlink) before the program opens it.
+    message_zh: 这些函数只返回文件名而非已打开的文件；在程序打开之前，其他进程可抢先创建该文件（或符号链接）。
+    remediation: Use mkstemp/mkdtemp (or tmpfile), which create the file atomically with safe permissions.
+    remediation_zh: 使用 mkstemp/mkdtemp（或 tmpfile），它们以安全权限原子地创建文件。
+    references:
+      - CWE-377
+      - OWASP A01:2021
+  - id: cpp-access-toctou
+    title: C/C++ access() check before opening a file
+    title_zh: C/C++ 打开文件前用 access() 检查
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-367
+    owasp: A01:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:access|_access|_waccess|eaccess|euidaccess|faccessat){{CSA}}\s*\([^;]{1,200}?(?:\b[RWX]_OK\b|,\s*[246]\s*\))'
+    filePattern: '\b(?:f?open|creat|_wopen|_open|fopen_s|_wfopen|CreateFile[AW]?)\s*\('
+    message: The file is checked with access() and opened later by name; between the two calls the path can be replaced (for example with a symlink), and access() uses the real rather than the effective user.
+    message_zh: 先用 access() 检查文件，之后再按名称打开；两次调用之间路径可被替换（例如换成符号链接），且 access() 使用的是真实用户而非有效用户。
+    remediation: Open the file first and check the open descriptor (fstat), or drop privileges before opening; use O_NOFOLLOW where possible.
+    remediation_zh: 先打开文件再检查已打开的描述符（fstat），或在打开前降低权限；尽可能使用 O_NOFOLLOW。
+    references:
+      - CWE-367
+      - OWASP A01:2021
+  - id: cpp-setuid-unchecked
+    title: C/C++ setuid/setgid return value ignored
+    title_zh: C/C++ 忽略 setuid/setgid 的返回值
+    severity: high
+    confidence: medium
+    cwe: CWE-273
+    owasp: A04:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:setuid|setgid|seteuid|setegid|setreuid|setregid|setresuid|setresgid)(?<=(?:^|[\n;{}]|\belse|\bdo|\))\s{0,80}(?:\(\s*void\s*\)\s*)?\w{6,9})\s*\([^;{}]{0,160}\)\s*;'
+    message: Dropping privileges can fail (for example on RLIMIT_NPROC); when the result is not checked the program continues with its old privileges.
+    message_zh: 降权可能失败（例如触及 RLIMIT_NPROC）；不检查返回值时，程序会以原有权限继续运行。
+    remediation: Check the return value and abort on failure; afterwards verify with getuid/geteuid that the old ID cannot be regained.
+    remediation_zh: 检查返回值，失败时终止；之后用 getuid/geteuid 验证无法恢复原 ID。
+    references:
+      - CWE-273
+      - OWASP A04:2021
+  - id: cpp-chroot-without-chdir
+    title: C/C++ chroot without chdir("/")
+    title_zh: C/C++ chroot 后未调用 chdir("/")
+    severity: medium
+    confidence: medium
+    cwe: CWE-243
+    owasp: A01:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bchroot{{CSA}}\s*\((?!\s*"\."\s*\))'
+    fileAbsentPattern: '\bchdir\s*\(\s*"/"\s*\)'
+    message: The file calls chroot but never chdir("/"); the working directory stays outside the new root, so relative paths can still reach the old file system.
+    message_zh: 文件调用了 chroot 但从未调用 chdir("/")；当前目录仍在新根之外，相对路径仍可访问原文件系统。
+    remediation: Call chdir("/") right after chroot (or chdir into the jail and chroot(".")), and drop root privileges afterwards.
+    remediation_zh: 在 chroot 之后立即调用 chdir("/")（或先 chdir 进入目录再 chroot(".")），随后放弃 root 权限。
+    references:
+      - CWE-243
+      - OWASP A01:2021
+  - id: cpp-umask-zero
+    title: C/C++ umask(0)
+    title_zh: C/C++ umask(0)
+    severity: medium
+    confidence: medium
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [c, cpp]
+    flags: ""
+    # A statement of its own: `old = umask(0); umask(old);` only reads the mask.
+    pattern: '\bumask(?<=(?:^|[\n;{}]|\belse|\bdo|\))\s{0,80}(?:\(\s*void\s*\)\s*)?umask)\s*\(\s*0+\s*\)\s*;'
+    message: umask(0) removes the default permission mask; files later created with mode 0666 or 0777 become writable by every user.
+    message_zh: umask(0) 取消默认权限掩码；之后以 0666 或 0777 创建的文件对所有用户可写。
+    remediation: Use a restrictive mask such as umask(077) or umask(022), and pass explicit modes to open/mkdir.
+    remediation_zh: 使用 umask(077) 或 umask(022) 等严格掩码，并为 open/mkdir 显式指定权限。
+    references:
+      - CWE-732
+      - OWASP A01:2021
+  # ------------------------------------------------------------- randomness
+  - id: cpp-srand-time
+    title: C/C++ random generator seeded with the time
+    title_zh: C/C++ 以时间作为随机数种子
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-337
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:srand|srandom|srand48|seed48){{CSA}}\s*\(\s*(?:\([^()]{1,30}\)\s*)?(?:std::)?time\s*\(|\b(?:std::)?(?:mt19937(?:_64)?|default_random_engine|minstd_rand0?)\s+\w{1,40}\s*[({]\s*(?:\([^()]{1,30}\)\s*)?(?:std::)?time\s*\('
+    message: The generator is seeded with the current time, which an attacker can guess; its output must not be used for keys, tokens or session IDs.
+    message_zh: 随机数生成器以当前时间为种子，攻击者可以猜到；其输出不得用于密钥、令牌或会话 ID。
+    remediation: For security values use getrandom/arc4random/BCryptGenRandom or RAND_bytes; std::random_device is not guaranteed to be secure either.
+    remediation_zh: 安全用途请使用 getrandom/arc4random/BCryptGenRandom 或 RAND_bytes；std::random_device 也不保证安全。
+    references:
+      - CWE-337
+      - OWASP A02:2021
+  - id: cpp-rand-security-value
+    title: C/C++ rand()/random() used for a key, token, nonce or password
+    title_zh: C/C++ 用 rand()/random() 生成密钥、令牌、nonce 或口令
+    severity: high
+    confidence: medium
+    cwe: CWE-338
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    # Located at the rand() call; the lookbehind checks the assigned name.
+    pattern: '(?<![\w.>])(?:rand|random|drand48|lrand48|mrand48)\s*\(\s*\)(?<=(?<![\w.>])(?:(?:[a-z0-9]{1,30}_)?(?:token|nonce|salt|secret|password|passwd|otp|challenge|iv|session_?id)|(?:[a-z0-9]{1,30}_)?(?:session|secret|private|priv|crypt|cipher|aes|des|hmac|enc|encryption|signing|master|wrap|api|auth)_?key|[a-z][a-zA-Z0-9]{0,30}(?:Token|Nonce|Salt|Secret|Password|Otp|Challenge|Iv|IV|SessionId)|(?:session|secret|private|priv|crypt|cipher|aes|hmac|enc|encryption|signing|master|wrap|api|auth)Key|(?:[A-Z0-9]{1,30}_)?(?:TOKEN|NONCE|SALT|SECRET|PASSWORD|IV|SESSION_KEY|SECRET_KEY|AES_KEY|HMAC_KEY))\s*(?:\[[^\]]{0,40}\])?\s*=(?!=)[^;=]{0,60}?(?:rand|random|drand48|lrand48|mrand48)\s*\(\s*\))'
+    message: A security value is filled from rand()/random(), whose output is predictable from a few samples or from the seed.
+    message_zh: 安全相关的值由 rand()/random() 生成，其输出可由少量样本或种子推测出来。
+    remediation: Use a cryptographic generator, getrandom/arc4random_buf/BCryptGenRandom or RAND_bytes.
+    remediation_zh: 使用密码学安全的随机数生成器，例如 getrandom/arc4random_buf/BCryptGenRandom 或 RAND_bytes。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  # ------------------------------------------------------------------ crypto
+  - id: cpp-weak-hash
+    title: C/C++ weak hash algorithm (MD2/MD4/MD5/SHA-1)
+    title_zh: C/C++ 使用弱哈希算法（MD2/MD4/MD5/SHA-1）
+    severity: medium
+    confidence: low
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:(?:MD[245]|SHA1)(?:_Init|_Update|_Final)?|EVP_md[245]){{CSA}}\s*\('
+    group: cpp-hash
+    message: MD2/MD4/MD5/SHA-1 are broken for collision resistance and unsuitable for signatures, certificates or password storage.
+    message_zh: MD2/MD4/MD5/SHA-1 的抗碰撞性已被攻破，不适用于签名、证书或口令存储。
+    remediation: Use SHA-256 or stronger through the EVP API; for passwords use a password hash (Argon2, scrypt, PBKDF2).
+    remediation_zh: 通过 EVP 接口使用 SHA-256 或更强算法；口令存储请使用口令哈希（Argon2、scrypt、PBKDF2）。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: cpp-sha1-signature
+    title: C/C++ OpenSSL signature with SHA-1
+    title_zh: C/C++ OpenSSL 签名使用 SHA-1
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bEVP_(?:Sign|DigestSign|Verify|DigestVerify)Init(?:_ex)?{{CSA}}\s*\([^;]{0,200}?\bEVP_sha1\s*\(|\b(?:RSA_sign|RSA_verify|ECDSA_sign|ECDSA_verify|DSA_sign|DSA_verify){{CSA}}\s*\(\s*NID_sha1\b'
+    group: cpp-hash
+    message: The signature uses SHA-1, for which practical chosen-prefix collisions exist; a forged document can carry a valid signature.
+    message_zh: 签名使用 SHA-1，而 SHA-1 已存在实用的选择前缀碰撞攻击，伪造文档可带有有效签名。
+    remediation: Sign and verify with SHA-256 or stronger (EVP_sha256).
+    remediation_zh: 使用 SHA-256 或更强算法（EVP_sha256）签名和验证。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: cpp-weak-cipher
+    title: C/C++ OpenSSL weak cipher (DES, RC4, RC2, Blowfish, IDEA, CAST5)
+    title_zh: C/C++ OpenSSL 弱加密算法（DES、RC4、RC2、Blowfish、IDEA、CAST5）
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:DES_(?:ecb|ecb3|ncbc|cbc|pcbc|cfb|cfb64|ofb|ofb64|ede2|ede3|xcbc|set_key|set_key_checked|set_key_unchecked|key_sched)\w{0,20}|EVP_des_\w{1,30}|EVP_rc4\w{0,20}|EVP_rc2_\w{1,20}|EVP_bf_\w{1,10}|EVP_idea_\w{1,10}|EVP_cast5_\w{1,10}|RC4_set_key|RC4|BF_set_key){{CSA}}\s*\('
+    group: cpp-cipher
+    message: DES, 3DES, RC4, RC2, Blowfish, IDEA and CAST5 have short keys or 64-bit blocks or known biases; data encrypted with them can be recovered.
+    message_zh: DES、3DES、RC4、RC2、Blowfish、IDEA 和 CAST5 密钥短、分组为 64 位或存在已知偏差，加密的数据可被恢复。
+    remediation: Use AES-GCM or ChaCha20-Poly1305 through the EVP API.
+    remediation_zh: 通过 EVP 接口使用 AES-GCM 或 ChaCha20-Poly1305。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: cpp-ecb-mode
+    title: C/C++ block cipher in ECB mode
+    title_zh: C/C++ 分组密码使用 ECB 模式
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:EVP_\w{2,30}_ecb|AES_ecb_encrypt){{CSA}}\s*\('
+    group: cpp-cipher
+    message: ECB encrypts equal plaintext blocks to equal ciphertext blocks, which leaks the structure of the data and allows block reordering.
+    message_zh: ECB 模式把相同的明文块加密成相同的密文块，会泄露数据结构并允许重排数据块。
+    remediation: Use an authenticated mode such as AES-GCM (EVP_aes_256_gcm) or ChaCha20-Poly1305.
+    remediation_zh: 使用认证加密模式，例如 AES-GCM（EVP_aes_256_gcm）或 ChaCha20-Poly1305。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: cpp-ssl-verify-none
+    title: C/C++ OpenSSL certificate verification set to SSL_VERIFY_NONE
+    title_zh: C/C++ OpenSSL 证书校验设为 SSL_VERIFY_NONE
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bSSL(?:_CTX)?_set_verify{{CSA}}\s*\([^,;]{1,120},\s*SSL_VERIFY_NONE\b'
+    message: With SSL_VERIFY_NONE a TLS client accepts any certificate, so a man in the middle can read and change the traffic. On a server context it only means client certificates are not requested; confirm which side this is.
+    message_zh: 使用 SSL_VERIFY_NONE 时 TLS 客户端接受任何证书，中间人可读取并篡改流量。若是服务端上下文，则仅表示不要求客户端证书；需确认是哪一端。
+    remediation: On clients use SSL_VERIFY_PEER with a trust store (SSL_CTX_set_default_verify_paths) and check the host name (SSL_set1_host).
+    remediation_zh: 客户端使用 SSL_VERIFY_PEER 并配置信任库（SSL_CTX_set_default_verify_paths），同时校验主机名（SSL_set1_host）。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: cpp-curl-tls-verify-disabled
+    title: C/C++ libcurl TLS peer or host verification disabled
+    title_zh: C/C++ libcurl 关闭 TLS 对端或主机名校验
+    severity: high
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bcurl_easy_setopt{{CSA}}\s*\([^,;]{1,120},\s*CURLOPT_(?:PROXY_|DOH_)?SSL_VERIFY(?:PEER|HOST)\s*,\s*(?:\(long\)\s*)?(?:0L?|FALSE|false)\s*\)'
+    message: libcurl is told not to verify the server certificate or host name, so a man in the middle can impersonate the server.
+    message_zh: libcurl 被设置为不校验服务器证书或主机名，中间人可以冒充服务器。
+    remediation: Keep CURLOPT_SSL_VERIFYPEER at 1 and CURLOPT_SSL_VERIFYHOST at 2; point CURLOPT_CAINFO at the right CA bundle instead.
+    remediation_zh: 保持 CURLOPT_SSL_VERIFYPEER 为 1、CURLOPT_SSL_VERIFYHOST 为 2；如需自定义 CA，请设置 CURLOPT_CAINFO。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: cpp-ssl-legacy-protocol
+    title: C/C++ OpenSSL SSLv2/SSLv3/TLS 1.0/TLS 1.1
+    title_zh: C/C++ OpenSSL 使用 SSLv2/SSLv3/TLS 1.0/TLS 1.1
+    severity: high
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\b(?:SSLv2|SSLv3|TLSv1|TLSv1_1)_(?:client_|server_)?method{{CSA}}\s*\(|\bSSL(?:_CTX)?_set_min_proto_version{{CSA}}\s*\([^,;]{1,120},\s*(?:SSL3_VERSION|TLS1_VERSION|TLS1_1_VERSION)\b'
+    message: The connection is pinned to, or allows, SSLv2, SSLv3, TLS 1.0 or TLS 1.1, which are deprecated (RFC 8996) and have practical attacks.
+    message_zh: 连接被固定为或允许 SSLv2、SSLv3、TLS 1.0 或 TLS 1.1，这些协议已被弃用（RFC 8996）且存在实用攻击。
+    remediation: Use TLS_client_method/TLS_server_method and SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION).
+    remediation_zh: 使用 TLS_client_method/TLS_server_method，并调用 SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION)。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: cpp-hardcoded-credential
+    title: C/C++ hard-coded credential in a char array or #define
+    title_zh: C/C++ 在字符数组或 #define 中硬编码凭据
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [c, cpp]
+    flags: i
+    pattern: '(?:\b(?:char|wchar_t|tchar|char8_t|char16_t|char32_t)\s+(?:const\s+)?[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s*\[[^\]]{0,10}\]\s*=\s*|#\s*define\s+[a-z0-9_]{0,30}?(?:password|passwd|passphrase|secret|secret_?key|api_?key|access_?key|auth_?token|access_?token|private_?key|client_?secret)\s+)(?:[lu]8?)?"(?![^"]{0,200}example)(?<secret>[^"\\\s%]{6,200})"'
+    redactEvidence: true
+    message: A credential is compiled into the program; anyone with the binary or the source can read it, and changing it needs a new release.
+    message_zh: 凭据被编译进程序；任何拿到二进制或源码的人都能读取，且更换凭据需要发布新版本。
+    remediation: Load the credential at run time from a secrets store, a protected configuration file or the environment, and rotate the exposed value.
+    remediation_zh: 在运行时从密钥管理服务、受保护的配置文件或环境变量读取凭据，并轮换已暴露的值。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  # --------------------------------------------------------------------- C++
+  - id: cpp-cin-char-array
+    title: C++ operator>> into a buffer without setw
+    title_zh: C++ 未使用 setw 用 operator>> 读入缓冲区
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-120
+    owasp: A03:2021
+    languages: [cpp]
+    flags: ""
+    pattern: '(?<![\w.>])(?:std::)?cin\s*>>(?!\s*(?:std::)?setw\b)\s*[A-Za-z_]\w{0,60}\s*(?:;|>>)'
+    filePattern: '\bchar\s+[A-Za-z_]\w*\s*\[[^\]]{1,20}\]'
+    message: Before C++20, reading into a char array with >> writes a whole word whatever the array size. The file declares a char array; confirm this target is not one, or that a width is set.
+    message_zh: 在 C++20 之前，用 >> 读入字符数组会写入整个单词而不管数组大小。该文件声明了字符数组；需确认目标不是字符数组，或已设置宽度。
+    remediation: Read into std::string, or use std::cin >> std::setw(sizeof buf) >> buf.
+    remediation_zh: 读入 std::string，或使用 std::cin >> std::setw(sizeof buf) >> buf。
+    references:
+      - CWE-120
+      - OWASP A03:2021
+  - id: cpp-auto-ptr
+    title: C++ std::auto_ptr
+    title_zh: C++ 使用 std::auto_ptr
+    severity: low
+    confidence: medium
+    cwe: CWE-477
+    owasp: A04:2021
+    languages: [cpp]
+    flags: ""
+    pattern: '(?<![\w.>])(?:std::)?auto_ptr\s*<'
+    message: std::auto_ptr was removed in C++17; its copy transfers ownership silently, which leads to null dereferences and double frees in containers and algorithms.
+    message_zh: std::auto_ptr 已在 C++17 中移除；其复制会悄悄转移所有权，在容器和算法中容易导致空指针解引用和重复释放。
+    remediation: Use std::unique_ptr (and std::move where ownership is transferred).
+    remediation_zh: 使用 std::unique_ptr（转移所有权时使用 std::move）。
+    references:
+      - CWE-477
+      - OWASP A04:2021
+  # ----------------------------------------------------------------- Windows
+  - id: cpp-isbadptr
+    title: Windows IsBadReadPtr/IsBadWritePtr family
+    title_zh: Windows 使用 IsBadReadPtr/IsBadWritePtr 系列函数
+    severity: medium
+    confidence: medium
+    cwe: CWE-676
+    owasp: A04:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bIsBad(?:Read|Write|HugeRead|HugeWrite|Code|String)Ptr{{CSA}}\s*\('
+    message: The IsBad*Ptr functions are banned by Microsoft; the answer is stale as soon as it returns, and probing can hit a guard page and break stack growth.
+    message_zh: IsBad*Ptr 系列函数已被微软禁用；其结果在返回时即已过时，探测还可能触碰保护页并破坏栈增长。
+    remediation: Remove the check; validate pointers by design (ownership, sizes) and handle access violations where they occur.
+    remediation_zh: 删除该检查；通过设计保证指针有效（所有权、大小），并在实际访问处处理访问冲突。
+    references:
+      - CWE-676
+      - OWASP A04:2021
+  - id: cpp-loadlibrary-relative
+    title: Windows LoadLibrary with a relative DLL name
+    title_zh: Windows LoadLibrary 使用相对 DLL 名称
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-427
+    owasp: A08:2021
+    languages: [c, cpp]
+    flags: ""
+    pattern: '\bLoadLibrary(?:Ex)?[AW]?{{CSA}}\s*\(\s*(?:[LuU]8?|_T\s*\(\s*|TEXT\s*\(\s*)?"(?![A-Za-z]:|\\\\|/)[^"\\/:]{1,100}"'
+    notPattern: 'LOAD_LIBRARY_SEARCH_(?:SYSTEM32|APPLICATION_DIR|DEFAULT_DIRS|DLL_LOAD_DIR)'
+    message: A DLL is loaded by bare name, so Windows searches the application directory and possibly the current directory; a planted DLL there is loaded instead.
+    message_zh: 以裸名称加载 DLL 时，Windows 会搜索应用目录并可能搜索当前目录，攻击者放置在那里的 DLL 会被加载。
+    remediation: Use LoadLibraryEx with LOAD_LIBRARY_SEARCH_SYSTEM32 (or a full path), and call SetDefaultDllDirectories at start-up.
+    remediation_zh: 使用带 LOAD_LIBRARY_SEARCH_SYSTEM32 的 LoadLibraryEx（或完整路径），并在启动时调用 SetDefaultDllDirectories。
+    references:
+      - CWE-427
+      - OWASP A08:2021

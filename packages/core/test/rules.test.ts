@@ -1071,6 +1071,7 @@ describe("evidence of credential rules", () => {
       .sort();
     expect(flagged).toEqual([
       "agent-mcp-inline-secret",
+      "cpp-hardcoded-credential",
       "dep-http-install",
       "dep-pip-trusted-host",
       "k8s-secret-in-env",

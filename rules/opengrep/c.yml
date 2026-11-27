@@ -1,5 +1,5 @@
 # Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# Not copied from the Semgrep registry; validated as YAML only.
+# Not copied from the Semgrep registry. Executed with Opengrep 1.33.1.
 rules:
   - id: c-opengrep-gets
     languages: [c, cpp]
@@ -17,4 +17,69 @@ rules:
     metadata:
       cwe: "CWE-120"
       confidence: MEDIUM
-    pattern: strcpy($DEST, $SRC)
+    patterns:
+      - pattern: strcpy($DEST, $SRC)
+      # Copying a string literal has a known length.
+      - pattern-not: strcpy($DEST, "...")
+  - id: c-opengrep-format-string
+    languages: [c, cpp]
+    severity: WARNING
+    message: >-
+      A variable is the format string of a printf-family call and no arguments
+      follow it. If the text contains % directives the call reads or writes
+      memory (CWE-134). Use a constant format such as printf("%s", text).
+    metadata:
+      cwe: "CWE-134"
+      confidence: MEDIUM
+      category: security
+    patterns:
+      - pattern-either:
+          - pattern: printf($FMT)
+          - pattern: fprintf($STREAM, $FMT)
+          - pattern: dprintf($FD, $FMT)
+          - pattern: sprintf($BUF, $FMT)
+          - pattern: snprintf($BUF, $SIZE, $FMT)
+          - pattern: syslog($PRIORITY, $FMT)
+      # Not a literal, not an ALL_CAPS macro, not a gettext-style lookup
+      # (_("..."), gettext(...)), not a macro parameter (_s, __VA_ARGS__) and
+      # not a choice between literals (cond ? "a" : "b").
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: '^(?![_"])(?![A-Z][A-Z0-9_]*$)(?!(?:N_|Q_|C_|gettext|dgettext|dcgettext|ngettext)\s*\()(?![^?]*\?)'
+
+  - id: c-opengrep-command-from-input
+    mode: taint
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Data from argv, getenv or optarg reaches the command string of system()
+      or popen(), which runs it through /bin/sh (command injection, CWE-78).
+      Run the program with execv/posix_spawn and an argument array instead.
+    metadata:
+      cwe: "CWE-78"
+      confidence: HIGH
+      category: security
+    pattern-sources:
+      - pattern: getenv(...)
+      - pattern: secure_getenv(...)
+      - pattern: argv[$I]
+      - pattern: optarg
+    pattern-propagators:
+      - pattern: snprintf($TO, $SIZE, $FMT, ..., $FROM, ...)
+        from: $FROM
+        to: $TO
+      - pattern: sprintf($TO, $FMT, ..., $FROM, ...)
+        from: $FROM
+        to: $TO
+      - pattern: strcpy($TO, $FROM)
+        from: $FROM
+        to: $TO
+      - pattern: strcat($TO, $FROM)
+        from: $FROM
+        to: $TO
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: system($CMD)
+              - pattern: popen($CMD, $MODE)
+          - focus-metavariable: $CMD
