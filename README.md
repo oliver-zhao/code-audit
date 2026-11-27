@@ -1,42 +1,108 @@
 # code-audit
 
-`code-audit` is a deterministic source-code security scanner with a review
-workflow for coding agents. It scans a local project with built-in rules,
-secret detection and dependency advisories, writes candidate findings with
-evidence to Markdown, JSON and SARIF, and gives a host agent (or a person) the
-commands to read the code around each candidate, record a verdict and render
-the reviewed report.
+[![CI](https://github.com/oliver-zhao/code-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/oliver-zhao/code-audit/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**What it is**
+A security audit plugin for coding agents, with a deterministic scanning core.
 
-- A scanner that needs only Node.js: 156 built-in rules for Python,
-  JavaScript/TypeScript, Java, Go, C/C++, C#, Dockerfiles, Kubernetes,
-  Terraform, Compose, GitHub Actions and agent configuration files; secret
-  detection; lockfile parsing with [OSV.dev](https://osv.dev) lookups.
-- Stronger when Opengrep, OSV-Scanner or Gitleaks are installed: they are
-  found on `PATH`, run, and their results merged and de-duplicated.
-- A CLI (`code-audit`) and a stdio MCP server (`code-audit-mcp`) that expose
-  the same review workflow, plus installers for four agent hosts.
-- Built for CI (baseline, ignore file, SARIF, exit codes) and for auditing
-  code you do not trust (`--untrusted`).
+[简体中文](README.zh-CN.md)
 
-**What it is not**
+`code-audit` scans a local project for vulnerabilities, hard-coded secrets,
+risky configuration and vulnerable dependencies, and writes the candidates
+with their evidence to Markdown, JSON and SARIF. A coding agent (Claude Code,
+Codex, OpenCode, DSH) then reviews them through eight MCP tools: it reads the
+code around each candidate, records a verdict with a rationale, adds what the
+scanner missed and renders the final report. The same workflow is available
+to a person on the command line and to CI.
 
-- It does **not prove the absence of vulnerabilities**. A clean scan means
-  that these engines matched nothing, not that the code is safe.
-- Findings are **candidates**. Most rules match one statement at a time; a
-  finding says "this line looks like a known dangerous form", a hotspot says
-  "a reviewer should read this".
-- The tool **never calls an LLM**. Judgment (is this reachable? is it
-  exploitable?) is the job of the reviewer: the host agent's model, or you.
-- It does not find authorization and business-logic flaws, XSS in templates,
-  or data flow across files (see [Limits](#limits)).
+The scanner itself never calls a model. The split is deliberate:
 
-## Quick start (2 minutes)
+| Part | Does | Does not |
+|---|---|---|
+| **Scanner** (this tool) | Finds candidates the same way every time, masks secrets, counts what fails a build, treats the scanned repository as untrusted input | Judge reachability or exploitability |
+| **Reviewer** (your agent, or you) | Reads the code, confirms or dismisses each candidate with evidence, finds logic flaws | Decide silently: every dismissal is listed in the report |
 
-Requirements: Node.js 22 or later, git, and pnpm (`corepack enable` provides
-it; or `npm install -g pnpm`). The packages are not published to npm yet, so
-install from a checkout:
+- [Supported languages and files](#supported-languages-and-files)
+- [Supported agents](#supported-agents)
+- [Installation](#installation)
+- [Usage](#usage): [command line](#command-line) · [in an agent](#in-an-agent) · [in CI](#in-ci)
+- [Example](#example) · [Sample report](#sample-report)
+- [Reading the result](#reading-the-result) · [Engines](#engines) · [Untrusted repositories](#untrusted-repositories)
+- [Configuration reference](#configuration-reference) · [Exit codes](#exit-codes) · [Limits](#limits)
+- [Testing](#testing) · [Development](#development) · [License](#license)
+
+**What it is not.** It does **not prove the absence of vulnerabilities**: a
+clean scan means these engines matched nothing, not that the code is safe.
+Findings are **candidates**: most rules look at one statement at a time. It
+does not find authorization and business-logic flaws, XSS in templates, or
+data flow across files (see [Limits](#limits)).
+
+## Supported languages and files
+
+Everything in this table works with Node.js alone. `code-audit doctor` prints
+the rule counts of your build.
+
+| Language / file type | Recognised files | Built-in rules | Dependency files checked against [OSV.dev](https://osv.dev) |
+|---|---|---:|---|
+| **Python** | `.py`, `.pyw` | 70 | `requirements*.txt` (with `-r` includes), `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml` |
+| **JavaScript / TypeScript** | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts` | 12 | `package-lock.json`, `pnpm-lock.yaml` |
+| **Java** | `.java` | 10 | `pom.xml` (direct dependencies with literal versions) |
+| **Go** | `.go` | 10 | `go.mod` |
+| **C#** | `.cs` | 10 | `packages.lock.json` |
+| **C / C++** | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.hxx` | 9 | none |
+| **Dockerfile / Compose** | `Dockerfile*`, compose files | 6 | |
+| **Kubernetes manifests** | `.yml`, `.yaml` | 7 | |
+| **Terraform** | `.tf`, `.tfvars` | 5 | |
+| **GitHub Actions** | `.github/workflows/*.yml` | 4 | |
+| **Agent configuration** | MCP server configs, skills, `AGENTS.md`, hooks, agent settings | 10 | |
+| **Dependency hygiene** | manifests, Dockerfiles, shell scripts | 3 | |
+| **Secrets** | every text file | detectors, not rules | |
+
+156 built-in rules in total: 113 report **findings** and 43 report
+**hotspots** (a dangerous API with no visible attacker input: a reading list
+for the reviewer, never counted). Python is the most developed language: its
+rules match logical lines, ignore comments and docstrings, and cover SQL,
+command and code injection, template injection, deserialization, file
+handling, SSRF, redirects, TLS and crypto, JWT, XML, and Flask / Django
+configuration. The other languages have a small set of pattern rules for the
+most common injection and crypto mistakes.
+
+With [Opengrep](https://github.com/opengrep/opengrep) installed, 20 more
+bundled rules run (2 each for Python, JavaScript, Java, Go, C#, C, plus 8
+**Python taint rules** that follow request data from Flask, Django and
+FastAPI handlers to SQL, command, path, SSRF, template, redirect,
+deserialization and `eval` sinks inside one file). See [Engines](#engines).
+
+Secret detection covers private keys, provider tokens (AWS, GitHub, Slack,
+...), credentials in URLs, password and key assignments, and credential files
+(`.netrc`, `.pgpass`, `.npmrc`, `.pypirc`, Docker `auths`, kubeconfig). Secret
+values are masked in every output.
+
+## Supported agents
+
+`code-audit install --host <host>` writes project-local configuration for each
+host. All four were run end to end with a real model: a full audit from scan
+to rendered report through the MCP tools, checked in the tool-call logs.
+
+| Agent | Tested version | `--host` | Start an audit |
+|---|---|---|---|
+| [Claude Code](https://claude.com/claude-code) | 2.1.183 (macOS) | `claude-code` | `/audit` in the project, or headless `claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"` |
+| [Codex CLI](https://developers.openai.com/codex/cli) | 0.166 (macOS) | `codex` | ask for a security audit; headless `codex exec` with the three `-c` overrides that `install` prints |
+| [OpenCode](https://opencode.ai) | 2.4.1 (Linux) | `opencode` | `/audit`, or `opencode run "Run a security audit of this project with the code-audit skill"` |
+| DeepSeek Harness (DSH) | 0.2.2-rc.5 (Linux) | `dsh` | `dsh <profile> --patch dsh/cordis.patch.yml`, then ask for a security audit |
+
+Any other MCP-capable agent can use the stdio server `code-audit-mcp`
+directly; the tools and their arguments are described in
+[docs/mcp.md](docs/mcp.md). Not exercised: approving the Claude Code project
+server interactively, installing the Claude Code plugin through a
+marketplace, Codex project trust. Details per host:
+[Agent host details](#agent-host-details) and `adapters/<host>/README.md`.
+
+## Installation
+
+Requirements: **Node.js 22 or later**, git, and pnpm (`corepack enable`
+provides it; or `npm install -g pnpm`). macOS and Linux are tested; Windows is
+not. The packages are not published to npm yet, so install from a checkout:
 
 ```sh
 git clone https://github.com/oliver-zhao/code-audit.git
@@ -45,75 +111,253 @@ corepack enable
 pnpm install          # a "Failed to create bin" warning before the first build is harmless
 pnpm build
 export PATH="$PWD/bin:$PATH"    # bin/code-audit and bin/code-audit-mcp
-
-code-audit doctor     # Node version, rule counts, optional scanners, MCP command
 ```
 
-First scan, on the small demo project in this repository (no network, no
-external tools, results written outside the checkout):
+Add the `export` line to your shell profile to keep the commands available.
+Check the installation:
 
 ```sh
-code-audit scan examples/opencode-demo --offline --no-external --out /tmp/code-audit-demo
+code-audit doctor
 ```
 
 ```text
-code-audit scan completed: 20261126T161559Z-b9b2e1d9
-Files: 3 scanned / 0 skipped, LOC 74
-Rules: 156
-Findings: 2 (critical 1, high 1, medium 0, low 0, info 0) at confidence >= medium
-  by category: code 2, secrets 0, config/IaC 0, dependencies 0
-Low-confidence candidates: 0 (not counted above)
-Hotspots: 0 (not counted above)
-Exit code: 1 - 2 findings count toward the exit code (severity >= high, confidence >= medium)
-Duration: 55 ms
-Report directory: /tmp/code-audit-demo/20261126T161559Z-b9b2e1d9
+code-audit doctor (0.2.0)
+Node.js: 24.22.1 OK
+Rules: 156 built-in: 113 finding, 43 hotspot (<checkout>/rules)
+Opengrep rules: 20 (<checkout>/rules/opengrep)
+External tools (detection only, not invoked):
+  opengrep       missing
+  osv-scanner    missing
+  gitleaks       found  /opt/homebrew/bin/gitleaks (8.30.1)
 ```
 
-The command exits with status 1 because findings reached the thresholds; that
-is the expected result here (see [Exit codes](#exit-codes)).
+**Optional scanners.** Nothing else is required. If `opengrep`, `osv-scanner`
+or `gitleaks` are on your `PATH`, the scan runs them too and merges their
+results (see [Engines](#engines)); `doctor` shows which ones it found and
+where to get the others. code-audit never downloads tools or rule packs.
 
-Then your own project:
+**Update:** `git pull && pnpm install && pnpm build`. **Uninstall:** remove
+the checkout; per-project adapter files are removed with
+`code-audit install --uninstall --host <host>`.
+
+## Usage
+
+### Command line
 
 ```sh
 cd /path/to/project
-code-audit scan .                # add --offline to skip the OSV.dev queries
+code-audit scan .                      # add --offline to skip the OSV.dev lookups
 ```
 
-Without `--out`, the run is written to `.audit/<run-id>/` inside the project.
-Add `.audit/` to the project's `.gitignore`.
+The run is written to `.audit/<run-id>/` inside the project (add `.audit/` to
+its `.gitignore`), or to `<dir>/<run-id>/` with `--out <dir>`:
 
-## Reading the result
+| File | For |
+|---|---|
+| `report.md` | People: summary, top risks, every finding with evidence and remediation |
+| `findings.json` | Complete data: findings, hotspots, suppressions, verdicts |
+| `results.sarif` | Code-scanning tools (GitHub code scanning, IDEs) |
+| `coverage.json`, `run.json` | What was and was not scanned; options and counts of the run |
 
-A run directory holds `report.md` (for people), `findings.json` (complete
-data), `results.sarif` (for code-scanning tools), `coverage.json` (what was
-and was not scanned) and `run.json` (the options and counts of the run).
+Common variants:
 
-`report.md` starts with the numbers that matter and the top risks:
+```sh
+code-audit scan . --offline --no-external      # built-in engines only, no network
+code-audit scan . --fail-on critical           # exit 1 only for critical findings
+code-audit scan . --since origin/main          # only files changed since a git ref
+code-audit scan third-party/ --untrusted       # code you did not write: honour none of its own ignore rules
+code-audit scan . --lang zh                    # report in Chinese
+```
+
+Review a run without an agent (`<run>` is the run id the scan printed):
+
+```sh
+code-audit findings <run> --severity high
+code-audit read <run> app/server.py --start 15 --end 25
+code-audit verdict <run> AUD-2026-0001 --status confirmed \
+  --rationale "name comes from request.args and is formatted into the SQL text"
+code-audit report <run> --format md            # report.md now carries the verdicts
+```
+
+All review commands are in [Reviewing findings](#reviewing-findings), all
+flags in the [Configuration reference](#configuration-reference).
+
+### In an agent
+
+Install the adapter into the project you want to audit, then ask the agent.
+`--absolute` writes the full path of this installation's MCP server, so it
+works whatever `PATH` the agent was started with (do not commit the resulting
+config file; without the flag the bare command `code-audit-mcp` is written,
+which is the form to commit).
+
+```sh
+cd /path/to/project
+code-audit install --host claude-code --absolute    # or: codex | opencode | dsh
+code-audit doctor --project .                       # what is installed, does the MCP command resolve?
+```
+
+```text
+code-audit install --host claude-code
+Project: /path/to/project
+  created   /path/to/project/.mcp.json
+  created   /path/to/project/.claude/skills/code-audit/SKILL.md
+  created   /path/to/project/.claude/commands/audit.md
+```
+
+Then, in the agent:
+
+```text
+/audit
+```
+
+or in plain words: *"Run a security audit of this project with the code-audit
+skill and render the report."* The agent follows the shared workflow in
+[skills/code-audit/SKILL.md](skills/code-audit/SKILL.md):
+
+1. `audit_start`: run the scan; `audit_status`: wait for it and get the counts
+2. `audit_findings`: list candidates, highest risk first
+3. `audit_read` / `audit_search`: read the evidence (secrets masked, repository text marked as untrusted)
+4. `audit_verdict`: `confirmed`, `likely`, `needs_review` or `false_positive`, each with a rationale
+5. `audit_add_finding`: add what the rules missed, or promote a hotspot
+6. `audit_report`: render the reviewed report
+
+`install` only writes inside the project, merges into existing configuration
+without rewriting your content, and shows its plan with `--dry-run`. The MCP
+server only audits the directory the agent starts it in.
+
+### In CI
+
+```sh
+code-audit scan . --ci --format sarif,md --out audit-out --latest-link
+```
+
+With a committed baseline only **new** findings fail the build. Baseline,
+SARIF upload, GitHub annotations and incremental scans are described under
+[CI usage](#ci-usage).
+
+## Example
+
+The repository contains a small, deliberately vulnerable project
+([examples/demo-app](examples/demo-app)): a Flask service, a Node.js file, a
+Dockerfile, a GitHub Actions workflow, old pinned dependencies and fake
+credentials, 107 lines in 6 files.
+
+```sh
+code-audit scan examples/demo-app --no-external --out /tmp/code-audit-demo
+```
+
+```text
+code-audit scan completed: 20261127T035043Z-e31e763d
+Files: 6 scanned / 0 skipped, LOC 107
+Rules: 156
+Findings: 22 (critical 5, high 10, medium 7, low 0, info 0) at confidence >= medium
+  by category: code 8, secrets 2, config/IaC 4, dependencies 8
+  dependencies: advisories 8, vulnerable packages 3; advisories/packages by scope: runtime 0/0, dev/optional 0/0, unknown 8/3
+Low-confidence candidates: 1 (not counted above; code 1, secrets 0, config/IaC 0, dependency advisories 0)
+Hotspots: 2 (not counted above)
+Exit code: 1 - 15 findings count toward the exit code (severity >= high, confidence >= medium)
+Duration: 1993 ms
+Report directory: /tmp/code-audit-demo/20261127T035043Z-e31e763d
+```
+
+The command exits with status 1 because findings reached the thresholds; that
+is the expected result here (see [Exit codes](#exit-codes)). A few of the 22:
+
+| Finding | Location | Rule |
+|---|---|---|
+| SQL built with an f-string from a request parameter | `app/server.py:21` | `py-sql-injection` (critical) |
+| `pickle.loads(request.data)` | `app/server.py:46` | `py-insecure-deserialization` (critical) |
+| Shell command built by concatenation | `web/tools.js:8` | `js-command-injection` (critical) |
+| `curl ... \| sh` in an image build | `Dockerfile:4` | `dockerfile-curl-sh` (critical) |
+| Issue title interpolated into a `run:` script | `.github/workflows/triage.yml:13` | `gha-script-injection` (high) |
+| AWS access key id | `config/prod.env:4` | `secret-aws-access-key` (high) |
+| pyyaml 5.3.1 → upgrade to 5.4 | `requirements.txt:2` | advisory `GHSA-8q59-q68h-6hv4` (critical) |
+
+The parameterized query at `app/server.py:29` is **not** a finding: it is
+listed as a hotspot for the reviewer and does not count. The dependency
+advisories come from OSV.dev; with `--offline` they are skipped and the report
+says the dependencies were not checked. Advisory data changes over time, so
+your numbers for the dependency rows can differ.
+
+The clean counterpart of the test fixtures gives the other result:
+
+```sh
+code-audit scan fixtures/clean --offline --no-external --out /tmp/code-audit-clean
+```
+
+```text
+Findings: 0 (critical 0, high 0, medium 0, low 0, info 0) at confidence >= medium
+Exit code: 0 - 0 findings count toward the exit code (severity >= high, confidence >= medium)
+```
+
+## Sample report
+
+The complete `report.md` of the demo run above is committed as
+[examples/demo-app/sample-report.md](examples/demo-app/sample-report.md)
+(352 lines). It starts with what fails the build and the top risks:
 
 ```markdown
-**2 findings count toward the exit code** (severity ≥ high, confidence ≥ medium); a scan with these thresholds exits 1.
+## 1. Executive Summary
+
+**15 findings count toward the exit code** (severity ≥ high, confidence ≥ medium); a scan with these thresholds exits 1.
+
+**Findings at confidence ≥ medium**
 
 | Category | Critical | High | Medium | Low | Info | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Code | 1 | 1 | 0 | 0 | 0 | 2 |
-| Secrets | 0 | 0 | 0 | 0 | 0 | 0 |
-| Configuration / IaC | 0 | 0 | 0 | 0 | 0 | 0 |
-| Dependencies (advisories) | 0 | 0 | 0 | 0 | 0 | 0 |
+| Code | 3 | 4 | 1 | 0 | 0 | 8 |
+| Secrets | 0 | 2 | 0 | 0 | 0 | 2 |
+| Configuration / IaC | 1 | 2 | 1 | 0 | 0 | 4 |
+| Dependencies (advisories) | 1 | 2 | 5 | 0 | 0 | 8 |
+| **Total** | **5** | **10** | **7** | **0** | **0** | **22** |
 
 ### Top risks
 
-1. **CRITICAL** · high · Code — Python SQL statement built with string formatting — src/app.py:10
-2. **HIGH** · medium · Code — Python subprocess with shell=True and a command computed at runtime — src/app.py:16
+1. **CRITICAL** · high · Code — Python SQL statement built with string formatting — app/server.py:21
+2. **CRITICAL** · high · Code — Python unpickles request data — app/server.py:46
+3. **CRITICAL** · high · Code — Node.js child\_process command built with concatenation — web/tools.js:8
+4. **CRITICAL** · high · Configuration / IaC — Dockerfile executes a remote script with curl \| sh — Dockerfile:4
+5. **CRITICAL** · high · Dependency — pyyaml 5.3.1 (unknown, direct): 1 advisory, upgrade to 5.4 — requirements.txt
 ```
 
-and then lists every finding with its rule, CWE, remediation and the matched
-line (secrets are masked):
+then lists every finding grouped by rule, with CWE, description, remediation
+and the matched line:
 
 ```markdown
-**AUD-2026-0001** · src/app.py:10 · Confidence: high · Status: candidate · Engine: builtin-rules
+### Python SQL statement built with string formatting — `py-sql-injection`
 
-cursor.execute("SELECT * FROM users WHERE name = '" + username + "'")
+**CRITICAL** · Code · CWE-89 · A03:2021 · 1 location
+
+**Description**: A value is formatted into the SQL text \(f-string, concatenation, % or .format\(\) in value position\), or the statement comes straight from the request.
+
+**Remediation**: Keep the SQL text constant and pass values as bound parameters \(? / %s placeholders with a parameter tuple\).
+
+**AUD-2026-0001** · app/server.py:21 · Confidence: high · Status: candidate · Engine: builtin-rules
+
+~~~text
+cursor.execute(f"SELECT id, name FROM users WHERE name = '{name}'")
+~~~
 ```
+
+and aggregates dependencies per package:
+
+```markdown
+| Package | Installed | Scope | Relation | Advisories | Max severity | Recommended upgrade | Advisory IDs | Lockfile |
+| --- | --- | --- | --- | ---: | --- | --- | --- | --- |
+| pyyaml | 5.3.1 | unknown | direct | 1 | critical | 5.4 | GHSA-8q59-q68h-6hv4 | requirements.txt:2 |
+| requests | 2.19.1 | unknown | direct | 5 | high | 2.33.0 | GHSA-x84v-xcm2-53pg, GHSA-9hjg-9r4m-mvj7, GHSA-9wx4-h78v-vm56 +2 more | requirements.txt:3 |
+| flask | 2.0.1 | unknown | direct | 2 | high | 2.2.5 \(same major, 1 open\) / 3.1.3 \(fixes all\) | GHSA-m2qf-hxjv-5gpq, GHSA-68rp-wp8r-4726 | requirements.txt:1 |
+```
+
+Further sections: low-confidence candidates, review hotspots, suppressed
+findings, findings dismissed by review, coverage and limitations (engines
+that ran, files skipped, warnings), and the rules that fired. After an agent
+or a person has reviewed the run, every finding shows its verdict and the
+cover says how many were reviewed.
+
+## Reading the result
+
+The numbers on the cover and in every summary mean:
 
 | Number | What it counts |
 |---|---|
@@ -186,7 +430,7 @@ built-in engines only; `--engines builtin,opengrep,osv-scanner,gitleaks`
 selects explicitly. Only bundled, self-written rules are used: no registry
 rule packs are downloaded.
 
-## Using it from an agent host
+## Agent host details
 
 `code-audit install --host <host>` (run in the project, or with
 `--project <dir>`) writes project-local files only: the MCP server entry, the
@@ -426,6 +670,38 @@ Results on public repositories and the complete list of known limits:
 - [docs/README.md](docs/README.md): index, including historical development records
 - [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
 
+## Testing
+
+```sh
+pnpm test                   # build, then the whole suite (several minutes)
+pnpm exec vitest run packages/core/test/rules.test.ts     # one file while developing
+```
+
+The suite has about 650 tests and runs in CI on Node 22 and 24, on Linux and
+macOS. What it covers:
+
+| Area | How it is tested |
+|---|---|
+| Rules | `fixtures/vulnerable/` holds one seeded weakness per rule; [fixtures/vulnerable/EXPECTED.json](fixtures/vulnerable/EXPECTED.json) lists the rule, file and line of each, and every one must be reported. `fixtures/clean/` holds safe look-alikes of the same code and must produce **no** finding. For the Python rule files the check runs both ways: nothing unlisted may be reported. |
+| Rule cost | Every regular expression of every rule file is run against pathological input with a time budget, so a rule that can backtrack catastrophically fails the build. |
+| Dependencies | Lockfile parsers on real-shaped samples; advisory lookups through an injected HTTP client with recorded OSV data, so unit tests use no network. |
+| External scanners | Fake executables replay recorded real output of Opengrep, OSV-Scanner and Gitleaks. A separate file runs the real tools when they are present in `.tools/bin` and is skipped otherwise. |
+| Hostile repositories | Path-jail escapes (symlinks, `..`, case tricks), planted run directories and manifests, repository git configuration, malformed lockfiles and JSON, Markdown injection through file names, secrets in every output channel. |
+| CLI, MCP, installer | Commands are spawned as real processes; the MCP server is driven over stdio; `install` / `--uninstall` run against temporary projects with existing user configuration. |
+| Consistency | One run must show the same numbers in the report, SARIF, JSON, CLI, CI and MCP summaries; flags in `--help` and in this README, the rule schema and the MCP tools in the docs are checked against the code. |
+
+Try the fixtures by hand:
+
+```sh
+code-audit scan fixtures/vulnerable --offline --no-external --no-ignore-file --out /tmp/ca-vulnerable   # exits 1
+code-audit scan fixtures/clean      --offline --no-external --out /tmp/ca-clean                          # exits 0
+```
+
+How the tool behaved on public repositories (flask, requests, httpie and four
+deliberately vulnerable applications), and what each review round found, is
+recorded in [docs/M4_REPORT.md](docs/M4_REPORT.md) and
+[docs/PY1_REPORT.md](docs/PY1_REPORT.md).
+
 ## Development
 
 ```sh
@@ -445,5 +721,19 @@ rule files, `fixtures/` the vulnerable and clean samples the tests scan,
 
 ## License
 
-Apache-2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The repository
-contains only self-written rules; no Semgrep registry rules are distributed.
+[Apache License 2.0](LICENSE). Copyright 2026 The code-audit Authors; see [NOTICE](NOTICE).
+
+- You may use, modify and redistribute the tool, including commercially,
+  under the terms of the license. It comes with no warranty: a scan result is
+  not a security guarantee.
+- **Rules.** All built-in rules and the bundled Opengrep-syntax rules were
+  written for this project and are covered by the same license. No Semgrep
+  registry rules, Bandit rules or other third-party rule packs are included
+  or downloaded.
+- **Optional scanners are not bundled.** Opengrep, Semgrep, OSV-Scanner and
+  Gitleaks are separate programs under their own licenses; code-audit only
+  runs them when you have installed them yourself.
+- **Dependencies.** Production dependencies must not be GPL, AGPL or LGPL
+  licensed; `pnpm run check:licenses` enforces this in CI.
+- **Advisory data** comes from [OSV.dev](https://osv.dev) at scan time and is
+  subject to the licenses of the underlying advisory databases.

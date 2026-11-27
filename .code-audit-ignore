@@ -16,8 +16,8 @@ ignore:
     reason: "Safe counterparts of the seeds; the remaining low-confidence hotspots there are intended."
   - paths: ["packages/core/test/**", "packages/mcp/test/**"]
     reason: "Test inputs: vulnerable snippets and fake credentials written into temporary projects by the tests."
-  - paths: ["examples/dsh-demo/src/**", "examples/opencode-demo/src/**"]
-    reason: "Deliberately vulnerable demo applications used to try the host adapters."
+  - paths: ["examples/dsh-demo/src/**", "examples/opencode-demo/src/**", "examples/demo-app/**"]
+    reason: "Deliberately vulnerable demo applications (and the sample report of one) used to try the tool and the host adapters."
   - paths: ["docs/M0_REPORT.md"]
     reason: "Historical stage report quoting the fake fixture tokens in a grep command; kept unchanged as a development record."
   - rule: "secret-generic-assignment"
