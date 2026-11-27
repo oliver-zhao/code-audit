@@ -7,8 +7,78 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
+Rule coverage for every supported language, Rust as a source language, .NET
+and Rust dependency checking, and statement-level matching for the C-family
+languages.
+
+**Upgrading from 0.2.0:** no rule id was removed or renamed, and a 0.2.0
+baseline still applies. Findings of the new rules are not in it and count as
+new; so can findings whose evidence text changed (fingerprints contain the
+rule, the file and the evidence, and a statement matched across lines or a
+value masked differently gives different evidence). Several existing rules
+changed kind, severity or confidence (see "Changed"). Review the new
+findings, then regenerate `.code-audit-baseline.json` (`code-audit scan .`,
+then `code-audit baseline <run-id>`).
+
 ### Added
 
+- **Built-in rules: 156 → 589** (381 findings, 208 review hotspots). Per
+  area, with the 0.2.0 count in brackets:
+  - Python 102 (70): reflected XSS in Flask / Django / Starlette responses,
+    `format_html` misuse, SSRF with a request-controlled host, NoSQL and LDAP
+    injection, regex from request data, mass assignment, CORS, weak Django
+    password hashers, obsolete TLS, short keys and weak curves, PBKDF2
+    iterations, timing-unsafe comparisons, paramiko, XML-RPC, Mako, archive
+    extraction, `trust_remote_code`, LangChain `allow_dangerous_*` options
+    and execution of LLM output.
+  - JavaScript / TypeScript 67 (12): request data reaching commands, `eval`
+    and `vm`, SQL, file paths, redirects and HTML; crypto, JWT, TLS, cookies,
+    CORS, Express / Electron settings.
+  - Java 78 (10): SQL / JPA / MyBatis, command, expression and template
+    injection, deserialization (Java serialization, XMLDecoder, XStream,
+    Jackson, SnakeYAML, Fastjson), XXE per parser, LDAP, XPath, SSRF, path
+    traversal, uploads, Zip Slip, open redirect, XSS, crypto, TLS, Spring
+    Security, JWT, cookies, JNDI / Log4j, reflection, ReDoS, and Spring Boot
+    `application*.yml` / `bootstrap*.yml` settings (6 of the 78).
+  - Go 50 (10): SQL (database/sql, sqlx, gorm, pgx), commands, path
+    traversal, Zip Slip, SSRF, open redirect, `html/template` bypasses and
+    response XSS, weak crypto and random, TLS, SSH host keys, JWT, bcrypt
+    cost, server timeouts, pprof, CORS, cookies, decompression bombs.
+  - C# 57 (10): 49 for `.cs` and Razor views (`.cshtml`, `.razor`) covering
+    SQL with EF Core and Dapper, commands, LDAP, XPath, deserialization, XXE,
+    crypto, TLS, JWT, CORS, cookies, redirects, XSS and Zip Slip, plus 8 for
+    .NET configuration (`web.config` / `*.config`, `appsettings*.json`).
+  - Rust 38 (new source language, `.rs`): SQL (sqlx, diesel, rusqlite,
+    tokio-postgres, sea-orm), shell commands, path traversal, Zip and tar
+    slip, TLS verification, weak hashes and ciphers, constant nonces,
+    predictable RNG for secrets, hard-coded keys, jsonwebtoken misuse,
+    bcrypt cost, unsafe memory APIs, CORS, cookies, open redirects, HTML
+    built with `format!`, unbounded reads and allocations.
+  - C / C++ 46 (9): format strings, unbounded copies, `argv` / `getenv` into
+    commands, `realloc` misuse, temporary files, unchecked `setuid`,
+    `chroot`, `umask(0)`, weak ciphers and legacy TLS in OpenSSL, libcurl
+    verification off, credential arrays.
+  - Dockerfile 13 (4), Compose 10 (2), Kubernetes 26 (7), Terraform 35 (5;
+    AWS, Azure, GCP), GitHub Actions 18 (4).
+  - Agent configuration, prompt injection and supply chain 38 (10):
+    permission bypass in Claude Code, Codex (`.codex/config.toml`), Cursor
+    CLI, VS Code / Copilot, Gemini CLI, OpenCode, Zed and Aider settings;
+    hooks that exfiltrate credentials or persist; MCP servers from git,
+    privileged containers, cleartext URLs, filesystem roots; hidden Unicode,
+    hidden HTML comments, concealment, credential reads and
+    decode-and-execute in instruction files; unrestricted tools in skills
+    and agents.
+  - Dependency hygiene 11 (3): plain-HTTP and extra package indexes,
+    `--trusted-host`, npm over HTTP and git sources, registry tokens, Go
+    checksum database off, install scripts that download.
+- **Opengrep rules: 20 → 47**, 37 of them taint rules that follow request
+  data to a sink inside one file: Python 13 (11 taint; new: XSS, NoSQL,
+  LDAP), JavaScript / TypeScript 8 (7), Java 7 (6), Go 7 (7), C# 6 (5), C 4
+  (1), Rust 2 (commands and SQL built with `format!` across lines). Every
+  bundled Opengrep rule was executed with Opengrep 1.33.1 on Linux during
+  development.
 - **C-family lexer:** Java, JavaScript/TypeScript, Go, C/C++ and Rust are now
   matched on statements, like Python and C# (one shared lexer,
   `packages/core/src/lexers/clike.ts`, with each language's string and
@@ -20,15 +90,25 @@ Before 1.0, minor versions may contain breaking changes.
   whole and reported on the line where the match starts. `codeOnly` works
   for these languages, and a `code-audit:ignore` text inside a string
   literal no longer suppresses anything. The lexer fails open with a
-  "<language> lexer fallback" warning. C# goes through the same lexer with
-  unchanged results.
+  "<language> lexer fallback" warning. C# goes through the same lexer.
   The Rust API-call rules set `codeOnly`; `js-cookie-insecure` now sees a
   `cookie: { ... secure: false }` object spread over lines.
-- **Rust test modules:** findings inside `#[cfg(test)] mod name { ... }` are
-  lowered like findings in a test path (`pathContext: test`).
+- **XML and Razor:** `<!-- -->` and `@* *@` comments are blanked, and an XML
+  start tag spread over several lines is one unit.
 - **Dockerfiles:** an instruction continued with `\` is one unit (so
   `curl ... \` / `| sh` is found) and comment lines are skipped.
-
+- **Rust test modules:** findings inside `#[cfg(test)] mod name { ... }` are
+  lowered like findings in a test path (`pathContext: test`).
+- **New recognised file types** (rule languages, coverage and LOC): `razor`
+  (`.cshtml`, `.razor`), `xml` (`*.xml`, .NET `*.config`), `toml`, `ini`
+  (`*.ini`, `*.cfg`, `.npmrc`, `.yarnrc`, `.pypirc`, `pip.conf`),
+  `properties`, `shell` (`.sh`, `.bash`, `.zsh`, `.ksh`), `template` (`.html`,
+  `.htm`, `.jinja`, `.jinja2`, `.j2`, `.njk`, `.twig`, `.vue`, `.svelte`,
+  `.ejs`, `.hbs`, `.handlebars`, `.mustache`), `requirements` (pip
+  requirement and constraint files), and Cursor `.mdc`, `.cursorrules`,
+  `.windsurfrules`, `.clinerules` and `.rules` as Markdown. No built-in rule
+  targets `template` or `properties` files yet; they are read by secret
+  detection like every text file.
 - **Rust dependencies:** `Cargo.lock` is checked against OSV.dev (ecosystem
   `crates.io`). The sibling `Cargo.toml` and the workspace members it lists
   mark crates as direct and give their scope (`[dependencies]` and
@@ -40,6 +120,97 @@ Before 1.0, minor versions may contain breaking changes.
   workspace member's `Cargo.toml` no longer reports a missing lockfile when
   the workspace has one. Fixed versions of crates.io advisories are ordered by
   SemVer.
+- **.NET dependencies:** NuGet `PackageReference` items in `*.csproj`,
+  `*.fsproj` and `*.vbproj`, the nearest `Directory.Build.props` /
+  `Directory.Build.targets`, Central Package Management versions from
+  `Directory.Packages.props` (with `GetPathOfFileAbove` and relative
+  imports, `VersionOverride`), literal MSBuild properties and
+  `packages.config` are checked against OSV.dev. Conditional declarations
+  contribute every candidate version. Only exact versions are queried;
+  version ranges, floating versions and unresolved properties are counted in
+  one warning per file. A project's own `packages.lock.json` takes
+  precedence and now gives direct / transitive from its `Direct` /
+  `Transitive` entries, each package counted once across target frameworks.
+  XML is read by a small bounded scanner without DTD or entity expansion.
+- **Literal prefilter:** when the rules are loaded, each rule gets the
+  literals that every match must contain, and a rule none of whose literals
+  occurs in a file is not run on it, which reduces the time the larger
+  rule set takes per file; results are identical with and without it
+  (checked by a test over every rule, every fixture line and adversarial
+  variants). See "Literal prefilter" in `docs/rules.md`.
+
+### Changed
+
+- **Inline suppression:** a `code-audit:ignore` comment counts on any line of
+  a multi-line statement, or on a line of its own right before it; a
+  trailing comment after code belongs to its own line, not to the statement
+  below. When the group winner for an expression is suppressed, the
+  next-best rule of the group does not surface in its place; an ignore that
+  names only a lower-ranked rule does not suppress a higher-ranked hit. In
+  the C-family languages only real comments count. See `docs/rules.md`.
+- **Redaction:** `withinKeys` rules with `redactEvidence` mask their match on
+  the value's lines (the whole line when the text is not written there as
+  matched). Setting words (`http_tokens = "optional"`, `secrets: inherit`),
+  algorithm names, dotted class paths, a flag that follows a secret-like
+  flag, and non-secret keys inside weakly secret-like sections
+  (`"AuthServer": {`, `jwt:`) stay readable; a PEM private-key block is
+  masked up to its END marker or the first line that cannot be key
+  material, at most 400 lines. See `docs/security-model.md`.
+- `withinKeys` also works for JSON rules and compares keys
+  case-sensitively; rule `pathInclude` / `pathExclude` filters match
+  case-insensitively (`WEB.CONFIG`, `AppSettings.json`).
+- **Path context:** `compiled/` and `public/lib/`, `public/libraries/`,
+  `public/vendor/` are vendored; `test-*/` directories, Rust `benches/`,
+  `fuzz/`, `*_test.rs` and `tests.rs`, and `*_test.*.ts` / `.js` files are
+  test code.
+- Cargo's `src/bin/` is scanned; other `bin/` directories stay excluded by
+  default.
+- Existing rules that changed classification: `dockerfile-curl-sh` high
+  (was critical); `dockerfile-latest-tag` and `k8s-image-latest-tag` low;
+  `gha-pull-request-target`, `go-weak-hash`, `go-ssrf` and
+  `agent-mcp-unpinned-npx` are hotspots; `java-sql-injection`,
+  `java-command-injection` and `cs-command-injection` high (were critical);
+  `cpp-path-traversal` medium / low confidence; confidence changes for
+  `dockerfile-no-user`, `agent-disable-permissions`, `go-command-injection`,
+  `go-weak-random`, `go-tls-disabled`, `js-sql-injection`,
+  `js-command-injection`, `js-path-traversal`, `js-ssrf`,
+  `js-tls-disabled`, `cpp-strcpy`, `cpp-gets`, `cpp-sprintf` and
+  `cs-insecure-deserialization`. Request-data variants such as
+  `js-command-injection-request` and `js-code-injection-request` report the
+  clear cases at critical.
+- Kubernetes rules apply to any YAML with `apiVersion` or `securityContext`
+  (not only `k8s/` folders), Terraform rules to every `.tf` / `.tfvars`
+  file, Compose rules to every compose file name.
+
+### Fixed
+
+- Precision fixes from review on public repositories in every language,
+  among them: JavaScript `RegExp.prototype.exec` and `query.exec()` are not
+  subprocesses; minified files (lines of 1000+ characters) are skipped by
+  the JavaScript rules; Python `str.find` is not a Mongo call; Polly / LINQ
+  lambdas are not C# SQL; constants and later arguments do not make Java SQL
+  or command concatenation; Go request data must be in the URL or path
+  argument, not in a body; Rust `format!` SQL needs a value interpolation;
+  CloudFormation `Resources:` is not Kubernetes RBAC `resources:`; a bare
+  `path: /` probe is not a `hostPath` mount; GitHub Actions trigger gates
+  read the `on:` declaration, not the word.
+- A file named `dockerfile.<ext>` with a known extension (`dockerfile.py`)
+  keeps the language of its extension; `Dockerfile.prod` and
+  `api.Dockerfile` stay Dockerfiles.
+- File-level rule conditions test an over-long line in the same windows as
+  rule matching, so a long line no longer switches the Kubernetes gating
+  off.
+- `go-template-injection` and `py-hf-trust-remote-code` no longer take
+  quadratic time on crafted input.
+
+### Known limits
+
+See "Limits" in the README and `docs/security-model.md`. In short: pattern
+rules do not follow data across statements or files; C-family lexers fail
+open to line matching; Terraform is matched line by line; HTML templates,
+Vue / Svelte `<script>` blocks and `.properties` files have no rules; NuGet
+projects without `packages.lock.json` are checked for direct references
+only; Semgrep has never been executed in testing; Windows is untested.
 
 ## [0.2.0] - 2026-11-27
 
@@ -160,5 +331,6 @@ See "Limits" in the README, `docs/security-model.md`, `docs/M4_REPORT.md` and
 statements or files; Semgrep has never been executed in testing; Windows is
 untested.
 
-[Unreleased]: https://github.com/oliver-zhao/code-audit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/oliver-zhao/code-audit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/oliver-zhao/code-audit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/oliver-zhao/code-audit/releases/tag/v0.2.0

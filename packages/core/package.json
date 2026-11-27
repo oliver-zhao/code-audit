@@ -1,6 +1,6 @@
 {
   "name": "@code-audit/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "code-audit engine: inventory, built-in rules, secret detection, dependency advisories (OSV), findings, baseline and Markdown/JSON/SARIF reports",
   "keywords": [
     "security",
