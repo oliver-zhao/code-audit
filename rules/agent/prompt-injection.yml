@@ -12,15 +12,18 @@ version: 1
 # Not covered: .cursorrules, .windsurfrules and Cursor .mdc rules have no
 # language in the inventory and are not read by the rule engine.
 definitions:
-  INSTR: '(?:^|/)(?:AGENTS?|SKILL|CLAUDE|GEMINI)[\w.-]*\.md$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|dsh)/.+\.md$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
-  NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|won\x27t|cannot|can\x27t|avoid|refuse|prevent\w*|block\w*|detect\w*|flag\w*|report\w*|reject\w*)\b'
+  INSTR: '(?:^|/)(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|AGENT|GEMINI|SKILL|QWEN|CRUSH|WARP)\.md$|(?:^|/)(?:\.cursorrules|\.windsurfrules|\.clinerules|\.rules)$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|qwen|dsh|amazonq|augment|trae)/.+\.mdc?$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
+  NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|won\x27t|cannot|can\x27t|avoid|refuse)\b'
   # Words that introduce a description or a quotation rather than a command.
-  DISCUSS: '\b(?:such\s+as|e\.g\.|for\s+example|like|phrases?|patterns?|attacks?|attackers?|injections?|attempts?|payloads?|malicious|watch\s+for|beware|treat|contain\w*|says?|saying|text|strings?|tells?\s+you\s+to|asks?\s+(?:you\s+)?to|tries\s+to|trying\s+to|could|might|may|would|if\s+(?:a|the|any)\b)\b'
-  QUOTE: '["\x27\x60“‘«]'
-  IGNORE_PHRASE: '\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:(?:of\s+)?(?:the|your|my)\s+)?(?:previous|prior|above|preceding|earlier|original|system)\s+(?:instructions?|prompts?|rules|directives|guidelines)\b'
+  DISCUSS: '(?:\bsuch\s+as|\be\.g\.|\bfor\s+example|\bphrases?|\bpatterns?|\battacks?|\binjections?|\bpayloads?|\bmalicious|\bwatch\s+(?:out\s+)?for|\bbeware\s+of|\bsays?|\bsaying|\bstrings?|\btells?\s+you\s+to|\basks?\s+(?:you\s+)?to|\btries\s+to|\btrying\s+to|\battempts?\s+to|\battackers?)(?![A-Za-z])[\s:,(]{0,4}'
+  QUOTE: '[\"\x27\x60“‘«]'
+  IGNORE_PHRASE: '(?<![A-Za-z])[*_]{0,3}(?:ignore|disregard|forget)[*_]{0,3}\s+(?:[*_]{0,3}(?:all|any|of|the|your|my|these|those)[*_]{0,3}\s+){0,3}[*_]{0,3}(?:previous|prior|above|preceding|earlier|original|system|initial)[*_]{0,3}\s+[*_]{0,3}(?:instructions?|prompts?|rules|directives|directions|guidelines|guidance|context|messages?)(?![A-Za-z])|(?<![A-Za-z])override\s+(?:(?:all|any|the|your|my)\s+){0,2}(?:previous|prior|above|preceding|earlier)\s+(?:instructions?|prompts?|rules|directives|directions|guidelines)(?![A-Za-z])|(?<![A-Za-z])[*_]{0,3}(?:ignore|disregard|forget)[*_]{0,3}\s+(?:all\s+(?:of\s+)?)?everything\s+(?:above|before\s+this|(?:you\s+(?:were|have\s+been)\s+)?(?:told|given|instructed)|(?:I|we)\s+(?:said|told\s+you))|^\s*(?:#{1,6}\s*)?[*_]{0,3}new\s+system\s+prompt[*_]{0,3}\s*:'
   # Well-known vendor installers that are documented as curl | sh.
-  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|mise\.run)'
+  KNOWN_INSTALLER: 'https://(?:sh\.rustup\.rs|astral\.sh/|get\.docker\.com|raw\.githubusercontent\.com/(?:Homebrew|nvm-sh)/|deno\.land/|bun\.sh/|get\.pnpm\.io|install\.python-poetry\.org|ollama\.com/install|foundry\.paradigm\.xyz|get\.helm\.sh|tailscale\.com/install|fly\.io/install|cli\.github\.com|sdk\.cloud\.google\.com|pyenv\.run|get\.sdkman\.io|starship\.rs/install|install\.determinate\.systems|nixos\.org/nix/install|claude\.ai/install|opencode\.ai/install|chatgpt\.com/codex/install\.sh|zed\.dev/install\.sh|mise\.run)'
   SEND_VERB: '\b(?:send|upload|post|exfiltrate|transmit|forward|email|leak|pipe)\b'
+  # Downloaded code executed (shell or interpreter); a URL or variable must be named.
+  REMOTE_EXEC_DOC: '\b(?:curl|wget)\b[^|\n]{0,300}?(?:https?://|\$\{?\w)[^|\n]{0,300}(?<!\\)\|\s*(?:sudo\s+(?:-\S+\s+)?)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\b(?!\s+-[ceE]\b)|\b(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+(?:-\S+\s+)?<\(\s*(?:curl|wget)\b|\b(?:ba|z|da)?sh\s+-c\s+\\?[\"\x27]?\$\(\s*(?:curl|wget)\b|\b(?:curl|wget)\b[^\n]{0,300}?\s(?:-o|-O|--output|--output-document)[=\s]{0,3}[\"\x27]?[^\s\"\x27;&|]{1,200}[^\n]{0,40}?(?:&&|;)\s*(?:chmod\s+\+x\s+\S{1,200}\s*(?:&&|;)\s*)?(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[23]?(?:\.\d+)?|node|perl|ruby|php)\s+[\"\x27]?[\w./~$]|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*(?:iex|Invoke-Expression)\b'
+  W: '(?:[\w\x27]+\s+)'
 rules:
   - id: prompt-injection-ignore
     title: Prompt-injection instruction in repository documentation
@@ -32,7 +35,7 @@ rules:
     languages:
       - markdown
     pattern: '{{IGNORE_PHRASE}}'
-    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:ignore|disregard|forget|override)\s|{{DISCUSS}}[^\n]{0,60}?{{IGNORE_PHRASE}}|{{NEG}}\s+(?:\w+\s+){0,2}(?:ignore|disregard|forget|override)\b'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*[*_]{0,3}(?:ignore|disregard|forget|override)(?![A-Za-z])|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?\s*[*_]{0,3}(?:ignore|disregard|forget|override)(?![A-Za-z])|{{NEG}}\s+{{W}}{0,2}[*_]{0,3}(?:ignore|disregard|forget|override)(?![A-Za-z])'
     pathInclude: '{{INSTR}}'
     message: Instructions in repository docs can manipulate the auditing agent and must be treated as untrusted data.
     message_zh: 代码库文档中的指令可能操纵审计 Agent，应作为不可信数据处理。
@@ -51,7 +54,7 @@ rules:
     languages:
       - markdown
     pattern: '{{SEND_VERB}}\s+(?:(?:all|every|any|the|their|your|its|these|those|of)\s+){0,3}(?:[\w.-]+\s+){0,2}?(?:secrets?|credentials?|api[ _-]?keys?|access[ _-]?tokens?|tokens|passwords?|private[ _-]?keys?|ssh[ _-]?keys?|\.env(?:\s+files?)?|env(?:ironment)?\s+(?:variables|vars)|cookies|session[ _-]?tokens?)\b[^\n]{0,120}?\b(?:to|at|into|via)\s+(?:https?://|ftp://|\S+@\S+\.\w+|(?:the|this|my|our)\s+(?:url|endpoint|server|webhook|address))'
-    notPattern: '{{NEG}}[^\n]{0,60}?{{SEND_VERB}}|{{DISCUSS}}[^\n]{0,40}?{{SEND_VERB}}'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}{{SEND_VERB}}|{{DISCUSS}}{{W}}{0,5}{{SEND_VERB}}'
     pathInclude: '{{INSTR}}'
     message: Documentation asks to send secrets or credentials out, a common prompt-injection and supply-chain pattern.
     message_zh: 文档要求外传密钥或凭据，是典型的提示注入/供应链攻击特征。
@@ -69,8 +72,10 @@ rules:
     owasp: A01:2021
     languages:
       - markdown
-    pattern: '\$\(\s*(?:env|printenv)\s*\)|\b(?:printenv|env)\s*\|\s*(?:curl|wget|nc|base64)\b|\bcurl\b[^\n]{0,200}\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file)\s+["\x27]?(?:[\w-]+=)?@?(?:\.env\b|~/\.|\$HOME/\.)|(?:\benv(?:ironment)?\s+(?:variables|vars)|\.env\b|process\.env|os\.environ)\b[^.\n]{0,60}\b(?:send|upload|post|exfiltrate|transmit|forward|curl)\b[^\n]{0,80}https?://|\b(?:send|upload|post|exfiltrate|transmit|forward)\b[^.\n]{0,60}(?:\benv(?:ironment)?\s+(?:variables|vars)|\.env\b|process\.env|os\.environ)[^\n]{0,80}https?://'
-    notPattern: '{{NEG}}[^\n]{0,60}?(?:send|upload|post|exfiltrat|transmit|forward|curl)|{{DISCUSS}}[^\n]{0,40}?(?:send|upload|post|exfiltrat|transmit|forward)'
+    patterns:
+      - '\$\(\s*(?:env|printenv)\s*\)|\b(?:printenv|env)\s*\|\s*(?:curl|wget|nc|base64)\b|\bcurl\b[^\n]{0,200}\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file)\s+["\x27]?(?:[\w-]+=)?@?(?:\.env\b|~/\.|\$HOME/\.)|(?:\benv(?:ironment)?\s+(?:variables|vars)|\.env\b|process\.env|os\.environ)\b[^.\n]{0,60}\b(?:send|upload|post|exfiltrate|transmit|forward|curl)\b[^\n]{0,80}https?://|\b(?:send|upload|post|exfiltrate|transmit|forward)\b[^.\n]{0,60}(?:\benv(?:ironment)?\s+(?:variables|vars)|\.env\b|process\.env|os\.environ)[^\n]{0,80}https?://|\b(?:curl|wget)\b[^\n]{0,200}?https?://[^\s\"\x27]{0,200}?[?&][\w-]{1,40}=\$\{?\w{0,40}(?:TOKEN|SECRET|KEY|PASSWORD|PASS|CREDENTIALS?)\w{0,40}'
+      - '\b(?:curl|wget|nc|ncat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b|https?://'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:send|upload|post|exfiltrat\w*|transmit|forward|curl)\b|{{DISCUSS}}{{W}}{0,5}(?:send|upload|post|exfiltrat\w*|transmit|forward)\b'
     pathInclude: '{{INSTR}}'
     message: Documentation asks to send environment variables or secrets out, a common prompt-injection and supply-chain pattern.
     message_zh: 文档要求外传环境变量或密钥，是典型的提示注入/供应链攻击特征。
@@ -91,9 +96,11 @@ rules:
     flags: ''
     # Unicode tag characters (U+E0000-E007F, as surrogate pairs) except inside
     # a subdivision flag emoji; bidi embedding/override/isolate controls; and
-    # runs of three or more zero-width characters. A single zero-width joiner
+    # runs of three or more zero-width characters; runs of two or more
+    # variation selectors (U+FE00-FE0F, U+E0100-E01EF), which an emoji never
+    # has. A single zero-width joiner
     # (emoji sequences) or non-joiner (Persian text) is not matched.
-    pattern: '(?<!🏴(?:\uDB40[\uDC00-\uDC7F]){0,8})\uDB40[\uDC00-\uDC7F](?:\uDB40[\uDC00-\uDC7F])+|[‪-‮⁦-⁩]|[​‌‍⁠⁡⁢⁣⁤﻿]{3,}'
+    pattern: '(?<!\uD83C\uDFF4(?:\uDB40[\uDC00-\uDC7F]){0,8})\uDB40[\uDC00-\uDC7F](?:\uDB40[\uDC00-\uDC7F])+|[\u202A-\u202E\u2066-\u2069]|[\u200B\u200C\u200D\u2060\u2061\u2062\u2063\u2064\uFEFF]{3,}|(?:[\uFE00-\uFE0F]|\uDB40[\uDD00-\uDDEF]){2,}'
     pathInclude: '{{INSTR}}'
     message: The file contains characters that editors and diffs do not show but the model reads (ASCII smuggling with tag characters, bidi overrides, zero-width encodings), a known way to hide instructions from reviewers.
     message_zh: 文件包含编辑器和 diff 不显示、但模型会读取的字符（标签字符 ASCII 走私、双向覆盖、零宽编码），这是向审阅者隐藏指令的已知手法。
@@ -107,7 +114,7 @@ rules:
     cwe: CWE-94
     owasp: A03:2021
     languages: [markdown]
-    pattern: '<!--(?:(?!-->)[^\n]){0,400}?(?:\b(?:ignore|disregard|forget)\s+(?:\w+\s+){0,3}(?:instructions?|rules|prompts?)\b|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|mention|reveal|show)\b|\bwithout\s+(?:telling|informing|asking|notifying)\b|\b(?:AI|assistant|agent|model|LLM|Claude|Copilot|Cursor|Codex|Gemini)\b[,:]?\s+(?:you\s+)?(?:must|should|need\s+to|have\s+to|will|please)\s+(?:now\s+|also\s+|first\s+|always\s+)?(?:run|execute|send|upload|read|fetch|download|install|curl|delete|remove|add|insert|include|call|open|post)\b|\b(?:run|execute)\s+(?:the\s+following|this)\s+(?:command|script)\b|\bcurl\s|\bwget\s)'
+    pattern: '<!--(?:(?!-->)[^\n]){0,400}?(?:\b(?:ignore|disregard|forget)\s+(?:\w+\s+){0,3}(?:instructions?|rules|prompts?)\b|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|mention|reveal|show)\s+(?:(?:this|it|that|anything)\s+)?(?:to\s+)?(?:the\s+)?(?:user|human|developer|reviewer|maintainer)s?\b|\bwithout\s+(?:telling|informing|asking|notifying)\b|\b(?:AI|assistant|agent|model|LLM|Claude|Copilot|Cursor|Codex|Gemini)\b[,:]?\s+(?:you\s+)?(?:must|should|need\s+to|have\s+to|will|please)\s+(?:now\s+|also\s+|first\s+|always\s+)?(?:run|execute|send|upload|read|fetch|download|install|curl|delete|remove|add|insert|include|call|open|post)\b|\b(?:run|execute)\s+(?:the\s+following|this)\s+(?:command|script)\b|\b(?:curl|wget)\s[^\n]{0,200}?https?://)'
     pathInclude: '{{INSTR}}'
     message: An HTML comment is invisible in rendered Markdown but the agent reads it, and this one addresses the agent with an instruction.
     message_zh: HTML 注释在渲染后的 Markdown 中不可见，但 Agent 会读取；该注释包含给 Agent 的指令。
@@ -121,8 +128,8 @@ rules:
     cwe: CWE-94
     owasp: A03:2021
     languages: [markdown]
-    pattern: '\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert|warn|show)\s+(?:the\s+)?(?:user|human|developer|operator)\s+(?:about\s+(?:this|these|the)\s+(?:step|instruction|change|command|request|action|file)s?|what\s+you(?:\x27re|\s+are|\s+have)?\s+(?:doing|done|did|run|ran)|that\s+you\s+(?:ran|run|executed|sent|uploaded|read|accessed|modified|installed|downloaded))\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|developer)\b|\b(?:hide|conceal)\s+(?:this|it|these\s+\w+|the\s+\w+|your\s+\w+)\s+from\s+(?:the\s+)?(?:user|human|developer|reviewer)s?\b|\b(?:silently|secretly|covertly)\s+(?:run|execute|send|upload|install|download|curl|post|exfiltrate|copy|read|insert|modify|delete)\b'
-    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}[^\n]{0,80}?\bwithout\s+(?:telling|informing|notifying|alerting)|{{DISCUSS}}[^\n]{0,40}?(?:tell|inform|hide|conceal|silently|secretly|covertly|without)'
+    pattern: '\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert|warn|show)\s+(?:the\s+)?(?:user|human|developer|operator)\s+(?:about\s+(?:this|these|the)\s+(?:step|instruction|change|command|request|action|file)s?|what\s+you(?:\x27re|\s+are|\s+have)?\s+(?:doing|done|did|run|ran)|that\s+you\s+(?:ran|run|executed|sent|uploaded|read|accessed|modified|installed|downloaded))\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|disclose|report|show)\s+(?:this|these|it|that|anything)(?:\s+(?:step|change|command|action|instruction|file|request)s?)?\s+to\s+(?:the\s+)?(?:user|human|developer|reviewer)s?\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|developer)\b|\b(?:hide|conceal)\s+(?:this|it|these\s+\w+|the\s+\w+|your\s+\w+)\s+from\s+(?:the\s+)?(?:user|human|developer|reviewer)s?\b|(?:^\s*|[.!:;,]\s+)(?:[-*>]\s+|\d+[.)]\s+)?(?:then\s+|also\s+|first\s+|now\s+|please\s+)?(?:silently|secretly|covertly|quietly)\s+(?:run|execute|send|upload|install|download|curl|post|exfiltrate|copy|read|insert|modify|delete|add)\b|\b(?:silently|secretly|covertly|quietly)\s+(?:send|upload|post|exfiltrate|curl|copy|read|collect)\s+[^\n]{0,60}?(?:secrets?|tokens?|credentials?|\.env|keys?|passwords?|ssh|cookies)\b'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}\s+{{W}}{0,4}without\s+(?:telling|informing|notifying|alerting)|{{DISCUSS}}{{W}}{0,3}(?:tell|inform|hide|conceal|silently|secretly|covertly|quietly|without|do\s+not|don\x27t|never)\b'
     pathInclude: '{{INSTR}}'
     message: The file tells the agent to keep its actions from the user, which only serves an attacker who planted the instruction.
     message_zh: 该文件要求 Agent 对用户隐瞒其操作，这只对植入该指令的攻击者有利。
@@ -136,8 +143,8 @@ rules:
     cwe: CWE-94
     owasp: A03:2021
     languages: [markdown]
-    pattern: '\b(?:disable|turn\s+off|bypass|circumvent|ignore|skip|deactivate)\s+(?:(?:all|any|the|your|every)\s+){0,2}(?:safety|security|content|permission|approval|confirmation)\s+(?:checks?|guardrails?|filters?|restrictions?|guidelines|policies|prompts?|measures|protections?|rules|dialogs?)\b|\byou\s+are\s+(?:now\s+)?(?:in\s+)?(?:DAN|developer\s+mode|god\s+mode|jailbreak\s+mode|unrestricted\s+mode|jailbroken)\b|\byou\s+(?:have|has)\s+no\s+(?:restrictions|limitations|guardrails|safety\s+guidelines)\b'
-    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}\s+(?:\w+\s+){0,3}(?:disable|turn\s+off|bypass|circumvent|ignore|skip|deactivate)\b|{{DISCUSS}}[^\n]{0,40}?(?:disable|turn\s+off|bypass|circumvent|ignore|skip|deactivate|you\s+are|you\s+have)|\b(?:if|unless|when)\s+(?:you\s+)?(?:need|must|have)\s+to\b'
+    pattern: '(?:^\s*|[.!:;,]\s+)(?:[-*>]\s+|\d+[.)]\s+)?(?:please\s+|now\s+|always\s+|you\s+(?:must|should)\s+)?(?:disable|turn\s+off|bypass|circumvent|ignore|deactivate)\s+(?:(?:all|any|the|your|every)\s+){0,2}(?:safety|security|permission)\s+(?:checks?|guardrails?|filters?|restrictions?|guidelines|policies|measures|protections?|rules|controls)\b|\byou\s+are\s+(?:now\s+)?(?:in\s+)?(?:DAN|developer\s+mode|god\s+mode|jailbreak\s+mode|unrestricted\s+mode|jailbroken)\b|\byou\s+(?:have|has)\s+no\s+(?:restrictions|limitations|guardrails|safety\s+guidelines)\b'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}\s+{{W}}{0,3}(?:disable|turn\s+off|bypass|circumvent|ignore|deactivate)\b|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?\s*(?:disable|turn\s+off|bypass|circumvent|ignore|deactivate|you\s+are|you\s+have)\b'
     pathInclude: '{{INSTR}}'
     group: agent-instr-bypass
     message: The file tells the agent to switch off safety, security or approval checks, a jailbreak pattern that makes later injected instructions effective.
@@ -152,11 +159,11 @@ rules:
     cwe: CWE-200
     owasp: A01:2021
     languages: [markdown]
-    pattern: '\b(?:cat|less|more|head|tail|read|open|print|dump|copy|cp|scp|send|upload|include|base64|attach|exfiltrate|collect|grab|steal|tar\s+-?c\w*|zip\s+-r\w*)\s+(?:-\S+\s+){0,3}(?:(?:the|your|all|every)\s+)?(?:(?:contents?|files?)\s+(?:of|in)\s+)?(?:[\w.-]+\s+)?["\x27\x60]?(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|/home/[\w.-]+|/Users/[\w.-]+|/root)[/\\]\.(?:ssh(?:[/\\](?!authorized_keys|known_hosts)(?:id_\w+|[\w.-]*_key\w*))?(?![\w/\\.-])|aws[/\\]credentials\b|netrc\b|npmrc\b|pypirc\b|git-credentials\b|config[/\\]gh[/\\]hosts\.yml|docker[/\\]config\.json|kube[/\\]config\b|gnupg\b)|\bsecurity\s+find-(?:generic|internet)-password\b'
-    notPattern: '{{NEG}}[^\n]{0,60}?(?:cat|read|open|print|dump|copy|send|upload|include|access|touch)\b|\b(?:Read|Edit|Write|Bash)\((?:~|\$HOME|/)|\bdeny\b|{{DISCUSS}}[^\n]{0,40}?(?:cat|read|open|print|dump|copy|send|upload)\b'
+    pattern: '\b(?:send|upload|post|exfiltrate|transmit|email|attach|paste|leak|forward)\b[^\n]{0,80}?(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|/home/[\w.-]+|/Users/[\w.-]+|/root)[/\\]\.(?:ssh(?:[/\\](?!authorized_keys|known_hosts)(?:id_\w+|[\w.-]*_key\w*))?(?![\w/\\.-])|aws[/\\]credentials\b|netrc\b|git-credentials\b|config[/\\]gh[/\\]hosts\.yml|docker[/\\]config\.json|kube[/\\]config\b|gnupg\b)|\b(?:cat|base64|tar\s+-?c\w*|zip\s+-r\w*|cp|scp|read)\s+(?:-\S+\s+){0,3}(?:[\w.-]+\s+)?[\"\x27\x60]?(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|/home/[\w.-]+|/Users/[\w.-]+|/root)[/\\]\.(?:ssh(?:[/\\](?!authorized_keys|known_hosts)(?:id_\w+|[\w.-]*_key\w*))?(?![\w/\\.-])|aws[/\\]credentials\b|netrc\b|git-credentials\b|config[/\\]gh[/\\]hosts\.yml|docker[/\\]config\.json|kube[/\\]config\b|gnupg\b)[^\n]{0,100}?(?:\||\b(?:and|then)\s+(?:send|upload|post|include|paste|copy|attach|curl|email|add|put|commit|write)\b|\b(?:into|to)\s+(?:the\s+|a\s+)?(?:commit|message|pr|pull\s+request|issue|comment|response|output|url|webhook|gist)\b)|\bsecurity\s+find-(?:generic|internet)-password\b[^\n]{0,120}(?:\||\b(?:and|then)\s+(?:send|upload|post|curl)\b)'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:cat|read|open|print|dump|copy|send|upload|include|access|touch|paste|attach)\b|\b(?:Read|Edit|Write|Bash)\((?:~|\$HOME|/)|\bdeny\b|{{DISCUSS}}{{W}}{0,3}(?:cat|read|send|upload|paste)\b'
     pathInclude: '{{INSTR}}'
-    message: The file tells the agent to read SSH keys, cloud or registry credentials, or the keychain, which an agent has no reason to do for a coding task.
-    message_zh: 该文件要求 Agent 读取 SSH 密钥、云或注册表凭据或钥匙串，编码任务没有理由这样做。
+    message: The file tells the agent to read SSH keys, cloud or git credentials, or the keychain and pass them on (pipe, send, paste into a commit or message), which an agent has no reason to do for a coding task.
+    message_zh: 该文件要求 Agent 读取 SSH 密钥、云或 git 凭据或钥匙串并将其传出（管道、发送、粘贴到提交或消息中），编码任务没有理由这样做。
     remediation: Remove the instruction, deny Read on credential paths in the agent settings, and review the file's origin.
     remediation_zh: 删除该指令，在 Agent 配置中拒绝读取凭据路径，并审查文件来源。
   - id: prompt-injection-decode-exec
@@ -168,7 +175,7 @@ rules:
     owasp: A08:2021
     languages: [markdown, json]
     pattern: '\bbase64\s+(?:-d|--decode|-D)\b[^\n]{0,200}?\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:eval|exec)\s*(?:\(\s*)?["\x27]?\$\(\s*(?:echo|printf)\s+\S{1,4000}\s*\|\s*base64\s+(?:-d|--decode|-D)|\bexec\s*\(\s*(?:base64\.b64decode|__import__\(\s*["\x27]base64)|\bdecode\b[^.\n]{0,60}\bbase64\b[^.\n]{0,60}\b(?:and|then)\s+(?:execute|run|eval|follow|obey)\b|\bbase64\b[^.\n]{0,60}\bdecode\b[^.\n]{0,40}\b(?:and|then)\s+(?:execute|run|eval|follow|obey)\b'
-    notPattern: '{{NEG}}[^\n]{0,60}?(?:decode|eval|exec|base64)|{{DISCUSS}}[^\n]{0,40}?(?:decode|eval|exec|base64)'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:decode|eval|exec|base64|run|execute)\b|{{DISCUSS}}{{W}}{0,3}(?:decode|eval|exec|base64|echo)\b'
     pathInclude: '{{INSTR}}|(?:^|/)(?:\.mcp\.json|mcp\.json|opencode\.jsonc?|hooks?\.json)$|(?:^|/)\.(?:claude|gemini|cursor)/settings(?:\.local)?\.json$'
     message: An encoded payload is decoded and executed (or the agent is told to decode and follow it), which hides what actually runs from review.
     message_zh: 编码载荷被解码并执行（或要求 Agent 解码后照做），这会向审阅者隐藏实际运行的内容。
@@ -183,7 +190,7 @@ rules:
     owasp: A01:2021
     languages: [markdown]
     pattern: '\b(?:always|automatically|auto-?)\s*(?:approve|accept|allow|confirm|say\s+yes\s+to)\s+(?:all|every|any)\s+(?:\w+\s+)?(?:tools?|tool\s+calls?|commands?|permissions?(?:\s+requests?)?|permission\s+prompts?|shell\s+commands?)\b|\b(?:run|execute)\s+(?:all\s+|any\s+)?(?:shell\s+|terminal\s+|bash\s+)?commands?\s+without\s+(?:asking|confirmation|approval|permission|prompting)\b|\b(?:never|do\s+not|don\x27t)\s+ask\s+(?:the\s+user\s+)?(?:for\s+)?(?:permission|confirmation|approval)\s+(?:before|to)\s+(?:run|execut|install|delet|push|deploy|download)'
-    notPattern: '\b(?:never|not|don\x27t|do\s+not|avoid)\s+(?:\w+\s+){0,2}(?:auto-?approv|always\s+(?:approve|accept|allow)|run|execute)\b|{{DISCUSS}}[^\n]{0,40}?(?:approve|accept|allow|run|execute|ask)'
+    notPattern: '{{NEG}}\s+{{W}}{0,2}(?:auto-?approv\w*|always\s+(?:approve|accept|allow)|run|execute)\b|{{DISCUSS}}{{W}}{0,3}(?:approve|accept|allow|run|execute|auto-?approv\w*|always)\b'
     pathInclude: '{{INSTR}}'
     message: The file tells the agent to skip the user's approval for tools or commands, so anything injected later runs unattended.
     message_zh: 该文件要求 Agent 跳过用户对工具或命令的审批，之后注入的任何内容都会无人值守地运行。
@@ -212,7 +219,7 @@ rules:
     cwe: CWE-829
     owasp: A08:2021
     languages: [markdown]
-    pattern: '\b(?:curl|wget)\b[^|\n]{0,300}?(?:https?://|\$\{?\w)[^|\n]{0,300}\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:ba)?sh\s+<\(\s*(?:curl|wget)\b|\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]{0,300}\|\s*iex\b'
+    pattern: '{{REMOTE_EXEC_DOC}}'
     notPattern: '{{KNOWN_INSTALLER}}'
     pathInclude: '{{INSTR}}'
     message: The agent is told to run a remote script without review; check that the URL is the vendor's official installer and that the step is needed.
