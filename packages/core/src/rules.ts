@@ -481,27 +481,37 @@ export function isSuppressed(
 }
 
 /**
- * Inline suppression of a hit of `ruleId` at line `index` of a logical unit:
- * a `code-audit:ignore` comment on a line of its own right before the unit or
- * the matched line, or on ANY physical line of the unit (a statement
- * that spans lines may carry the comment on its first, last or any other
- * line). Extra units (windows of an over-long line, lexer fallbacks) cover
- * only their own line.
+ * Inline suppression of a hit of `ruleId` whose match starts on line `index`
+ * and whose expression (see `matchSpan`) covers the physical lines
+ * `spanFirst`..`spanLast`:
+ *
+ * - a `code-audit:ignore` comment on any of those lines, on `index`, or on
+ *   the first line of the unit (the statement), so an ignore at the end of
+ *   the first or last line of a multi-line call applies to that call; a
+ *   trailing ignore on one element of a multi-line array or argument list
+ *   does NOT apply to the other elements;
+ * - an ignore on a line of its own (nothing but the comment) right before
+ *   the matched line, the expression or the unit.
  */
 function unitSuppression(
   lines: readonly string[],
   unit: Pick<LogicalLine, "start" | "offsets">,
   index: number,
+  spanFirst: number,
+  spanLast: number,
   ruleId: string,
 ): { suppressed: boolean; reason: string } {
-  const matched = isSuppressed(lines[index] ?? "", lines[index - 1], ruleId);
-  if (matched.suppressed) return matched;
-  const last = unit.start + Math.max(0, unit.offsets.length - 1);
-  for (let line = unit.start - 1; line <= last; line += 1) {
-    if (line < 0 || line === index) continue;
+  // The first line of the statement speaks for the whole statement.
+  const covered = new Set<number>([index, unit.start]);
+  for (let line = spanFirst; line <= spanLast; line += 1) covered.add(line);
+  for (const line of covered) {
+    const parsed = isSuppressed(lines[line] ?? "", undefined, ruleId);
+    if (parsed.suppressed) return parsed;
+  }
+  for (const line of new Set([index - 1, spanFirst - 1, unit.start - 1])) {
+    if (line < 0 || covered.has(line)) continue;
     const text = lines[line] ?? "";
-    // The line before the unit counts only when it holds just the comment.
-    if (line < unit.start && !isCommentOnlyIgnore(text)) continue;
+    if (!isCommentOnlyIgnore(text)) continue;
     const parsed = isSuppressed(text, undefined, ruleId);
     if (parsed.suppressed) return parsed;
   }
@@ -2248,7 +2258,16 @@ export function scanRules(
             },
           };
           if (inlineIgnore) {
-            const suppression = unitSuppression(suppressionText ?? lines, unit, index, rule.id);
+            const spanFirst = unit.start + physicalLineIndex(unit, span.start);
+            const spanLast = unit.start + physicalLineIndex(unit, Math.max(span.start, span.end - 1));
+            const suppression = unitSuppression(
+              suppressionText ?? lines,
+              unit,
+              index,
+              Math.min(spanFirst, index),
+              Math.max(spanLast, index),
+              rule.id,
+            );
             if (suppression.suppressed) hit.suppressedBy = suppression.reason;
           }
           pending.push(hit);

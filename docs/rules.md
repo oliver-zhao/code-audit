@@ -111,12 +111,15 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    is how a specific rule and its API-only fallback avoid double reporting.
 7. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
    suppresses the hit of a named rule (`*` matches any rule) when it is
-   - on the matched line, or on any other physical line of the same unit (a
-     multi-line statement may carry it on its first, last or any other
-     line), or
+   - on the matched line, on the first line of the statement, or on any
+     other physical line of the expression the match belongs to (a
+     multi-line call may carry it on its first, last or any other line; a
+     trailing ignore on one element of a multi-line array or argument list,
+     other than the statement's first line, applies to that element only),
+     or
    - on a line of its own (nothing but the comment) right before the
-     matched line or the unit. A trailing comment after code belongs to its
-     own line, not to the statement below it.
+     matched line, the expression or the unit. A trailing comment after code
+     belongs to its own line, not to the statement below it.
 
    In the C-family languages only real comments count: the same text inside
    a string literal suppresses nothing.

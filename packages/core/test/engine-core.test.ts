@@ -18,7 +18,17 @@ import {
 } from "../src/redact.js";
 import { loadRules, scanRules, type RuleHit, type RuleSet } from "../src/rules.js";
 import { scanSecrets } from "../src/secrets.js";
-import { CLEAN, RULES_DIR, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
+import { scanProject } from "../src/scan.js";
+import { redactText } from "../src/redact.js";
+import {
+  CLEAN,
+  RULES_DIR,
+  VULNERABLE,
+  cleanup,
+  makeTempDir,
+  readAllOutputFiles,
+  writeFile,
+} from "./helpers.js";
 
 const temp = makeTempDir("engine-core");
 afterAll(() => cleanup(temp));
@@ -426,5 +436,136 @@ describe("redaction", () => {
     // No END marker: the body is still masked, the code after it is not.
     const truncated = ["-----BEGIN RSA PRIVATE KEY-----", "Proc-Type: 4,ENCRYPTED", "", body, `${body.slice(0, 20)}==`, "", "done();"];
     expect([...sensitiveLines(truncated)]).toEqual([0, LINE_MASK_ALL, LINE_MASK_ALL, LINE_MASK_ALL, LINE_MASK_ALL, LINE_MASK_ALL, 0]);
+  });
+});
+
+describe("release review: redaction and suppression regressions", () => {
+  const SECRETS = [
+    "alpha.bravo.Charlie7",
+    "Xk9vLq2mZt7",
+    "lima.mike.November42",
+    "kilo.lima.Mike77",
+    "x.y.Zebra",
+    "Zq8VbN3kLmP0",
+  ];
+
+  it("never exempts the value of a credential name (class path, setting word, flag after flag)", () => {
+    const cases: Array<[string, string | undefined]> = [
+      ['const conn = { password: "alpha.bravo.Charlie7" }; exec("ls " + req.query.d);', "app.js"],
+      ['exec("mysql --user root --password -Xk9vLq2mZt7 " + req.query.db)', "app.js"],
+      ['requests.get(url, auth=("admin","lima.mike.November42"), verify=False)', "app.py"],
+      ["db.password=kilo.lima.Mike77", "application.properties"],
+      ["password: lima.mike.November42", "config.yml"],
+      ['  "Secret": "x.y.Zebra"', "appsettings.json"],
+      ['password = "default"', "app.py"],
+      ['client_secret = "none"', "app.py"],
+    ];
+    for (const [line, file] of cases) {
+      const masked = redactLine(line, { file });
+      for (const secret of [...SECRETS, '"default"', '"none"']) expect(masked, line).not.toContain(secret);
+    }
+    const section = [
+      "{",
+      '  "AuthServer": {',
+      '    "Authority": "https://login.example.com",',
+      '    "Pw": "Zq8VbN3kLmP0",',
+      '    "Password": "x.y.Zebra",',
+      '    "ClientSecret": "alpha.bravo.Charlie7"',
+      "  }",
+      "}",
+    ].join("\n");
+    const text = redactText(section, { file: "appsettings.json" });
+    for (const secret of SECRETS) expect(text).not.toContain(secret);
+    expect(text).toContain("https://login.example.com");
+  });
+
+  it("keeps the readability wins for names that are not credentials", () => {
+    expect(redactLine('  http_tokens = "optional"', { file: "main.tf" })).toBe('  http_tokens = "optional"');
+    expect(redactLine("    secrets: inherit", { file: "ci.yml" })).toBe("    secrets: inherit");
+    expect(redactLine('JWT_ALGORITHM = "HS256"')).toBe('JWT_ALGORITHM = "HS256"');
+    expect(redactLine("gcloud run deploy api --allow-unauthenticated --region us")).toBe(
+      "gcloud run deploy api --allow-unauthenticated --region us",
+    );
+    expect(redactLine('PASSWORD_HASHERS = ["django.contrib.auth.hashers.PBKDF2PasswordHasher"]')).toContain(
+      "PBKDF2PasswordHasher",
+    );
+  });
+
+  it("masks PEM bodies wrapped in comments, quotes, diffs, margins, tables, tags and shell", () => {
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    const wrappings = [
+      `${body}  # line 1`,
+      `> ${body}`,
+      `-${body}`,
+      `    |${body}`,
+      `| ${body} |`,
+      `<l>${body}</l>`,
+      `echo "${body}" >> key.pem`,
+    ];
+    for (const wrapped of wrappings) {
+      const lines = ["-----BEGIN PRIVATE KEY-----", wrapped, wrapped, "-----END PRIVATE KEY-----", "done();"];
+      expect([...sensitiveLines(lines)], wrapped).toEqual([0, LINE_MASK_ALL, LINE_MASK_ALL, LINE_MASK_ALL, 0]);
+      expect(redactText(lines.join("\n"))).not.toContain(body);
+    }
+    // Without an END marker the block still ends at the first line of code.
+    const open = ["-----BEGIN PRIVATE KEY-----", `> ${body}`, "", "const next = compute(1);"];
+    expect([...sensitiveLines(open)]).toEqual([0, LINE_MASK_ALL, LINE_MASK_ALL, 0]);
+  });
+
+  it("writes none of the secrets to findings.json, report.md or results.sarif", async () => {
+    const root = project({
+      "app.js": [
+        'const conn = { password: "alpha.bravo.Charlie7" }; exec("ls " + req.query.d);',
+        'exec("mysql --user root --password -Xk9vLq2mZt7 " + req.query.db);',
+        "",
+      ].join("\n"),
+      "client.py": [
+        "import requests",
+        'requests.get(url, auth=("admin","lima.mike.November42"), verify=False)',
+        "",
+      ].join("\n"),
+      "appsettings.json": [
+        "{",
+        '  "AuthServer": {',
+        '    "Pw": "Zq8VbN3kLmP0",',
+        '    "Secret": "x.y.Zebra"',
+        "  },",
+        '  "DetailedErrors": true',
+        "}",
+        "",
+      ].join("\n"),
+    });
+    const out = path.join(temp, `out-${counter}`);
+    await scanProject({ root, out, offline: true, engines: ["builtin"], formats: ["md", "json", "sarif"] });
+    const output = readAllOutputFiles(out);
+    expect(output).toContain("js-command-injection-request");
+    expect(output).toContain("py-tls-disabled");
+    for (const secret of ["alpha.bravo.Charlie7", "Xk9vLq2mZt7", "lima.mike.November42", "Zq8VbN3kLmP0", "x.y.Zebra"]) {
+      expect(output, secret).not.toContain(secret);
+    }
+  });
+
+  it("applies a trailing ignore on one element of a multi-line array to that element only", () => {
+    const root = project({
+      "jobs.js": [
+        'const { exec } = require("child_process");',
+        'app.get("/x", async (req, res) => {',
+        "  await Promise.all([",
+        '    run(exec("ping " + req.query.a)), // code-audit:ignore js-command-injection-request -- reviewed',
+        '    run(exec("ping " + req.query.b)),',
+        '    run(exec("ping " + req.query.c)),',
+        "  ]);",
+        "});",
+        "",
+      ].join("\n"),
+    });
+    const result = scanRules(inventory(root).files, ruleSet);
+    const exec = (list: Array<{ ruleId?: string; rule?: { id: string }; line: number }>): number[] =>
+      list
+        .filter((item) => (item.ruleId ?? item.rule?.id) === "js-command-injection-request")
+        .map((item) => item.line)
+        .sort();
+    expect(exec(result.hits)).toEqual([5, 6]);
+    expect(exec(result.suppressed)).toEqual([4]);
   });
 });
