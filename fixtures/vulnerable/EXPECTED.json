@@ -2543,6 +2543,419 @@
       "kind": "finding"
     },
     {
+      "file": "cpp/crypto.c",
+      "line": 8,
+      "ruleId": "cpp-hardcoded-credential",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 9,
+      "ruleId": "cpp-hardcoded-credential",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 19,
+      "ruleId": "cpp-weak-cipher",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 20,
+      "ruleId": "cpp-weak-cipher",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 21,
+      "ruleId": "cpp-ecb-mode",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 22,
+      "ruleId": "cpp-weak-hash",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 23,
+      "ruleId": "cpp-sha1-signature",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 24,
+      "ruleId": "cpp-sha1-signature",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 29,
+      "ruleId": "cpp-ssl-legacy-protocol",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 30,
+      "ruleId": "cpp-ssl-verify-none",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 31,
+      "ruleId": "cpp-ssl-legacy-protocol",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 37,
+      "ruleId": "cpp-curl-tls-verify-disabled",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/crypto.c",
+      "line": 38,
+      "ruleId": "cpp-curl-tls-verify-disabled",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 12,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 14,
+      "ruleId": "cpp-system-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 13,
+      "ruleId": "cpp-cin-char-array",
+      "language": "cpp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 14,
+      "ruleId": "cpp-system-concat",
+      "language": "cpp",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 15,
+      "ruleId": "cpp-format-string-cstr",
+      "language": "cpp",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/modern.cpp",
+      "line": 16,
+      "ruleId": "cpp-auto-ptr",
+      "language": "cpp",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 21,
+      "ruleId": "cpp-strcpy",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 22,
+      "ruleId": "cpp-strcpy-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 23,
+      "ruleId": "cpp-strcpy-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 24,
+      "ruleId": "cpp-sprintf",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 25,
+      "ruleId": "cpp-sprintf-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 26,
+      "ruleId": "cpp-scanf-unbounded-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 29,
+      "ruleId": "cpp-scanf-unbounded-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 36,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 37,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 38,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 39,
+      "ruleId": "cpp-format-string",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 40,
+      "ruleId": "cpp-format-string-err",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 41,
+      "ruleId": "cpp-format-string-err",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 47,
+      "ruleId": "cpp-copy-size-from-source",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 48,
+      "ruleId": "cpp-copy-size-from-source",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 49,
+      "ruleId": "cpp-strncpy-source-length",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 50,
+      "ruleId": "cpp-strncat-full-size",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 51,
+      "ruleId": "cpp-strncpy-no-nul",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 56,
+      "ruleId": "cpp-alloca-dynamic",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 57,
+      "ruleId": "cpp-malloc-multiply",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 58,
+      "ruleId": "cpp-realloc-self-assign",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 14,
+      "ruleId": "cpp-system-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 15,
+      "ruleId": "cpp-system",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 16,
+      "ruleId": "cpp-exec-shell-c",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 17,
+      "ruleId": "cpp-path-traversal",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 18,
+      "ruleId": "cpp-fopen-api",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 28,
+      "ruleId": "cpp-insecure-tempfile",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 29,
+      "ruleId": "cpp-access-toctou",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 39,
+      "ruleId": "cpp-umask-zero",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 40,
+      "ruleId": "cpp-chroot-without-chdir",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 41,
+      "ruleId": "cpp-setuid-unchecked",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 42,
+      "ruleId": "cpp-setuid-unchecked",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 48,
+      "ruleId": "cpp-srand-time",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 50,
+      "ruleId": "cpp-rand-security-value",
+      "language": "c",
+      "kind": "finding"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 52,
+      "ruleId": "cpp-memset-secret",
+      "language": "c",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/win32.cpp",
+      "line": 9,
+      "ruleId": "cpp-createprocess-unquoted",
+      "language": "cpp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/win32.cpp",
+      "line": 10,
+      "ruleId": "cpp-winexec-api",
+      "language": "cpp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/win32.cpp",
+      "line": 11,
+      "ruleId": "cpp-winexec-api",
+      "language": "cpp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/win32.cpp",
+      "line": 12,
+      "ruleId": "cpp-loadlibrary-relative",
+      "language": "cpp",
+      "kind": "hotspot"
+    },
+    {
+      "file": "cpp/win32.cpp",
+      "line": 13,
+      "ruleId": "cpp-isbadptr",
+      "language": "cpp",
+      "kind": "finding"
+    },
+    {
       "file": "api/csharp/Program.cs",
       "line": 10,
       "ruleId": "cs-sql-api",
@@ -3261,6 +3674,66 @@
       "file": "cpp/app.cpp",
       "line": 9,
       "ruleId": "c-opengrep-gets",
+      "confidence": "high"
+    },
+    {
+      "file": "cpp/app.cpp",
+      "line": 11,
+      "ruleId": "c-opengrep-command-from-input",
+      "confidence": "high"
+    },
+    {
+      "file": "cpp/app.cpp",
+      "line": 12,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 12,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/hooks.c",
+      "line": 14,
+      "ruleId": "c-opengrep-command-from-input",
+      "confidence": "high"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 22,
+      "ruleId": "c-opengrep-strcpy",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 36,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 37,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 38,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/strings.c",
+      "line": 39,
+      "ruleId": "c-opengrep-format-string",
+      "confidence": "medium"
+    },
+    {
+      "file": "cpp/system.c",
+      "line": 15,
+      "ruleId": "c-opengrep-command-from-input",
       "confidence": "high"
     },
     {

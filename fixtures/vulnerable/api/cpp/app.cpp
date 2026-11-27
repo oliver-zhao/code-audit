@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void run(void)
+void run(const char *command, const char *path)
 {
-    system("ls -l");
-    FILE *f = fopen("/data/static.txt", "r");
+    system(command);
+    FILE *f = fopen(path, "r");
     (void)f;
 }
