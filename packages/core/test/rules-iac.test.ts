@@ -163,9 +163,22 @@ describe("Dockerfile rules", () => {
     ).toEqual(["Dockerfile:2 dockerfile-secret-env", "Dockerfile:3 dockerfile-secret-env"]);
   });
 
-  it.todo(
-    "sees `curl ... \\` followed by `| sh` on the next line (a RUN continued with a backslash is several lines today)",
-  );
+  it("sees `curl ... \\` followed by `| sh` on the next line, and not in a comment line inside the RUN", () => {
+    expect(
+      scan({
+        Dockerfile: lines(
+          "FROM alpine:3.20",
+          "RUN apk add --no-cache ca-certificates && \\",
+          "    curl -fsSL https://example.invalid/install.sh \\",
+          "    | sh",
+          "RUN echo ok && \\",
+          "    # curl https://example.invalid/i.sh | sh",
+          "    true",
+          "USER app",
+        ),
+      }, /curl-sh/),
+    ).toEqual(["Dockerfile:3 dockerfile-curl-sh"]);
+  });
 });
 
 describe("Compose rules", () => {

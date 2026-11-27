@@ -3,12 +3,12 @@ version: 1
 # checks was used as a checklist only, every pattern here is original.
 #
 # Conventions:
-# - Today the engine matches Go one physical line at a time (comments
-#   included). A C-family lexer will later strip comments and join a call that
-#   spans lines while ( or [ are open, so every pattern below must stay correct
-#   when a unit is several lines long. Gaps are written as [^;\n]{0,N} where a
-#   match must stay within one line, and as [^;]{0,N} where a joined call is
-#   meant to be seen whole (for example the jwt key function).
+# - The engine matches Go on statements (packages/core/src/lexers/clike.ts):
+#   comments are blank and a call that spans lines while ( or [ are open (or
+#   after a trailing `.`) is one unit, its lines joined with "\n". Gaps are
+#   written as [^;\n]{0,N} where a match must stay within one line, and as
+#   [^;]{0,N} where a joined call is meant to be seen whole (for example the
+#   jwt key function). A pattern anchored at a line start needs `flags: im`.
 # - {{REQ}} is an expression that reads attacker-controlled request data:
 #   net/http, gorilla/mux, gin, echo and fiber accessors. A rule that sees
 #   {{REQ}} reach a sink is a high-confidence finding; a rule that only sees
@@ -504,7 +504,10 @@ rules:
     # file also serves that mux (a nil handler) on an address that is not
     # loopback-only.
     filePattern: '\bhttp\.ListenAndServe(?:TLS)?\(\s*(?!"(?:localhost|127\.0\.0\.1|\[::1\]):)[^;\n]{1,200},\s*nil\s*\)'
-    pattern: '^\s*(?:import\s+)?_\s+"net/http/pprof"'
+    # m: the pattern anchors at a line start, and the lexer joins a
+    # statement's lines (an import block, a call's arguments) into one unit.
+    flags: im
+    pattern: '^[ \t]*(?:import\s+)?_\s+"net/http/pprof"'
     message: Importing net/http/pprof exposes /debug/pprof (heap dumps, goroutine stacks, CPU profiles) on the default mux that this program serves.
     message_zh: 导入 net/http/pprof 会在本程序对外服务的默认 mux 上暴露 /debug/pprof（堆转储、goroutine 栈、CPU 剖析）。
     remediation: Serve the application on its own ServeMux and register the pprof handlers only on a separate, local-only listener.
@@ -869,7 +872,10 @@ rules:
     owasp: A06:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '^\s*(?:import\s+)?(?:\w+\s+)?"github\.com/dgrijalva/jwt-go(?:/v\d+)?(?:/[\w/]+)?"'
+    # m: the pattern anchors at a line start, and the lexer joins a
+    # statement's lines (an import block, a call's arguments) into one unit.
+    flags: im
+    pattern: '^[ \t]*(?:import\s+)?(?:\w+\s+)?"github\.com/dgrijalva/jwt-go(?:/v\d+)?(?:/[\w/]+)?"'
     message: github.com/dgrijalva/jwt-go is unmaintained and has an unfixed audience-check bypass (CVE-2020-26160).
     message_zh: github.com/dgrijalva/jwt-go 已停止维护，存在未修复的 audience 校验绕过（CVE-2020-26160）。
     remediation: Migrate to github.com/golang-jwt/jwt/v5.

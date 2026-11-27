@@ -9,6 +9,24 @@ Before 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **C-family lexer:** Java, JavaScript/TypeScript, Go, C/C++ and Rust are now
+  matched on statements, like Python and C# (one shared lexer,
+  `packages/core/src/lexers/clike.ts`, with each language's string and
+  comment syntax: template literals and regex literals, Go raw strings, C++
+  raw strings and directives, Rust raw strings, nested comments and
+  lifetimes). Code in comments is no longer reported; a call split over lines
+  (`sqlx::query(\n &format!(...))`, `executeQuery(\n "..." + id)`) and a
+  method chain (`Command::new("sh")` / `.arg("-c")` / `.arg(cmd)`) are seen
+  whole and reported on the line where the match starts. `codeOnly` works
+  for these languages, and a `code-audit:ignore` text inside a string
+  literal no longer suppresses anything. The lexer fails open with a
+  "<language> lexer fallback" warning. C# goes through the same lexer with
+  unchanged results.
+- **Rust test modules:** findings inside `#[cfg(test)] mod name { ... }` are
+  lowered like findings in a test path (`pathContext: test`).
+- **Dockerfiles:** an instruction continued with `\` is one unit (so
+  `curl ... \` / `| sh` is found) and comment lines are skipped.
+
 - **Rust dependencies:** `Cargo.lock` is checked against OSV.dev (ecosystem
   `crates.io`). The sibling `Cargo.toml` and the workspace members it lists
   mark crates as direct and give their scope (`[dependencies]` and

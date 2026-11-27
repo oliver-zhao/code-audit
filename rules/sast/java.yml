@@ -4,11 +4,10 @@ version: 1
 # Written for code-audit (Apache-2.0).
 #
 # Conventions:
-# - Java files are matched one physical line at a time, comments included. A
-#   C-family lexer that removes comments and joins a statement spanning lines
-#   while ( or [ is open is planned; patterns work on one line today and stay
-#   correct when a call is joined onto one unit. Lambdas and builder chains
-#   that span lines are not joined (a `{` or a closed call ends the unit).
+# - Java files are matched on statements (packages/core/src/lexers/clike.ts):
+#   comments are blank, and a statement spanning lines while ( or [ is open,
+#   or across a line break next to `+` or `.`, is one unit. Lambda bodies are
+#   not joined (a block `{` ends the unit).
 # - Java is case-sensitive, so the rules set `flags: ''` (the engine default
 #   is case-insensitive). SQL keywords are spelled in both cases.
 # - kind/confidence follow docs/rules.md: request data visible in the
@@ -56,8 +55,7 @@ definitions:
   # Escaping helpers that make a concatenated value safe for its context.
   ESCAPED: '(?:[eE]scape\w{0,30}|[eE]ncode\w{0,30}|[sS]anitiz\w{0,30}|ESAPI)\s*\('
   # The first argument of a call is not a single string literal (and not empty).
-  # The argument must start on the same line (a call whose arguments follow
-  # on the next lines is left to the planned statement-joining lexer).
+  # The argument may start on a later line of the joined statement.
   NONLIT: '(?!\s*"[^"\n]{0,300}"\s*\))(?=\s*[\w(])'
   SPRINGCONF: '(?:^|/)(?:application|bootstrap)(?:-[\w.-]{1,60})?\.ya?ml$'
 rules:

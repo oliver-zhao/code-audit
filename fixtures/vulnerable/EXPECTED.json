@@ -5666,17 +5666,17 @@
     },
     {
       "file": "rust/src/exec.rs",
-      "line": 18,
-      "ruleId": "rs-command-shell-api",
+      "line": 19,
+      "ruleId": "rs-command-shell-injection",
       "language": "rust",
-      "kind": "hotspot"
+      "kind": "finding"
     },
     {
       "file": "rust/src/db.rs",
       "line": 38,
-      "ruleId": "rs-sql-built-string",
+      "ruleId": "rs-sql-injection",
       "language": "rust",
-      "kind": "hotspot"
+      "kind": "finding"
     },
     {
       "file": "rust/src/db.rs",
@@ -5687,10 +5687,10 @@
     },
     {
       "file": "rust/src/exec.rs",
-      "line": 25,
-      "ruleId": "rs-command-shell-api",
+      "line": 26,
+      "ruleId": "rs-command-shell-injection",
       "language": "rust",
-      "kind": "hotspot"
+      "kind": "finding"
     },
     {
       "file": "deps/package.json",
@@ -6180,6 +6180,13 @@
       "line": 16,
       "ruleId": "dep-curl-pipe-shell",
       "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "rust/src/exec.rs",
+      "line": 32,
+      "ruleId": "rs-command-shell-api",
+      "language": "rust",
       "kind": "hotspot"
     }
   ],

@@ -270,14 +270,48 @@ describe("Rust rules: safe variants and paths stay silent", () => {
     ).toEqual([]);
   });
 
-  // The engine matches one physical line. rustfmt puts each link of a long
-  // method chain, and each argument of a long call, on its own line; the
-  // planned C-family lexer joins lines only while ( or [ are open.
-  it.todo("rs-command-shell-injection: Command::new(\"sh\") / .arg(\"-c\") / .arg(cmd) on three lines (needs chain joining)");
-  it.todo("rs-sql-injection: sqlx::query(\\n &format!(...)\\n) split over lines (fixed by the lexer joining open brackets)");
+  // rustfmt puts each link of a long method chain, and each argument of a
+  // long call, on its own line; the C-family lexer joins both.
+  it("rs-command-shell-injection: Command::new(\"sh\") / .arg(\"-c\") / .arg(cmd) on three lines", () => {
+    expect(
+      rustHits("src/run.rs", [
+        "pub fn run(cmd: &str) {",
+        '    let out = Command::new("sh")',
+        '        .arg("-c")',
+        "        .arg(cmd)",
+        "        .output();",
+        "}",
+      ]),
+    ).toEqual(["3:rs-command-shell-injection"]);
+  });
+  it("rs-sql-injection: sqlx::query(\\n &format!(...)\\n) split over lines", () => {
+    expect(
+      rustHits("src/db.rs", [
+        "pub async fn find(pool: &PgPool, name: &str) {",
+        "    let rows = sqlx::query(",
+        '        &format!("SELECT * FROM users WHERE name = \'{}\'", name),',
+        "    )",
+        "    .fetch_all(pool)",
+        "    .await;",
+        "}",
+      ]),
+    ).toEqual(["2:rs-sql-injection"]);
+  });
+  it("all rules: no match inside /* */ block comments (also nested) and doc comments", () => {
+    expect(
+      rustHits("src/tls.rs", [
+        "/* let c = reqwest::Client::builder().danger_accept_invalid_certs(true);",
+        "   /* nested */ Command::new(\"sh\").arg(\"-c\").arg(cmd) */",
+        "/// let c = builder.danger_accept_invalid_certs(true);",
+        "fn f() {}",
+      ]),
+    ).toEqual([]);
+  });
+  // String text is blanked in the skeleton; a rule ignores matches there once
+  // it sets `codeOnly: true` (a rule change).
+  it.todo("all rules: no match inside string literals (needs codeOnly on the API rules)");
   it.todo("rs-cors-any-origin-credentials: credentials enabled in another file than the any-origin policy");
   it.todo("rs-path-traversal: Path(name) extractor bound in the signature and used on a later line (needs data flow)");
-  it.todo("all rules: matches inside /* */ block comments and string literals (fixed by the lexer)");
 });
 
 describe("Rust rules: review fixes", () => {

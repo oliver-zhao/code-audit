@@ -32,17 +32,34 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    (`packages/core/src/language.ts`). A rule applies to a file when the
    file's language is in the rule's `languages` and the path passes
    `pathInclude` / `pathExclude`.
-2. The file is split into **units**. For most languages a unit is one
-   physical line. For Python a unit is one *logical line*: a statement that
-   spans several lines (open brackets, backslash continuation) is one unit;
-   comments, docstrings and statements that are only a string are removed;
-   the header of a `def` / `class` statement and `import` statements are not
-   matched unless the rule sets `matchDeclarations`.
+2. The file is split into **units**. For Python a unit is one *logical
+   line*: a statement that spans several lines (open brackets, backslash
+   continuation) is one unit; comments, docstrings and statements that are
+   only a string are removed; the header of a `def` / `class` statement and
+   `import` statements are not matched unless the rule sets
+   `matchDeclarations`. C#, Java, JavaScript/TypeScript, Go, C/C++ and Rust
+   go through one C-family lexer (`packages/core/src/lexers/clike.ts`) with
+   each language's string and comment syntax: comments are blanked (columns
+   stay those of the physical line), string text is kept, and a statement is
+   one unit while a `(` or `[` is open (in all but C#, also an object or
+   struct literal passed as an argument, `f({ ... })`), and across a line
+   break next to a binary operator, `=`, `=>`, `.` or `?:` (a method chain
+   `\n  .arg(x)` joins). C/C++ preprocessor directives are units of their own;
+   C# directives are not code. Rust `#[cfg(test)] mod ... { }` modules are
+   test code: findings there are lowered like findings in a test path. A
+   Dockerfile instruction continued with `\` is one unit, and comment lines
+   are blank. XML and Razor comments are blanked. Every other language is
+   matched one physical line at a time. The physical lines of a unit are
+   joined with a line break, so a pattern anchored at a line start needs the
+   `m` flag.
 3. In each unit, `pattern` (or the first entry of `patterns`) locates
    matches; **every** match is reported, at the line where it starts. With
    `patterns`, all other entries must match the same unit too (for long
-   Python statements: the same call expression). `notPattern` discards a
-   match when it matches the expression around it.
+   statements: the same call expression). `notPattern` discards a match when
+   it matches the expression around it (Python, C#), or the physical lines
+   of the match and the expression around it (the other C-family languages,
+   whose rules were written for one line at a time; on a single-line
+   statement that is the whole line).
 4. `filePattern` / `fileAbsentPattern` gate the rule for a file: at least
    one line must match `filePattern`, and no line may match
    `fileAbsentPattern`.
@@ -55,15 +72,20 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    is how a specific rule and its API-only fallback avoid double reporting.
 7. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>` on the
    matched line or the line before suppresses the hit (`*` matches any rule).
+   In the C-family languages only real comments count: the same text inside
+   a string literal suppresses nothing.
    Suppressed hits are listed in the report; `--no-inline-ignore` disables
    the comments.
 
 Limits that keep matching bounded: a line longer than 2,000 characters is
-matched in windows, a Python statement longer than 200 lines is split, each
+matched in windows, a statement longer than 200 lines is split, each
 file has a time budget of 5 seconds, and at most 100 matches per line and
 rule are reported. Whenever one of these limits is hit the run gets a warning
 naming the file and line. The Python lexer fails open: when it cannot tell
-whether text is code or a string, the region is matched again as plain lines.
+whether text is code or a string, the region is matched again as plain lines;
+so does the C-family lexer (a string not closed on its line, a file that ends
+inside a comment or an open bracket, a declaration inside an open `(`), with a
+warning naming the language, file and lines.
 
 ## Rule file schema
 
@@ -119,7 +141,7 @@ in `packages/core/src/rules.ts`, by a test):
 | `group` | string (same form as `id`) | no | Overlapping hits of rules in one group produce one result. |
 | `matchDeclarations` | boolean | no | Python: also match `def` / `class` headers and `import` statements. |
 | `redactEvidence` | boolean | no | The match is a credential: mask it in every output. With a capture group named `secret` only that group is masked. Required for every rule that matches a credential literal. |
-| `codeOnly` | boolean | no | Python: ignore a match that starts inside a string literal (for API-call rules). |
+| `codeOnly` | boolean | no | Python and the C-family languages (C#, Java, JavaScript/TypeScript, Go, C/C++, Rust): ignore a match that starts inside a string literal or a JavaScript regex literal (for API-call rules). |
 | `withinKeys` | list of YAML keys | no | YAML only (`languages: [yaml]`): match inside the values of these mapping keys. |
 | `message` | string | yes | What was found and why it matters. |
 | `message_zh` | string | no | Chinese message. |

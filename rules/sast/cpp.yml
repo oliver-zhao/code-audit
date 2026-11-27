@@ -7,10 +7,10 @@ version: 1
 # `hotspot`. Most rules are case-sensitive (`flags: ""`) because C identifiers
 # are.
 #
-# The engine matches C/C++ one physical line at a time today, comments
-# included. A C-family lexer will later strip comments and join statements that
-# span lines while ( or [ are open; the patterns below accept line breaks
-# wherever a space may appear, so they stay correct after that change.
+# The engine matches C/C++ on statements (packages/core/src/lexers/clike.ts):
+# comments are blank, statements that span lines while ( or [ are open are one
+# unit, and each preprocessor directive (with its `\` continuation lines) is a
+# unit of its own. The patterns accept line breaks wherever a space may appear.
 definitions:
   # A call position: start of the unit or line, or after a token that can
   # precede an expression. Rejects method calls (`obj.gets(`, `p->gets(`),

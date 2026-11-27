@@ -349,13 +349,29 @@ describe("JavaScript rule precision", () => {
     ).toEqual(["2:js-yaml-load:hotspot"]);
   });
 
-  // The engine matches one physical line today. A C-family lexer (comments
-  // removed, statements joined while ( or [ is open) will make these work.
-  it.todo("reports cors({ ... }) when origin and credentials are on different lines");
-  it.todo("reports exec(\\n  \"ls \" + dir\\n) when the argument is on the next line");
-  it.todo("ignores a sink inside a trailing comment: run(); // eval(req.body.x)");
+  // The C-family lexer removes comments and joins a statement while ( or [
+  // (or an object literal passed as an argument) is open.
+  it("reports cors({ ... }) when origin and credentials are on different lines", () => {
+    expect(
+      rows(["const cors = require('cors');", "app.use(cors({", "  origin: true,", "  credentials: true,", "}));"]),
+    ).toEqual(["2:js-cors-credentials-any-origin:finding"]);
+  });
+  it("reports exec(\\n  \"ls \" + dir\\n) when the argument is on the next line", () => {
+    expect(
+      rows(["const { exec } = require('child_process');", "exec(", '  "ls " + dir', ");"]),
+    ).toEqual(["2:js-command-injection:finding"]);
+  });
+  it("ignores a sink inside a trailing comment: run(); // eval(req.body.x)", () => {
+    expect(rows(["run(); // eval(req.body.x)", "/* eval(req.body.y)", "   eval(req.query.z) */"])).toEqual([]);
+  });
+  // The lexer joins the options object, but the pattern's gap ([^}\n]) stops
+  // at the line break: a rule change, not an engine one.
   it.todo("reports cookie: {\\n secure: false } in an express-session options object");
-  it.todo("reports jwt.verify without algorithms only when no options object follows on later lines");
+  it("reports jwt.verify without algorithms only when no options object follows on later lines", () => {
+    const head = ["const jwt = require('jsonwebtoken');"];
+    expect(rows([...head, "jwt.verify(token, key, {", "  algorithms: ['RS256'],", "});"])).toEqual([]);
+    expect(rows([...head, "jwt.verify(", "  token,", "  key,", ");"])).toEqual(["2:js-jwt-verify-no-algorithms:hotspot"]);
+  });
   // Not a rule limitation: .vue, .svelte, .ejs, .hbs and .html files are not
   // assigned a language (packages/core/src/language.ts), so their scripts and
   // templates (v-html, {@html}, <%- %>, {{{ }}}) are not scanned.

@@ -130,8 +130,23 @@ describe("java SQL rules", () => {
     expect(stmt('st.executeQuery("SELECT * FROM t WHERE a = " + a);', "src/test/java/AppTest.java")).toEqual([]);
   });
 
-  it.todo("ignores SQL concatenation inside a // comment (needs the planned C-family lexer)");
-  it.todo("sees a concatenation passed to executeQuery on the next line (needs statement joining)");
+  it("ignores SQL concatenation inside a // or /* */ comment", () => {
+    expect(stmt('// st.executeQuery("SELECT * FROM t WHERE a = " + a);')).toEqual([]);
+    expect(stmt('run(); /* st.executeQuery("SELECT * FROM t WHERE a = " + a); */')).toEqual([]);
+  });
+
+  it("sees a concatenation passed to executeQuery on the next line", () => {
+    expect(
+      hits("src/main/java/App.java", [
+        "class App {",
+        "  void m(String a) throws Exception {",
+        "    ResultSet rs = st.executeQuery(",
+        '        "SELECT * FROM t WHERE a = \'" + a + "\'");',
+        "  }",
+        "}",
+      ]),
+    ).toEqual(["3:java-sql-injection"]);
+  });
 });
 
 describe("java command, expression and path rules", () => {

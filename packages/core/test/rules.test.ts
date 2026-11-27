@@ -424,18 +424,23 @@ describe("engine features used by the Python rules", () => {
     ]);
   });
 
-  it("leaves other languages on physical lines", () => {
+  it("joins JavaScript calls too, and leaves languages without a lexer on physical lines", () => {
     const jsRules = writeRules("engine-js", [
       "rules:",
       "  - id: t-js",
       "    title: js",
       "    pattern: 'danger\\([^)]*flag'",
-      ...RULE_TAIL.map((line) => line.replace("[python]", "[javascript]")),
+      ...RULE_TAIL.map((line) => line.replace("[python]", "[javascript, markdown]")),
     ]);
     const result = scanSource(jsRules, "engine-js-src", {
-      "app.js": ["danger(", "  flag)", "danger(flag) // def x"],
+      "app.js": ["danger(", "  flag)", "danger(flag) // def x", "// danger(flag)"],
+      "notes.md": ["danger(", "  flag)", "danger(flag) // def x"],
     });
-    expect(result.hits.map((hit) => hit.line)).toEqual([3]);
+    expect(result.hits.map((hit) => `${hit.file.relPath}:${hit.line}`).sort()).toEqual([
+      "app.js:1",
+      "app.js:3",
+      "notes.md:3",
+    ]);
   });
 });
 

@@ -389,10 +389,18 @@ describe("C/C++ rules: positives and their safe variants", () => {
     expect(readAllOutputFiles(out)).not.toContain("Zq7RedactMe99");
   });
 
-  // The engine matches C/C++ line by line. Until the planned C lexer exists,
-  // lines that start like a comment and calls after a // marker are skipped;
-  // the body of a block comment whose lines do not start with * is not.
-  it.todo("does not report a call on a block-comment line without a leading * (needs the C lexer)");
-  it.todo("reports printf(\\n    msg); split over two lines (needs the C lexer)");
-  it.todo("reports strcpy(dst,\\n    argv[1]); split over two lines (needs the C lexer)");
+  // The C-family lexer blanks comments and joins a call that spans lines.
+  it("does not report a call on a block-comment line without a leading *", () => {
+    expect(hitsOf(["/* old code:", "   strcpy(dst, argv[1]);", "   gets(buf); */", "int x;"].join("\n"))).toEqual([]);
+  });
+  it("reports printf(\\n    msg); split over two lines", () => {
+    expect(hitsOf(["void f(char *msg) {", "  printf(", "    msg);", "}"].join("\n"))).toEqual([
+      "2:cpp-format-string",
+    ]);
+  });
+  it("reports strcpy(dst,\\n    argv[1]); split over two lines", () => {
+    expect(
+      hitsOf(["int main(int argc, char **argv) {", "  char dst[8];", "  strcpy(dst,", "    argv[1]);", "}"].join("\n")),
+    ).toEqual(["3:cpp-strcpy"]);
+  });
 });

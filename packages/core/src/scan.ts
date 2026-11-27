@@ -807,8 +807,24 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       includePlaceholders && finding.adjustments?.includes(ADJUSTMENT_PLACEHOLDER)
         ? restoreConfidence(finding)
         : finding;
-    const withPathContext = (finding: Finding): Finding =>
-      applyPathContext(finding, fileInfo.get(finding.file), { includeTests });
+    // A finding inside a Rust `#[cfg(test)]` module of a file that has no
+    // path context of its own is treated like one in a test path.
+    const testRegions = ruleScan.testRegions;
+    const inTestRegion = (finding: Finding): boolean =>
+      testRegions?.get(finding.file)?.some(
+        (region) => finding.startLine >= region.from && finding.startLine <= region.to,
+      ) === true;
+    const withPathContext = (finding: Finding): Finding => {
+      const info = fileInfo.get(finding.file);
+      if (!info?.pathContext && inTestRegion(finding)) {
+        return applyPathContext(
+          finding,
+          { ...info, pathContext: "test", pathContextSource: "region" },
+          { includeTests },
+        );
+      }
+      return applyPathContext(finding, info, { includeTests });
+    };
     // Dev-only dependencies: an advisory in build or test tooling rarely
     // affects what is shipped. It becomes a low-confidence candidate (out of
     // the headline and the exit code at the default threshold) and stays

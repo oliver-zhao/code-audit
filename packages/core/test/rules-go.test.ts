@@ -511,10 +511,22 @@ describe("Go test, testdata and vendor paths", () => {
     expect(stmt('log.Print("never call exec.Command(\\"sh\\", \\"-c\\", x+y)")')).toEqual([]);
   });
 
-  it.todo(
-    "ignores a dangerous call inside a // or /* */ comment (needs the C-family lexer; today the engine matches comment lines)",
-  );
-  it.todo(
-    "sees a db.Query / jwt.Parse / fmt.Sprintf call split over several lines as one unit (needs the C-family lexer)",
-  );
+  it("ignores a dangerous call inside a // or /* */ comment", () => {
+    const call = 'db.Query("SELECT * FROM t WHERE a = \'" + r.FormValue("a") + "\'")';
+    expect(goHits(["package main", "func f() {", `\t// ${call}`, "}"])).toEqual([]);
+    expect(goHits(["package main", "func f() {", "\t/* old code:", `\t${call}`, "\t*/", "}"])).toEqual([]);
+    expect(goHits(["package main", "func f() {", `\trun() // ${call}`, "}"])).toEqual([]);
+  });
+
+  it("sees a db.Query call split over several lines as one unit, at the line where it starts", () => {
+    expect(
+      goHits([
+        "package main",
+        "func f() {",
+        "\trows, err := db.Query(",
+        '\t\t"SELECT * FROM t WHERE a = \'" + r.FormValue("a") + "\'")',
+        "}",
+      ]),
+    ).toEqual(["3:go-sql-injection"]);
+  });
 });

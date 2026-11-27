@@ -2,11 +2,11 @@ version: 1
 # Built-in JavaScript / TypeScript rules (Node.js and browser).
 # Written for code-audit (Apache-2.0); not derived from other rule packs.
 #
-# The engine matches JavaScript one physical line at a time, comments
-# included. Patterns are written to stay correct once a C-family lexer
-# removes comments and joins a statement while ( or [ is open: they never
-# rely on a comment or on a line break. {{COMMENT}} only drops lines that are
-# entirely comment text (JSDoc examples).
+# The engine matches JavaScript on statements (packages/core/src/lexers/clike.ts):
+# comments are blank, and a statement is one unit while ( or [ is open (also
+# an object literal passed as an argument) or across a line break next to an
+# operator or `.`. Patterns never rely on a comment or on a line break.
+# {{COMMENT}} remains for the lexer's fail-open paths.
 #
 # Policy (docs/rules.md): high = request data reaches the sink in the
 # statement, or the option is dangerous whatever the data; medium = a value
@@ -114,7 +114,7 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '\.(?:raw|whereRaw|orWhereRaw|andWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|where|andWhere|orWhere|having|andHaving|orHaving|literal)\s*\(\s*(?:`[^`\n]{0,400}?{{VALPOS}}\s*\(?[\"\x27]?%?\$\{\s*|\"[^\"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?\"\s*\+\s*(?=[\w$(])|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?\"?%?\x27\s*\+\s*(?=[\w$(]))(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))'
+    pattern: '\.(?:raw|whereRaw|orWhereRaw|andWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|where|andWhere|orWhere|having|andHaving|orHaving|literal)\s*\(\s*(?:`[^`\n]{0,400}?{{VALPOS}}\s*\(?[\"\x27]?%?\$\{\s*|\"[^\"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?\"\s*\+\s*(?=[\w$(])|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?\"?%?\x27\s*\+\s*(?=[\w$(]))(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))(?![\w$.]{1,80}\.map\(\s*\(\)\s*=>\s*[\"\x27]\?[\"\x27]\s*\))'
     flags: ''
     notPattern: '{{COMMENT}}'
     pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
@@ -1251,7 +1251,10 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: '(?:\b(?:session|cookieSession|expressSession)\s*\(\s*\{[^;]{0,300}?\bsecret\s*:\s*|(?<![\w$.\"\x27`])cookieParser\s*\(\s*|^\s*secret\s*:\s*)[\"\x27](?<secret>[^\"\x27\n]{1,200})[\"\x27]'
+    # m: the pattern anchors at a line start, and the lexer joins a
+    # statement's lines (an import block, a call's arguments) into one unit.
+    flags: im
+    pattern: '(?:\b(?:session|cookieSession|expressSession)\s*\(\s*\{[^;]{0,300}?\bsecret\s*:\s*|(?<![\w$.\"\x27`])cookieParser\s*\(\s*|^[ \t]*secret\s*:\s*)[\"\x27](?<secret>[^\"\x27\n]{1,200})[\"\x27]'
     notPattern: '{{COMMENT}}'
     pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
     filePattern: 'express-session|cookie-session|cookie-parser|koa-session|\bsession\s*\(\s*\{'

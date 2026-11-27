@@ -3,17 +3,18 @@ version: 1
 # follow the CIS Docker Benchmark (section 4, container images and build
 # files), the patterns are original.
 #
-# Matching: a Dockerfile is matched one physical line at a time, comments
-# included, and a RUN instruction continued with "\" is several lines. Every
-# rule therefore looks at one line, skips comment lines (notPattern), and an
-# instruction split over lines can be missed (see packages/core/test/rules-iac.test.ts).
+# Matching: a Dockerfile is matched one instruction at a time. An instruction
+# continued with "\" is one unit (its physical lines joined with a line break,
+# hits reported on the line where the match starts) and comment lines are
+# blank; see packages/core/src/lexers/dockerfile.ts. The COMMENT notPatterns
+# are kept for the fail-open paths.
 definitions:
   DOCKERFILE: '(?:^|/)(?:[Dd]ockerfile(?:\.[^/]*)?|[^/]*\.[Dd]ockerfile)$'
   COMMENT: '^\s*#'
   # Instruction prefix that may be followed by flags such as --platform=...
   FROM: '^\s*FROM\s+(?:--[\w-]+=\S+\s+){0,3}'
   # A downloader piped into an interpreter, or an interpreter fed by one.
-  PIPE_TO_SHELL: '\b(?:curl|wget)\b[^|\n]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+){0,3})?(?:(?:ba|z|da|k|a)?sh|python[23]?(?!\s+-c\b))\b(?![.\w-])|\b(?:ba|z)?sh\s+(?:-c\s+)?["\x27]?(?:<\(|\$\()\s*(?:curl|wget)\b'
+  PIPE_TO_SHELL: '\b(?:curl|wget)\b[^|]{0,600}\|\s*(?:sudo\s+(?:-\S+\s+){0,3})?(?:(?:ba|z|da|k|a)?sh|python[23]?(?!\s+-c\b))\b(?![.\w-])|\b(?:ba|z)?sh\s+(?:-c\s+)?["\x27]?(?:<\(|\$\()\s*(?:curl|wget)\b'
   # Environment variable names that hold a credential (the name ends with it).
   SECRET_NAME: '\w{0,60}?(?:PASSWORD|PASSWD|SECRET(?:_KEY(?:_BASE)?)?|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|_PASS|_PWD)'
 rules:

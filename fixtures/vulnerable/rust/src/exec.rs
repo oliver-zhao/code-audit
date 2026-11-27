@@ -27,3 +27,7 @@ pub fn login_shell(cmd: &str) -> std::io::Result<std::process::Output> {
         .arg(cmd)
         .output()
 }
+
+pub fn shell_from_stdin() -> std::io::Result<std::process::Child> {
+    Command::new("sh").stdin(std::process::Stdio::piped()).spawn()
+}

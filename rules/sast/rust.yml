@@ -2,14 +2,13 @@ version: 1
 # Built-in Rust rules. Written for code-audit (Apache-2.0); original patterns.
 #
 # Conventions:
-# - Rust is matched one physical line at a time today, comments included. A
-#   rule therefore discards a match on a line that starts with `//` (this also
-#   skips doc-test examples in `///` and `//!` comments). The planned C-family
-#   lexer removes comments and joins a statement while ( or [ are open; the
-#   patterns below hold in both cases.
-# - rustfmt splits long method chains over several lines, and a chain is not
-#   joined by the lexer (the brackets are closed between the links). Rules that
-#   need two links of a chain use filePattern for the other link.
+# - Rust is matched on statements (packages/core/src/lexers/clike.ts):
+#   comments are blank, string text is kept, and a statement is one unit while
+#   ( or [ is open and across a line break before `.` (a rustfmt method chain
+#   `Command::new("sh")` / `.arg("-c")` / `.arg(cmd)` is one unit). The
+#   {{COMMENT}} notPatterns remain for the lexer's fail-open paths.
+# - A chain whose links are separate statements is not joined. Rules that
+#   need two such links use filePattern for the other link.
 # - Rust's `regex` crate is linear-time: there is no ReDoS rule on purpose.
 # - Test, bench, example and fuzz trees are excluded (TESTPATH). Unit tests in
 #   `#[cfg(test)] mod tests` inside a source file cannot be told apart by path.

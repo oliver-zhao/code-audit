@@ -108,8 +108,13 @@ export function hasGeneratedHeader(text: string): boolean {
   return false;
 }
 
-/** What a path context was decided from. Only `path` lowers confidence. */
-export type PathContextSource = "path" | "header";
+/**
+ * What a path context was decided from. `header` (a generated-file comment)
+ * lowers nothing; `region` is a test module inside the file (Rust
+ * `#[cfg(test)] mod tests { ... }`, see `lexers/clike.ts`) and lowers like a
+ * test path, for the findings on its lines only.
+ */
+export type PathContextSource = "path" | "header" | "region";
 
 export interface FileClassification {
   context?: PathContext;
