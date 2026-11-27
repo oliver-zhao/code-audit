@@ -27,6 +27,7 @@ export const RULE_LANGUAGES = [
   "go",
   "c",
   "cpp",
+  "rust",
   "dockerfile",
   "yaml",
   "json",

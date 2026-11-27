@@ -1,0 +1,47 @@
+# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
+# Not copied from the Semgrep registry; executed with Opengrep 1.33.1.
+# They cover what the line-based built-in rules cannot see: a method chain or a
+# call that rustfmt has spread over several lines.
+rules:
+  - id: rs-opengrep-shell-command
+    languages: [rust]
+    severity: ERROR
+    message: A shell is started with -c and a command string that is not a literal; shell metacharacters in it run arbitrary commands.
+    metadata:
+      cwe: "CWE-78"
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($SHELL).arg($FLAG).arg($CMD)
+          - pattern: Command::new($SHELL).args([$FLAG, $CMD])
+          - pattern: Command::new($SHELL).args(&[$FLAG, $CMD])
+      - metavariable-regex:
+          metavariable: $SHELL
+          regex: ^"(/usr/bin/|/bin/)?(sh|bash|zsh|dash|ksh|cmd|cmd\.exe|powershell|pwsh)"$
+      - metavariable-regex:
+          metavariable: $FLAG
+          regex: ^"(-c|/C|/c|-Command)"$
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-not: |
+                "..."
+
+  - id: rs-opengrep-sql-format
+    languages: [rust]
+    severity: ERROR
+    message: SQL text built with format! is passed to the database driver; a request value in it is SQL injection. Use bind parameters.
+    metadata:
+      cwe: "CWE-89"
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: sqlx::query(&format!(...))
+          - pattern: sqlx::query(format!(...).as_str())
+          - pattern: sqlx::query_as::<$A, $B>(&format!(...))
+          - pattern: sqlx::query_scalar::<$A, $B>(&format!(...))
+          - pattern: sqlx::query_as(&format!(...))
+          - pattern: sqlx::query_scalar(&format!(...))
+          - pattern: diesel::sql_query(format!(...))
+      # Identifiers that go through a quoting helper are not reported.
+      - pattern-not-regex: quote_ident\w*\(
