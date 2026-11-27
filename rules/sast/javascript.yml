@@ -1,8 +1,88 @@
 version: 1
+# Built-in JavaScript / TypeScript rules (Node.js and browser).
+# Written for code-audit (Apache-2.0); not derived from other rule packs.
+#
+# The engine matches JavaScript one physical line at a time, comments
+# included. Patterns are written to stay correct once a C-family lexer
+# removes comments and joins a statement while ( or [ is open: they never
+# rely on a comment or on a line break. {{COMMENT}} only drops lines that are
+# entirely comment text (JSDoc examples).
+#
+# Policy (docs/rules.md): high = request data reaches the sink in the
+# statement, or the option is dangerous whatever the data; medium = a value
+# built at run time reaches the sink; hotspot = the API alone.
+definitions:
+  TESTPATH: '(?:^|/)(?:tests?|__tests__|__mocks__|specs?|e2e|cypress|fixtures?|testing|test-?utils|testdata)/|\.(?:test|spec|e2e-spec|cy|stories)\.[cm]?[jt]sx?$'
+  # Minified and bundled files.
+  MINIFIED: '\.min\.[cm]?js$|[.-](?:bundle|chunk)\.[cm]?js$'
+  # Build and developer tooling, where paths and commands come from the developer.
+  BUILDPATH: '(?:^|/)(?:scripts?|tools|\.github|\.husky)/|(?:^|/)(?:vite|webpack|rollup|esbuild|jest|vitest|babel|karma|playwright|eslint|gulpfile|Gruntfile)[\w.-]{0,40}\.[cm]?[jt]s$|\.config\.[cm]?[jt]s$'
+  # Schema migrations and seed data run by the operator.
+  MIGRATIONS: '(?:^|/)(?:migrations?|seeds?|seeders)/'
+  SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:examples?|samples?|docs?|demos?|tutorials?|benchmarks?|playground)/'
+  # A line that is only comment text: // ..., /* ..., or * ... inside JSDoc.
+  COMMENT: '^\s*(?://|/?\*)'
+  # Request data in Express, Koa, Fastify and hapi handlers.
+  REQ: '(?:\b(?:req|request)\.(?:query|body|params|headers|cookies|signedCookies|files?|payload)\b|\breq\.(?:param|get|header)\s*\(|\bctx\.(?:request\.)?(?:query|body|params|headers|cookies)\b)'
+  # Browser values an attacker controls through a link.
+  DOMSRC: '(?:\b(?:document\.(?:URL|documentURI|referrer|baseURI)|location\.(?:hash|search|href)|window\.name)\b)'
+  # SQL text: SELECT ... FROM, INSERT INTO, UPDATE x SET, DELETE FROM.
+  SQLHEAD: '(?:\b(?:SELECT|select)\b[^;\n]{0,300}?\b(?:FROM|from)\b|\b(?:INSERT|insert)\s+(?:(?:OR|or)\s+\w+\s+)?(?:INTO|into)\b|\b(?:UPDATE|update)\s+[\w."`\[\]]{1,80}\s+(?:SET|set)\b|\b(?:DELETE|delete)\s+(?:FROM|from)\b|\b(?:REPLACE|replace)\s+(?:INTO|into)\b)'
+  # A comparison or list where a SQL value goes.
+  VALPOS: '(?:[=<>]|\b(?:LIKE|like|IN|in|VALUES|values)\b)'
+  # A string that ends at a SQL value position and is continued by
+  # concatenation (+ non-literal) or a template literal with ${...} there.
+  SQLVAL: '(?:"[^"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?"\s*\+\s*(?=[\w$(])(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?"?%?\x27\s*\+\s*(?=[\w$(])(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|(?<![\w$.\])])`[^`\n]{0,400}?{{VALPOS}}\s*\(?["\x27]?%?\$\{\s*(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$)))'
+  # The same, filled directly with request data (optionally through a call).
+  SQLVALREQ: '(?:"[^"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?"\s*\+|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?"?%?\x27\s*\+|(?<![\w$.\])])`[^`\n]{0,400}?{{VALPOS}}\s*\(?["\x27]?%?\$\{)\s*(?:[\w$.]{1,60}\(\s*)?{{REQ}}'
+  # Tagged templates that parameterize: sql`...`, Prisma $queryRaw`...`.
+  TAGGEDSQL: '(?:\bsql|\$queryRaw|\$executeRaw|\bPrisma\.sql)\s*`'
+  # exec itself or through child_process / shelljs, not a method of another
+  # object: RegExp.prototype.exec and query.exec() are not commands.
+  CPRECV: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27](?:node:)?child_process["\x27]\s*\)\.)'
+  STRLIT: '(?:"[^"\n]{0,300}"|\x27[^\x27\n]{0,300}\x27)'
+  # First argument built by concatenation or interpolation with a value that
+  # is not __dirname / process.cwd().
+  DYNARG: '(?:{{STRLIT}}\s*\+\s*(?=[\w$(])|(?!__dirname\b|process\.cwd\(\))[\w$][\w$.\[\]]{0,80}\s*\+(?!\+)|(?:__dirname|process\.cwd\(\))\s*\+\s*(?:{{STRLIT}}\s*\+\s*)?(?=[\w$(])|`[^`\n]{0,300}\$\{\s*(?!__dirname\b|process\.cwd\(\)))'
+  # File-system sinks; the call's first argument follows.
+  FSSINK: '(?:\b(?:readFile|readFileSync|writeFile|writeFileSync|appendFile|appendFileSync|createReadStream|createWriteStream|unlink|unlinkSync|readdir|readdirSync|sendFile|sendfile)|\b(?:res|response)\.download)\s*\(\s*'
+  # A path made of __dirname / process.cwd() and literals only.
+  CONSTPATH: '(?:path\.(?:join|resolve)\(\s*(?:__dirname|process\.cwd\(\)|{{STRLIT}})(?:\s*,\s*{{STRLIT}}){0,8}\s*\)|(?:__dirname|process\.cwd\(\))(?:\s*\+\s*{{STRLIT}})?)'
+  # Outbound HTTP clients; the call's first argument follows.
+  OUTBOUND: '(?<!\bfunction\s{1,5})(?:(?<![\w$.])fetch|\baxios(?:\.(?:get|post|put|patch|delete|head|request))?|\bgot(?:\.(?:get|post|put|patch|delete|stream))?|\b(?:http|https)\.(?:get|request)|\bneedle(?:\.(?:get|post|put|request))?|\bsuperagent(?:\.(?:get|post|put))?|\bundici\.(?:request|fetch)|(?<![\w$.])request(?:\.(?:get|post))?)\s*\('
+  SANITIZED: '\bDOMPurify\b|\b(?:sanitize\w{0,20}|purify|xss|filterXSS|escapeHtml|escapeHTML|encodeHTML|he\.encode|escape)\s*\('
+  # A file that handles requests (Express / Koa / Nest handlers).
+  HANDLER: '{{REQ}}|\b(?:req|ctx)\b|:\s*Request\b'
 rules:
   - id: js-sql-injection
-    title: Node.js SQL query built with string concatenation
-    title_zh: Node.js SQL 查询字符串拼接
+    title: "Node.js SQL query built with string concatenation"
+    title_zh: "Node.js SQL 查询字符串拼接"
+    severity: critical
+    confidence: medium
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    # SQL text (SELECT..FROM, INSERT INTO, ...) whose value position is filled by
+    # + or ${...}. Identifiers (ALTER TABLE ${table}) are not value positions.
+    patterns:
+      - '{{SQLVAL}}'
+      - '{{SQLHEAD}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{TAGGEDSQL}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    group: js-sql
+    message: "A SQL statement is built by concatenating or interpolating a value where a SQL value goes, so the value can change the query."
+    message_zh: "SQL 语句在取值位置通过拼接或模板插值写入变量，该值可以改变查询语义。"
+    remediation: "Use placeholders with a bound parameter array, a sql`...` tagged template, or the ORM's query builder."
+    remediation_zh: "使用占位符加绑定参数数组、sql`...` 标签模板或 ORM 查询构造器。"
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-sql-injection-request
+    title: "Request data concatenated into SQL text"
+    title_zh: "请求数据被拼接进 SQL 文本"
     severity: critical
     confidence: high
     cwe: CWE-89
@@ -10,18 +90,155 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: (?:query|execute)\([^;]{0,600}\+
+    patterns:
+      - '{{SQLVALREQ}}'
+      - '{{SQLHEAD}}'
+    flags: ''
+    notPattern: '{{COMMENT}}|{{TAGGEDSQL}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-sql
-    message: Request values are concatenated into SQL text and can change query semantics.
-    message_zh: 请求参数被拼接到 SQL 文本中，可能造成 SQL 注入。
-    remediation: Use parameterized queries (placeholders plus a bound array) or an ORM safe API.
-    remediation_zh: 使用参数化查询（占位符 + 绑定数组）或 ORM 的安全查询 API。
+    message: "A request value is concatenated or interpolated into SQL text: a classic SQL injection."
+    message_zh: "请求参数被直接拼接或插值到 SQL 文本中：典型的 SQL 注入。"
+    remediation: "Pass the value as a bound parameter (placeholders, sql`...` tagged template, or the ORM's replacements/bind option)."
+    remediation_zh: "把该值作为绑定参数传入（占位符、sql`...` 标签模板或 ORM 的 replacements/bind 选项）。"
     references:
       - CWE-89
       - OWASP A03:2021
+  - id: js-sql-builder-interpolation
+    title: "Query-builder raw SQL fragment with interpolated values"
+    title_zh: "查询构造器原始 SQL 片段插值"
+    severity: high
+    confidence: medium
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\.(?:raw|whereRaw|orWhereRaw|andWhereRaw|havingRaw|orHavingRaw|orderByRaw|groupByRaw|joinRaw|where|andWhere|orWhere|having|andHaving|orHaving|literal)\s*\(\s*(?:`[^`\n]{0,400}?{{VALPOS}}\s*\(?[\"\x27]?%?\$\{\s*|\"[^\"\n]{0,400}?{{VALPOS}}\s*\(?\x27?%?\"\s*\+\s*(?=[\w$(])|\x27[^\x27\n]{0,400}?{{VALPOS}}\s*\(?\"?%?\x27\s*\+\s*(?=[\w$(]))(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))'
+    flags: ''
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    group: js-sql
+    message: "A raw SQL fragment of knex (raw, whereRaw, ...), TypeORM (where, andWhere, ...) or Sequelize (literal) puts a value into a comparison by concatenation or ${...}."
+    message_zh: "knex（raw、whereRaw 等）、TypeORM（where、andWhere 等）或 Sequelize（literal）的原始 SQL 片段通过拼接或 ${...} 把变量写入比较位置。"
+    remediation: "Use bindings: knex.raw('x = ?', [v]), TypeORM .where('x = :v', { v }), Sequelize replacements."
+    remediation_zh: "使用绑定参数：knex.raw('x = ?', [v])、TypeORM .where('x = :v', { v })、Sequelize replacements。"
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-prisma-raw-unsafe
+    title: "Prisma $queryRawUnsafe / $executeRawUnsafe with a built string"
+    title_zh: "Prisma $queryRawUnsafe/$executeRawUnsafe 使用拼接字符串"
+    severity: critical
+    confidence: medium
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\$(?:queryRawUnsafe|executeRawUnsafe)|\bPrisma\.raw)\s*\(\s*(?:`[^`\n]{0,400}\$\{\s*(?![A-Z][A-Z0-9_]{1,40}\s*(?:[+;,)}]|$))|{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|[\w$][\w$.]{0,80}\s*\+)'
+    flags: ''
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-sql
+    message: "The Unsafe raw-query APIs of Prisma run the string as SQL; concatenation or ${...} in it allows SQL injection."
+    message_zh: "Prisma 的 Unsafe 原始查询 API 会把字符串直接当作 SQL 执行；其中的拼接或 ${...} 会造成 SQL 注入。"
+    remediation: "Use the tagged template prisma.$queryRaw`... ${value}` (parameterized), or pass values as the extra arguments of the Unsafe API."
+    remediation_zh: "使用标签模板 prisma.$queryRaw`... ${value}`（参数化），或把值作为 Unsafe API 的附加参数传入。"
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-sql-api
+    title: "Node.js executes a dynamic SQL statement"
+    title_zh: "Node.js 执行动态 SQL 语句"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-89
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    # Only files that use a SQL client; the first argument is not a literal.
+    pattern: '\.(?:query|execute|raw|whereRaw|orderByRaw|\$queryRawUnsafe|\$executeRawUnsafe)\s*\((?!\s*(?:[\"\x27\[{()]|`(?:[^`$\n]|\$(?!\{)){0,300}(?:`|$)|sql`|function\b|async\b|\w{1,40}\s*=>|$))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MIGRATIONS}}|{{MINIFIED}}'
+    filePattern: '\b(?:knex|sequelize|typeorm|prisma|mysql2?|pg|sqlite3?|better-sqlite3|mssql|oracledb|mariadb|pg-promise|postgres|createPool|createConnection|QueryRunner|DataSource)\b'
+    group: js-sql
+    message: "The SQL text comes from a runtime value; confirm it is not attacker-controlled."
+    message_zh: "SQL 文本来自运行时值；需确认不可被攻击者控制。"
+    remediation: "Use parameterized queries and keep SQL text constant."
+    remediation_zh: "使用参数化查询，保持 SQL 文本为常量。"
+    references:
+      - CWE-89
+      - OWASP A03:2021
+  - id: js-nosql-where
+    title: "MongoDB $where built from a runtime value"
+    title_zh: "MongoDB $where 使用运行时拼接值"
+    severity: critical
+    confidence: medium
+    cwe: CWE-943
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '[\"\x27]?\$where[\"\x27]?\s*:\s*(?:`[^`\n]{0,300}\$\{|{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|[\w$][\w$.]{0,80}\s*\+|{{REQ}})|\.\$where\s*\(\s*(?:`[^`\n]{0,300}\$\{|{{STRLIT}}\s*\+|{{REQ}})'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "$where runs JavaScript on the database server; a concatenated or interpolated value allows NoSQL/JavaScript injection."
+    message_zh: "$where 会在数据库服务器上执行 JavaScript；拼接或插值的变量可导致 NoSQL/JavaScript 注入。"
+    remediation: "Replace $where with query operators ($eq, $gt, ...) on typed values."
+    remediation_zh: "用针对已校验类型值的查询运算符（$eq、$gt 等）替代 $where。"
+    references:
+      - CWE-943
+      - OWASP A03:2021
+  - id: js-nosql-query-object
+    title: "MongoDB query built from a request object"
+    title_zh: "MongoDB 查询直接使用请求对象"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-943
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\.(?:find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|updateOne|updateMany|update|deleteOne|deleteMany|remove|countDocuments|count|exists)\s*\(\s*(?:{{REQ}}\s*[,)]|\{[^;{}]{0,300}?:\s*{{REQ}}(?:\.[\w$]+){0,3}\s*[,}])'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: '\b(?:mongoose|mongodb|mongojs|monk|marsdb|nedb|MongoClient)\b|\.collection\s*\('
+    message: "A request value is used as (part of) a MongoDB filter; an object such as {\"$ne\": null} or {\"$gt\": \"\"} changes the query (login bypass)."
+    message_zh: "请求值被用作 MongoDB 过滤条件（或其一部分）；{\"$ne\": null}、{\"$gt\": \"\"} 之类的对象会改变查询（如绕过登录）。"
+    remediation: "Cast request values to the expected type (String(x)), validate with a schema, or enable sanitizeFilter / express-mongo-sanitize."
+    remediation_zh: "把请求值转换为期望类型（String(x)）、用 schema 校验，或启用 sanitizeFilter / express-mongo-sanitize。"
+    references:
+      - CWE-943
+      - OWASP A03:2021
   - id: js-command-injection
-    title: Node.js child_process command built with concatenation
-    title_zh: Node.js child_process 命令拼接
+    title: "Node.js child_process command built with concatenation"
+    title_zh: "Node.js child_process 命令拼接"
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*{{DYNARG}}'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    filePattern: 'child_process|shelljs'
+    group: js-command
+    message: "A shell command is built by concatenation or ${...}; a value with shell metacharacters runs extra commands."
+    message_zh: "shell 命令通过拼接或 ${...} 构造；含 shell 元字符的值会执行额外命令。"
+    remediation: "Use execFile/spawn with an argument array, avoid shell: true, and allowlist inputs."
+    remediation_zh: "使用 execFile/spawn 参数数组，避免 shell: true，并对输入做白名单校验。"
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: js-command-injection-request
+    title: "Request data in a child_process shell command"
+    title_zh: "请求数据进入 child_process shell 命令"
     severity: critical
     confidence: high
     cwe: CWE-78
@@ -29,20 +246,66 @@ rules:
     languages:
       - javascript
       - typescript
-    # A call of exec itself or through child_process / shelljs, not a method of
-    # another object: RegExp.prototype.exec and query.exec() are not commands.
-    pattern: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27]child_process["\x27]\s*\)\.)exec\([^;]{0,600}\+'
+    pattern: '{{CPRECV}}exec(?:Sync)?\s*\(\s*[^;(){}]{0,300}?{{REQ}}'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'child_process|shelljs'
     group: js-command
-    message: External input is concatenated into a shell command.
-    message_zh: 外部输入被拼接到 shell 命令中。
-    remediation: "Use execFile/spawn with an argument array, avoid shell: true, and allowlist inputs."
-    remediation_zh: "使用 execFile/spawn 参数数组，避免 shell: true，并对输入做白名单校验。"
+    message: "A request value is part of a shell command: remote command execution."
+    message_zh: "请求参数成为 shell 命令的一部分：可远程执行命令。"
+    remediation: "Never pass request data to a shell; use execFile/spawn with a fixed program and an argument array, and allowlist values."
+    remediation_zh: "不要把请求数据交给 shell；使用固定程序的 execFile/spawn 参数数组，并对取值做白名单校验。"
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: js-spawn-shell
+    title: "spawn / execFile with shell: true and a runtime command"
+    title_zh: "spawn/execFile 使用 shell: true 且命令为运行时值"
+    severity: high
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*(?![\"\x27])[^;]{0,400}?\bshell\s*:\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    group: js-command
+    message: "With shell: true the command and its arguments are joined and parsed by a shell, so a runtime value can inject commands."
+    message_zh: "shell: true 会把命令和参数拼接后交给 shell 解析，运行时值可注入命令。"
+    remediation: "Drop shell: true and pass a fixed program with an argument array."
+    remediation_zh: "去掉 shell: true，使用固定程序加参数数组。"
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: js-exec-api
+    title: "Node.js executes a subprocess from a runtime value"
+    title_zh: "Node.js 从运行时值执行子进程"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    # Same receivers as js-command-injection; a literal command is not reported.
+    pattern: '{{CPRECV}}exec(?:Sync)?\s*\((?!\s*(?:{{STRLIT}}\s*[,)]|{{CONSTPATH}}\s*[,)]|`(?:[^`$\n]|\$(?!\{)|\$\{\s*(?:__dirname|process\.cwd\(\))\s*\}){0,300}`\s*[,)]|$))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    filePattern: 'child_process|shelljs'
+    group: js-command
+    message: "The subprocess command comes from a runtime value; confirm the command and arguments are trusted."
+    message_zh: "子进程命令来自运行时值；需确认命令与参数可信。"
+    remediation: "Use execFile/spawn with an argument array and an allowlist."
+    remediation_zh: "使用 execFile/spawn 参数数组并做白名单校验。"
     references:
       - CWE-78
       - OWASP A03:2021
   - id: js-eval
-    title: JavaScript eval of a dynamic string
-    title_zh: JavaScript eval 动态执行
+    title: "JavaScript eval of a dynamic string"
+    title_zh: "JavaScript eval 动态执行"
     severity: high
     confidence: low
     cwe: CWE-95
@@ -50,17 +313,128 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: (?<![\w.])eval\s*\(
-    message: eval executes a string as code, so untrusted input can achieve remote code execution.
-    message_zh: eval 会把字符串当作代码执行，不可信输入可导致 RCE。
-    remediation: Remove eval; use JSON.parse, explicit branches, or a safe expression parser.
-    remediation_zh: 删除 eval；使用 JSON.parse、显式分支或安全的表达式解析器。
+    pattern: '(?<![\w.$\"\x27`])eval\s*\((?!\s*{{STRLIT}}\s*\))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-eval
+    message: "eval executes a string as code, so untrusted input can achieve remote code execution."
+    message_zh: "eval 会把字符串当作代码执行，不可信输入可导致 RCE。"
+    remediation: "Remove eval; use JSON.parse, explicit branches, or a safe expression parser."
+    remediation_zh: "删除 eval；使用 JSON.parse、显式分支或安全的表达式解析器。"
     references:
       - CWE-95
       - OWASP A03:2021
+  - id: js-code-injection-request
+    title: "Request data evaluated as JavaScript"
+    title_zh: "请求数据被当作 JavaScript 执行"
+    severity: critical
+    confidence: high
+    cwe: CWE-95
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:(?<![\w.$\"\x27`])(?:eval|Function)|\bnew\s+Function|\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)|\bnew\s+(?:vm\.)?Script|\b(?:math|mathjs)\.(?:eval|evaluate))\s*\(\s*[^;{}]{0,200}?{{REQ}}|(?<![\w.$])(?:setTimeout|setInterval)\s*\(\s*(?:{{STRLIT}}\s*\+\s*)?{{REQ}}'
+    flags: ''
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-eval
+    message: "A request value reaches eval, Function, vm, a string timer or a math evaluator: server-side JavaScript injection (remote code execution)."
+    message_zh: "请求参数进入 eval、Function、vm、字符串定时器或数学表达式求值：服务端 JavaScript 注入（远程代码执行）。"
+    remediation: "Parse the value (Number(), JSON.parse) instead of evaluating it; never run request data as code."
+    remediation_zh: "改为解析取值（Number()、JSON.parse），不要把请求数据当作代码执行。"
+    references:
+      - CWE-95
+      - OWASP A03:2021
+  - id: js-new-function
+    title: "Function constructor with a runtime string"
+    title_zh: "Function 构造器使用运行时字符串"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-95
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\bnew\s+|(?<![\w.$]))Function\s*\((?!\s*\)|\s*(?:{{STRLIT}}\s*,\s*){0,8}{{STRLIT}}\s*\))'
+    flags: ''
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    group: js-eval
+    message: "new Function(...) compiles its string arguments as code like eval; confirm none of them can come from a user."
+    message_zh: "new Function(...) 会像 eval 一样把字符串参数编译为代码；需确认这些参数不来自用户。"
+    remediation: "Avoid generating code at run time; use data-driven logic instead."
+    remediation_zh: "避免运行时生成代码，改为数据驱动的逻辑。"
+    references:
+      - CWE-95
+      - OWASP A03:2021
+  - id: js-string-timer
+    title: "setTimeout / setInterval with a built code string"
+    title_zh: "setTimeout/setInterval 使用拼接的代码字符串"
+    severity: high
+    confidence: medium
+    cwe: CWE-95
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?<![\w.$])(?:setTimeout|setInterval)\s*\(\s*(?:{{STRLIT}}\s*\+\s*(?![\"\x27`\s])|`[^`\n]{0,200}\$\{)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-eval
+    message: "A string passed to setTimeout/setInterval is evaluated like eval; it is built from a runtime value here."
+    message_zh: "传给 setTimeout/setInterval 的字符串会像 eval 一样执行；此处它由运行时值拼接而成。"
+    remediation: "Pass a function: setTimeout(() => doWork(value), ms)."
+    remediation_zh: "传入函数：setTimeout(() => doWork(value), ms)。"
+    references:
+      - CWE-95
+      - OWASP A03:2021
+  - id: js-vm-run
+    title: "Node.js vm module runs code"
+    title_zh: "Node.js vm 模块执行代码"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-94
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\.Script\s*\('
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    group: js-eval
+    message: "The vm module is not a security sandbox: code it runs can escape to the host process. Confirm the code and the sandbox objects are trusted."
+    message_zh: "vm 模块不是安全沙箱：其执行的代码可逃逸到宿主进程。需确认代码和沙箱对象可信。"
+    remediation: "Do not run untrusted code with vm; use a separate process with OS-level isolation, or isolated-vm."
+    remediation_zh: "不要用 vm 运行不可信代码；改用具有操作系统级隔离的独立进程或 isolated-vm。"
+    references:
+      - CWE-94
+      - OWASP A03:2021
+  - id: js-require-request
+    title: "Module loaded from a request-controlled name"
+    title_zh: "按请求控制的名称加载模块"
+    severity: critical
+    confidence: high
+    cwe: CWE-94
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?<![\w.$])(?:require|import)\s*\(\s*[^;(){}]{0,200}?{{REQ}}'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "require()/import() of a request value lets an attacker load arbitrary modules or files as code."
+    message_zh: "对请求参数调用 require()/import() 可让攻击者把任意模块或文件当作代码加载。"
+    remediation: "Map the request value to an allowlist of module names."
+    remediation_zh: "把请求值映射到允许的模块名白名单。"
+    references:
+      - CWE-94
+      - OWASP A03:2021
   - id: js-insecure-deserialization
-    title: Node.js unsafe deserialization
-    title_zh: Node.js 不安全反序列化
+    title: "Node.js unsafe deserialization"
+    title_zh: "Node.js 不安全反序列化"
     severity: high
     confidence: low
     cwe: CWE-502
@@ -68,36 +442,409 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: \bunserialize\s*\(|node-serialize
-    message: node-serialize can execute arbitrary code when it deserializes untrusted data.
-    message_zh: node-serialize 反序列化不可信数据可执行任意代码。
-    remediation: Use JSON.parse with schema validation; never deserialize untrusted objects.
-    remediation_zh: 改用 JSON.parse 并校验 schema；不要反序列化不可信对象。
+    pattern: '\bunserialize\s*\('
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'node-serialize|serialize-to-js|funcster|cryo'
+    group: js-deserialize
+    message: "node-serialize (and similar libraries) can execute arbitrary code when they deserialize untrusted data."
+    message_zh: "node-serialize（及类似库）反序列化不可信数据可执行任意代码。"
+    remediation: "Use JSON.parse with schema validation; never deserialize untrusted objects."
+    remediation_zh: "改用 JSON.parse 并校验 schema；不要反序列化不可信对象。"
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: js-deserialize-request
+    title: "Request data passed to a code-executing deserializer"
+    title_zh: "请求数据进入可执行代码的反序列化器"
+    severity: critical
+    confidence: high
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:unserialize|deserialize)\s*\(\s*[^;{}]{0,200}?{{REQ}}'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'node-serialize|serialize-to-js|funcster|cryo'
+    group: js-deserialize
+    message: "A request value is deserialized with node-serialize (or a similar library), which executes embedded functions: remote code execution."
+    message_zh: "请求数据被 node-serialize（或类似库）反序列化，其中嵌入的函数会被执行：远程代码执行。"
+    remediation: "Parse request data with JSON.parse and validate it with a schema."
+    remediation_zh: "用 JSON.parse 解析请求数据并用 schema 校验。"
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: js-yaml-unsafe-load
+    title: "js-yaml loads with the full (JavaScript) schema"
+    title_zh: "js-yaml 使用完整（JavaScript）schema 加载"
+    severity: high
+    confidence: medium
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bschema\s*:\s*(?:[\w$]{1,20}\.)?(?:DEFAULT_FULL_SCHEMA|FULL_SCHEMA)\b|\b(?:yaml|jsyaml|jsYaml|YAML)\.(?:unsafeLoad|unsafeLoadAll)\s*\(|\brequire\s*\(\s*[\"\x27]js-yaml-js-types|\bfrom\s+[\"\x27]js-yaml-js-types'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-yaml
+    message: "The full schema (or js-yaml-js-types, unsafeLoad) resolves !!js/function tags, so a YAML document can run code."
+    message_zh: "完整 schema（或 js-yaml-js-types、unsafeLoad）会解析 !!js/function 标签，YAML 文档可借此执行代码。"
+    remediation: "Use yaml.load with the default (safe) schema of js-yaml 4, or JSON_SCHEMA."
+    remediation_zh: "使用 js-yaml 4 默认（安全）schema 的 yaml.load，或 JSON_SCHEMA。"
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: js-yaml-load
+    title: "js-yaml load of possibly untrusted YAML"
+    title_zh: "js-yaml 加载可能不可信的 YAML"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:yaml|jsyaml|jsYaml|YAML)\.load(?:All)?\s*\('
+    notPattern: '{{COMMENT}}|\b(?:JSON_SCHEMA|CORE_SCHEMA|FAILSAFE_SCHEMA)\b'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'js-yaml'
+    group: js-yaml
+    message: "In js-yaml 3, load() uses the full schema and runs !!js/function tags; in js-yaml 4 it is safe. Check the installed version and where the YAML comes from."
+    message_zh: "js-yaml 3 的 load() 使用完整 schema，会执行 !!js/function 标签；js-yaml 4 中则是安全的。需检查所装版本及 YAML 来源。"
+    remediation: "Use js-yaml 4 (or safeLoad in js-yaml 3) for untrusted documents."
+    remediation_zh: "对不可信文档使用 js-yaml 4（或 js-yaml 3 的 safeLoad）。"
     references:
       - CWE-502
       - OWASP A08:2021
   - id: js-path-traversal
-    title: Node.js file path built with concatenation
-    title_zh: Node.js 文件路径拼接
+    title: "Node.js file path built from a runtime value"
+    title_zh: "Node.js 文件路径由运行时值拼接"
     severity: high
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '{{FSSINK}}{{DYNARG}}'
+    notPattern: '{{COMMENT}}|\bbasename\s*\(|\broot\s*:'
+    pathExclude: '{{TESTPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    group: js-path
+    message: "A file path is built by concatenation or ${...} with a runtime value, and may leave the intended directory (../)."
+    message_zh: "文件路径通过拼接或 ${...} 由运行时值构造，可能借助 ../ 越出预期目录。"
+    remediation: "Use path.basename or an allowlist, and verify the resolved realpath stays inside the allowed directory."
+    remediation_zh: "使用 path.basename 或白名单映射，并校验解析后的 realpath 位于允许目录内。"
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: js-path-traversal-request
+    title: "Request data in a file path"
+    title_zh: "请求数据进入文件路径"
+    severity: critical
     confidence: high
     cwe: CWE-22
     owasp: A01:2021
     languages:
       - javascript
       - typescript
-    pattern: (?:readFile|sendFile|createReadStream)\([^;]{0,600}\+
+    pattern: '(?:{{FSSINK}}|\bpath\.(?:join|resolve)\s*\(\s*)[^;{}]{0,200}?{{REQ}}'
+    notPattern: '{{COMMENT}}|\bbasename\s*\(|\broot\s*:'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
     group: js-path
-    message: Request values participate in a file path and may read files outside the intended directory.
-    message_zh: 请求参数参与文件路径拼接，可能读取目录外文件。
-    remediation: Use path.basename or an allowlist, and verify the resolved realpath stays inside the allowed directory.
-    remediation_zh: 使用 path.basename 或白名单映射，并校验解析后的 realpath 位于允许目录内。
+    message: "A request value is part of a file path (fs, sendFile, download, path.join): path traversal can read or write arbitrary files."
+    message_zh: "请求参数成为文件路径的一部分（fs、sendFile、download、path.join）：路径穿越可读写任意文件。"
+    remediation: "Map the value to an allowlist or use path.basename, resolve it, and check that it stays inside the base directory; for sendFile use the root option."
+    remediation_zh: "把取值映射到白名单或使用 path.basename，解析后校验仍在基础目录内；sendFile 使用 root 选项。"
     references:
       - CWE-22
       - OWASP A01:2021
+  - id: js-path-api
+    title: "Node.js accesses a runtime file path"
+    title_zh: "Node.js 使用运行时文件路径"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-22
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:(?<!\b(?:function|async|static)\s{1,5})\b(?:readFile|sendFile|createReadStream)|\b(?:res|response)\.download)\s*\((?!\s*(?:{{STRLIT}}\s*[,)]|{{CONSTPATH}}\s*[,)]|\)|$))'
+    notPattern: '{{COMMENT}}|\broot\s*:|\bbasename\s*\('
+    pathExclude: '{{SAMPLEPATH}}|{{BUILDPATH}}|{{MINIFIED}}'
+    group: js-path
+    message: "The file path comes from a runtime value; confirm it resolves inside the allowed directory."
+    message_zh: "文件路径来自运行时值；需确认解析后仍位于允许目录内。"
+    remediation: "Use path.basename or an allowlist, and verify the realpath."
+    remediation_zh: "使用 basename 或白名单，并校验 realpath。"
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: js-ssrf
+    title: "Server-side request to a request-controlled URL"
+    title_zh: "服务端请求的 URL 由请求参数控制"
+    severity: high
+    confidence: high
+    cwe: CWE-918
+    owasp: A10:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '{{OUTBOUND}}\s*(?:`\$\{\s*)?{{REQ}}'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-ssrf
+    message: "A request value is used as the target of an outbound HTTP request, which can reach internal services and cloud metadata."
+    message_zh: "请求参数直接作为出站 HTTP 请求的目标，可访问内网服务和云元数据。"
+    remediation: "Use a URL allowlist and protocol restrictions, block private/loopback addresses, and disable redirects to internal hosts."
+    remediation_zh: "使用 URL 白名单与协议限制，阻断私网/环回地址，并禁止跟随重定向到内网。"
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: js-ssrf-api
+    title: "Outbound request to a runtime URL in a request handler"
+    title_zh: "请求处理代码中向运行时 URL 发起出站请求"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-918
+    owasp: A10:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '{{OUTBOUND}}(?!\s*(?:[\"\x27{)]|`(?!\$\{)|$))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    filePattern: '{{HANDLER}}'
+    group: js-ssrf
+    message: "This file handles requests and sends an outbound request to a URL that is not a literal; confirm the URL cannot be chosen by the client."
+    message_zh: "该文件处理请求，并向非字面量 URL 发起出站请求；需确认 URL 不能由客户端决定。"
+    remediation: "Allowlist hosts and protocols and block private addresses before fetching."
+    remediation_zh: "请求前对主机和协议做白名单校验，并阻断私网地址。"
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: js-open-redirect
+    title: "Redirect to a request-controlled URL"
+    title_zh: "重定向目标由请求参数控制"
+    severity: medium
+    confidence: high
+    cwe: CWE-601
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:res|response|reply|ctx)\.(?:redirect|location)\s*\(\s*(?:\d{3}\s*,\s*)?(?:decodeURIComponent\(\s*)?{{REQ}}'
+    notPattern: '{{COMMENT}}|\breferr?er\b'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-redirect
+    message: "The redirect target is taken from the request, so links on this site can send users to a phishing page."
+    message_zh: "重定向目标取自请求参数，本站链接可被用来把用户引向钓鱼页面。"
+    remediation: "Redirect only to relative paths or an allowlist of hosts."
+    remediation_zh: "仅重定向到相对路径或白名单主机。"
+    references:
+      - CWE-601
+      - OWASP A01:2021
+  - id: js-redirect-api
+    title: "Redirect to a runtime URL"
+    title_zh: "重定向到运行时 URL"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-601
+    owasp: A01:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:res|response|reply|ctx)\.redirect\s*\((?!\s*(?:\d{3}\s*,\s*)?(?:[\"\x27/)]|`/(?!/)|process\.env\b|req\.(?:baseUrl|originalUrl|url)\b|$))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    filePattern: '{{HANDLER}}'
+    group: js-redirect
+    message: "The redirect target is a runtime value; confirm it cannot be an absolute URL chosen by the client."
+    message_zh: "重定向目标是运行时值；需确认它不会是客户端指定的绝对 URL。"
+    remediation: "Validate the target against relative paths or a host allowlist."
+    remediation_zh: "按相对路径或主机白名单校验目标。"
+    references:
+      - CWE-601
+      - OWASP A01:2021
+  - id: js-res-send-xss
+    title: "Request data echoed into an HTML response"
+    title_zh: "请求数据被回显到 HTML 响应"
+    severity: high
+    confidence: high
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:res|response)\.send\s*\(\s*(?:[^;(){}]{0,200}?(?:\+\s*|\$\{\s*))?{{REQ}}\s*(?:\.\s*[\w$]+|\[)'
+    notPattern: '{{COMMENT}}|{{SANITIZED}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "res.send with a string answers text/html; a request value in it is reflected XSS."
+    message_zh: "res.send 发送字符串时内容类型为 text/html，其中的请求参数构成反射型 XSS。"
+    remediation: "Render through an escaping template engine, escape the value, or send JSON (res.json)."
+    remediation_zh: "通过自动转义的模板引擎渲染、对取值转义，或改为发送 JSON（res.json）。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-dom-xss-source
+    title: "URL-controlled value written into the DOM as HTML"
+    title_zh: "URL 可控值以 HTML 形式写入 DOM"
+    severity: high
+    confidence: high
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\.(?:innerHTML|outerHTML)\s*\+?=(?!=)|\.insertAdjacentHTML\s*\(|\bdocument\.write(?:ln)?\s*\(|\.html\s*\(|(?<![\w$.])(?:\$|jQuery)\s*\()[^;)]{0,200}?{{DOMSRC}}'
+    notPattern: '{{COMMENT}}|{{SANITIZED}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-dom-xss
+    message: "location / document.URL / referrer / window.name flow into an HTML sink (innerHTML, document.write, jQuery html or $()): DOM-based XSS."
+    message_zh: "location、document.URL、referrer、window.name 流入 HTML 写入点（innerHTML、document.write、jQuery html 或 $()）：DOM 型 XSS。"
+    remediation: "Write text with textContent, or sanitize with DOMPurify; never pass URL parts to $() or html()."
+    remediation_zh: "用 textContent 写入文本或用 DOMPurify 清洗；不要把 URL 片段传给 $() 或 html()。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-dom-xss-html
+    title: "Runtime value written into the DOM as HTML"
+    title_zh: "运行时值以 HTML 形式写入 DOM"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\.(?:innerHTML|outerHTML)\s*\+?=(?!=)(?!\s*(?:{{STRLIT}}\s*(?:;|$)|`[^`$\n]{0,300}`\s*(?:;|$)|$|null\b))|\.insertAdjacentHTML\s*\(\s*[\"\x27][\w-]{1,20}[\"\x27]\s*,(?!\s*(?:{{STRLIT}}\s*\)|`[^`$\n]{0,300}`\s*\)))|\bdocument\.write(?:ln)?\s*\((?!\s*(?:{{STRLIT}}\s*\)|\)))'
+    notPattern: '{{COMMENT}}|{{SANITIZED}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    group: js-dom-xss
+    message: "innerHTML / outerHTML / insertAdjacentHTML / document.write gets a value that is not a literal; confirm it is escaped or sanitized."
+    message_zh: "innerHTML、outerHTML、insertAdjacentHTML、document.write 接收了非字面量值；需确认已转义或清洗。"
+    remediation: "Use textContent for text, or sanitize HTML with DOMPurify."
+    remediation_zh: "文本用 textContent；HTML 用 DOMPurify 清洗。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-jquery-html
+    title: "jQuery .html() with a runtime value"
+    title_zh: "jQuery .html() 使用运行时值"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\.html\s*\((?!\s*(?:{{STRLIT}}\s*\)|\)|`[^`$\n]{0,300}`\s*\)|$))'
+    notPattern: '{{COMMENT}}|{{SANITIZED}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    filePattern: '\bjquery\b|(?<![\w$])\$\('
+    group: js-dom-xss
+    message: "jQuery .html() parses its argument as HTML (scripts in event handlers run); confirm the value is escaped."
+    message_zh: "jQuery .html() 会把参数当 HTML 解析（事件处理器中的脚本会执行）；需确认取值已转义。"
+    remediation: "Use .text() for text, or sanitize the HTML first."
+    remediation_zh: "文本使用 .text()，或先清洗 HTML。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-react-dangerously-set-html
+    title: "React dangerouslySetInnerHTML with a runtime value"
+    title_zh: "React dangerouslySetInnerHTML 使用运行时值"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bdangerouslySetInnerHTML\s*[=:]\s*\{(?!\s*(?:\{\s*)?(?:{{STRLIT}}\s*\}|__html\s*:\s*{{STRLIT}}\s*\}))'
+    notPattern: '{{COMMENT}}|{{SANITIZED}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    message: "dangerouslySetInnerHTML bypasses React's escaping; confirm the HTML is sanitized."
+    message_zh: "dangerouslySetInnerHTML 绕过了 React 的转义；需确认 HTML 已清洗。"
+    remediation: "Render text as children, or sanitize with DOMPurify before using dangerouslySetInnerHTML."
+    remediation_zh: "以子节点渲染文本，或在使用 dangerouslySetInnerHTML 前用 DOMPurify 清洗。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-angular-bypass-security
+    title: "Angular sanitizer bypassed for a runtime value"
+    title_zh: "Angular 对运行时值绕过了清洗"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\.bypassSecurityTrust(?:Html|Script|Style|Url|ResourceUrl)\s*\((?!\s*{{STRLIT}}\s*\))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    message: "bypassSecurityTrust* marks the value as safe HTML / script / URL; confirm it cannot contain user input."
+    message_zh: "bypassSecurityTrust* 会把取值标记为安全的 HTML/脚本/URL；需确认其中不可能有用户输入。"
+    remediation: "Let Angular sanitize the value, or sanitize it with DOMPurify before trusting it."
+    remediation_zh: "让 Angular 自动清洗，或在信任前用 DOMPurify 清洗。"
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: js-prototype-pollution
+    title: "Deep merge or path set with request data"
+    title_zh: "请求数据用于深度合并或按路径赋值"
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1321
+    owasp: A08:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\b(?:_|lodash|\$|jQuery|Hoek|hoek|objectPath|dotProp)\.(?:merge|mergeWith|defaultsDeep|set|setWith|zipObjectDeep|extend|applyToDefaults)|(?<![\w$.])(?:merge|deepmerge|deepExtend|defaultsDeep|mergeDeep|setWith|zipObjectDeep))\s*\((?:[^;{}]|\{\s*\}){0,200}?{{REQ}}|\bObject\.assign\s*\([^;]{0,200}?\bJSON\.parse\s*\('
+    notPattern: '{{COMMENT}}|JSON\.parse\(\s*JSON\.stringify'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "A deep merge / path setter (lodash merge, defaultsDeep, set, zipObjectDeep, $.extend(true, ...)) receives request data, or Object.assign copies parsed JSON; keys like __proto__ can pollute Object.prototype depending on the library version."
+    message_zh: "深度合并/按路径赋值（lodash merge、defaultsDeep、set、zipObjectDeep、$.extend(true, ...)）接收了请求数据，或 Object.assign 复制了解析后的 JSON；视库版本而定，__proto__ 等键可污染 Object.prototype。"
+    remediation: "Validate request bodies with a schema, copy only known keys, use Object.create(null) targets, and keep lodash up to date."
+    remediation_zh: "用 schema 校验请求体、只复制已知键、使用 Object.create(null) 作为目标，并保持 lodash 为最新版本。"
+    references:
+      - CWE-1321
+      - OWASP A08:2021
+  - id: js-regexp-request
+    title: "Regular expression built from request data"
+    title_zh: "用请求数据构造正则表达式"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1333
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\bnew\s+|(?<![\w.$]))RegExp\s*\(\s*[^;{}]{0,200}?{{REQ}}'
+    notPattern: '{{COMMENT}}|escapeRegExp|escape-string-regexp|escapeRegex|escapeStringRegexp'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "A request value becomes a regular expression: a crafted pattern can make matching take exponential time (ReDoS) or change what is matched."
+    message_zh: "请求参数被构造为正则表达式：精心构造的模式可让匹配耗时呈指数级（ReDoS）或改变匹配语义。"
+    remediation: "Escape the value (lodash escapeRegExp) or match it as a plain string."
+    remediation_zh: "对取值转义（lodash escapeRegExp）或按普通字符串匹配。"
+    references:
+      - CWE-1333
+      - OWASP A03:2021
   - id: js-weak-hash
-    title: Node.js weak hash algorithm (MD5/SHA1)
-    title_zh: Node.js 使用 MD5/SHA1
+    title: "Node.js weak hash algorithm (MD5/SHA1)"
+    title_zh: "Node.js 使用 MD5/SHA1"
     severity: medium
     confidence: low
     cwe: CWE-328
@@ -105,126 +852,604 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: createHash\(\s*["\x27](?:md5|sha1)["\x27]
-    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
-    message_zh: MD5/SHA1 不适合安全用途。
-    remediation: Use SHA-256 or stronger; hash passwords with scrypt/bcrypt/Argon2.
-    remediation_zh: 使用 sha256 及以上；口令使用 scrypt/bcrypt/Argon2。
+    pattern: 'createHash\(\s*[\"\x27](?:md5|sha1)[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-hash
+    message: "MD5/SHA1 are unsuitable for security-sensitive hashing."
+    message_zh: "MD5/SHA1 不适合安全用途。"
+    remediation: "Use SHA-256 or stronger; hash passwords with scrypt/bcrypt/Argon2."
+    remediation_zh: "使用 sha256 及以上；口令使用 scrypt/bcrypt/Argon2。"
     references:
       - CWE-328
       - OWASP A02:2021
+  - id: js-weak-password-hash
+    title: "Password hashed with a fast or broken hash"
+    title_zh: "口令使用快速或已破解的哈希"
+    severity: high
+    confidence: high
+    cwe: CWE-916
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: 'createHash\(\s*[\"\x27](?:md5|md4|sha1|ripemd160)[\"\x27]\s*\)\s*\.update\(\s*[^;)]{0,100}?\b(?:password|passwd|pwd|passphrase)|(?<![\w$])(?:CryptoJS\.)?(?:md5|sha1|MD5|SHA1)\s*\(\s*[^;)]{0,60}?\b(?:password|passwd|pwd|passphrase)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-hash
+    message: "A password is hashed with MD5/SHA-1 (a single fast hash): leaked hashes are cracked quickly."
+    message_zh: "口令用 MD5/SHA-1（单次快速哈希）处理：泄露的哈希可被快速破解。"
+    remediation: "Hash passwords with bcrypt, scrypt or Argon2 (crypto.scrypt) with a per-user salt."
+    remediation_zh: "使用带每用户盐值的 bcrypt、scrypt 或 Argon2（crypto.scrypt）处理口令。"
+    references:
+      - CWE-916
+      - OWASP A02:2021
   - id: js-weak-random
-    title: JavaScript Math.random used for security-sensitive values
-    title_zh: JavaScript 使用 Math.random 生成安全值
+    title: "JavaScript Math.random used for security-sensitive values"
+    title_zh: "JavaScript 使用 Math.random 生成安全值"
     severity: medium
-    confidence: low
+    confidence: medium
     cwe: CWE-338
     owasp: A02:2021
     languages:
       - javascript
       - typescript
-    pattern: (?:token|secret|password|otp|api[_-]?key)\s*=[^;]{0,600}Math\.random\(
-    message: Math.random is not a cryptographically secure random source.
-    message_zh: Math.random 不是密码学安全的随机源。
-    remediation: Use crypto.randomBytes or crypto.randomUUID for tokens.
-    remediation_zh: 使用 crypto.randomBytes 或 crypto.randomUUID 生成令牌。
+    pattern: '\b[\w$]{0,30}(?:token|secret|password|passwd|nonce|salt|otp|api_?key|session_?id|csrf)s?[\"\x27\]]?\s*(?<![=!<>])[=:](?!=)\s*[^;\n]{0,200}?\bMath\.random\s*\('
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "Math.random is not a cryptographically secure random source; a token, secret or password generated with it can be predicted."
+    message_zh: "Math.random 不是密码学安全的随机源；用它生成的令牌、密钥或口令可被预测。"
+    remediation: "Use crypto.randomBytes, crypto.randomUUID or crypto.getRandomValues."
+    remediation_zh: "使用 crypto.randomBytes、crypto.randomUUID 或 crypto.getRandomValues。"
     references:
       - CWE-338
       - OWASP A02:2021
-  - id: js-ssrf
-    title: Node.js server-side request to a dynamic URL
-    title_zh: Node.js 服务端请求 URL 可控
-    severity: high
-    confidence: low
-    cwe: CWE-918
-    owasp: A10:2021
+  - id: js-cipher-no-iv
+    title: "crypto.createCipher / createDecipher (no IV)"
+    title_zh: "crypto.createCipher/createDecipher（无 IV）"
+    severity: medium
+    confidence: high
+    cwe: CWE-327
+    owasp: A02:2021
     languages:
       - javascript
       - typescript
-    pattern: (?:fetch|axios\.(?:get|post)|http\.get)\(\s*(?:req\.|url|targetUrl|name)
-    message: External input is used as an outbound request target and may reach internal services.
-    message_zh: 外部输入直接作为出站请求目标，可能访问内网服务。
-    remediation: Use a URL allowlist and protocol restrictions, block private/loopback addresses, and disable redirects to internal hosts.
-    remediation_zh: 使用 URL 白名单与协议限制，阻断私网/环回地址，并禁止跟随重定向到内网。
+    pattern: '\bcreate(?:Cipher|Decipher)\s*\('
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-cipher
+    message: "createCipher derives the key with one MD5 pass and uses no IV, so equal plaintexts give equal ciphertexts; it is removed in Node 22."
+    message_zh: "createCipher 仅用一次 MD5 派生密钥且不使用 IV，相同明文得到相同密文；Node 22 已移除该 API。"
+    remediation: "Use createCipheriv with a random IV per message and an AEAD mode (aes-256-gcm), with a key from scrypt or a key store."
+    remediation_zh: "使用 createCipheriv，每条消息随机 IV，采用 AEAD 模式（aes-256-gcm），密钥来自 scrypt 或密钥库。"
     references:
-      - CWE-918
-      - OWASP A10:2021
-  - id: js-tls-disabled
-    title: Node.js TLS certificate validation disabled
-    title_zh: Node.js 关闭 TLS 证书校验
+      - CWE-327
+      - OWASP A02:2021
+  - id: js-weak-cipher
+    title: "Weak cipher or ECB mode"
+    title_zh: "弱加密算法或 ECB 模式"
+    severity: medium
+    confidence: high
+    cwe: CWE-327
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bcreate(?:Cipher|Decipher)(?:iv)?\s*\(\s*[\"\x27](?:(?:des|rc4|rc2|bf|blowfish|cast5?|idea)(?:-[\w-]{1,12})?|des3|[\w-]{0,30}-ecb)[\"\x27]|\bCryptoJS\.(?:DES|TripleDES|RC4|RC4Drop)\.|\bCryptoJS\.mode\.ECB\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-cipher
+    message: "DES, 3DES, RC4, RC2, Blowfish or ECB mode do not give modern confidentiality (small blocks, broken stream, or identical blocks leak patterns)."
+    message_zh: "DES、3DES、RC4、RC2、Blowfish 或 ECB 模式无法提供现代的保密性（分组过小、流密码已破解或相同分组泄露模式）。"
+    remediation: "Use AES-GCM (aes-256-gcm) or ChaCha20-Poly1305 with a random IV/nonce."
+    remediation_zh: "使用带随机 IV/nonce 的 AES-GCM（aes-256-gcm）或 ChaCha20-Poly1305。"
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: js-hardcoded-crypto-key
+    title: "Hard-coded encryption or HMAC key"
+    title_zh: "硬编码加密或 HMAC 密钥"
+    severity: high
+    confidence: medium
+    cwe: CWE-321
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\bcreate(?:Cipher|Decipher)iv\s*\(\s*[^,()]{1,60},\s*(?:[^,()]{1,100},\s*)?|\bcreateHmac\s*\(\s*[\"\x27][\w-]{1,20}[\"\x27]\s*,\s*|\bCryptoJS\.(?:(?:AES|DES|TripleDES|Rabbit|RC4)\.(?:encrypt|decrypt)|Hmac\w{1,10})\s*\(\s*[^,()]{1,100},\s*)(?:Buffer\.from\(\s*)?[\"\x27](?<secret>[^\"\x27\n]{8,200})[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    redactEvidence: true
+    message: "A cipher key, IV or HMAC key is a literal in source: anyone with the code can decrypt or forge data, and it cannot be rotated."
+    message_zh: "加密密钥、IV 或 HMAC 密钥是源码中的字面量：拿到代码的人都能解密或伪造数据，且无法轮换。"
+    remediation: "Load keys from a secret manager or the environment; generate a random IV per message."
+    remediation_zh: "从密钥管理器或环境变量加载密钥；每条消息随机生成 IV。"
+    references:
+      - CWE-321
+      - OWASP A02:2021
+  - id: js-pbkdf2-low-iterations
+    title: "PBKDF2 with fewer than 10,000 iterations"
+    title_zh: "PBKDF2 迭代次数少于 10,000"
+    severity: medium
+    confidence: high
+    cwe: CWE-916
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bpbkdf2(?:Sync)?\s*\(\s*[^,()]{1,100},\s*[^,()]{1,100},\s*[1-9]\d{0,3}\s*,'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "A low PBKDF2 iteration count makes brute-forcing derived keys or password hashes cheap."
+    message_zh: "PBKDF2 迭代次数过低，暴力破解派生密钥或口令哈希的成本很低。"
+    remediation: "Use at least 600,000 iterations for PBKDF2-SHA256, or switch to scrypt/Argon2."
+    remediation_zh: "PBKDF2-SHA256 至少 600,000 次迭代，或改用 scrypt/Argon2。"
+    references:
+      - CWE-916
+      - OWASP A02:2021
+  - id: js-jwt-none-alg
+    title: "JWT accepts or uses the \"none\" algorithm"
+    title_zh: "JWT 接受或使用 \"none\" 算法"
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\balgorithms?\s*:\s*(?:\[[^\]\n]{0,100}?)?[\"\x27]none[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "With the none algorithm a token needs no signature, so anyone can forge one."
+    message_zh: "使用 none 算法时令牌无需签名，任何人都可伪造。"
+    remediation: "Pin the expected algorithms, for example algorithms: ['RS256']."
+    remediation_zh: "固定预期算法，例如 algorithms: ['RS256']。"
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: js-jwt-verify-no-algorithms
+    title: "jwt.verify without an algorithms list"
+    title_zh: "jwt.verify 未指定 algorithms"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-347
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bjwt\.verify\s*\('
+    notPattern: '{{COMMENT}}|\balgorithms\s*:'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'jsonwebtoken'
+    message: "Without algorithms the accepted algorithm follows the token header and the key type; with a public key and an old jsonwebtoken an attacker can sign with HS256 (algorithm confusion). The option may be on a following line."
+    message_zh: "未指定 algorithms 时接受的算法取决于令牌头和密钥类型；使用公钥和旧版 jsonwebtoken 时，攻击者可用 HS256 签名（算法混淆）。该选项也可能写在后续行。"
+    remediation: "Pass algorithms: ['RS256'] (or the one algorithm you issue)."
+    remediation_zh: "传入 algorithms: ['RS256']（或你签发时使用的唯一算法）。"
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: js-jwt-decode
+    title: "JWT decoded without verifying the signature"
+    title_zh: "JWT 只解码而未校验签名"
     severity: high
     confidence: low
+    kind: hotspot
+    cwe: CWE-347
+    owasp: A02:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:jwt|jsonwebtoken|jws)\.decode\s*\('
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    filePattern: 'jsonwebtoken|\bjws\b'
+    message: "jwt.decode does not check the signature; confirm the claims are not used for authentication or authorization."
+    message_zh: "jwt.decode 不校验签名；需确认解码出的声明未被用于认证或授权。"
+    remediation: "Use jwt.verify with the key and a pinned algorithms list before trusting claims."
+    remediation_zh: "在信任声明之前，使用密钥和固定的 algorithms 列表调用 jwt.verify。"
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: js-jwt-hardcoded-secret
+    title: "Hard-coded JWT signing secret"
+    title_zh: "硬编码 JWT 签名密钥"
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\bjwt\.(?:sign|verify)\s*\(\s*(?:\{[^{}\n]{0,300}\}|[\w$.]{1,80}(?:\([^()\n]{0,100}\))?)\s*,\s*|\b(?:secretOrKey|secretOrPrivateKey)\s*:\s*|\b(?:expressJwt|expressjwt|jwt)\s*\(\s*\{[^;]{0,200}?\bsecret\s*:\s*)[\"\x27](?<secret>[^\"\x27\n]{3,200})[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    redactEvidence: true
+    message: "The JWT secret is a literal in source: anyone with the code can mint valid tokens."
+    message_zh: "JWT 密钥是源码中的字面量：拿到代码的人都能签发有效令牌。"
+    remediation: "Load the secret or private key from the environment or a secret manager, and rotate the committed value."
+    remediation_zh: "从环境变量或密钥管理器加载密钥或私钥，并轮换已提交的值。"
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: js-jwt-ignore-expiration
+    title: "JWT verification ignores expiration"
+    title_zh: "JWT 校验忽略过期时间"
+    severity: medium
+    confidence: high
+    cwe: CWE-613
+    owasp: A07:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bignoreExpiration\s*:\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "ignoreExpiration: true accepts expired tokens forever, so a leaked token never stops working."
+    message_zh: "ignoreExpiration: true 会永久接受过期令牌，泄露的令牌将一直有效。"
+    remediation: "Remove ignoreExpiration and issue short-lived tokens."
+    remediation_zh: "删除 ignoreExpiration，签发短期令牌。"
+    references:
+      - CWE-613
+      - OWASP A07:2021
+  - id: js-tls-disabled
+    title: "Node.js TLS certificate validation disabled"
+    title_zh: "Node.js 关闭 TLS 证书校验"
+    severity: high
+    confidence: high
     cwe: CWE-295
     owasp: A02:2021
     languages:
       - javascript
       - typescript
-    pattern: rejectUnauthorized\s*:\s*false
-    message: Disabling certificate validation makes TLS connections vulnerable to man-in-the-middle attacks.
-    message_zh: 关闭证书校验会使 TLS 连接可被中间人攻击。
+    pattern: '\b(?:rejectUnauthorized|strictSSL)\s*:\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-tls
+    message: "Disabling certificate validation makes TLS connections vulnerable to man-in-the-middle attacks."
+    message_zh: "关闭证书校验会使 TLS 连接可被中间人攻击。"
     remediation: "Keep rejectUnauthorized: true and configure a trusted CA instead of disabling validation."
     remediation_zh: "保持 rejectUnauthorized: true，配置可信 CA，不要在生产环境关闭校验。"
     references:
       - CWE-295
       - OWASP A02:2021
-  - id: js-sql-api
-    title: Node.js executes a dynamic SQL statement
-    title_zh: Node.js 执行动态 SQL 语句
+  - id: js-tls-env-disabled
+    title: "NODE_TLS_REJECT_UNAUTHORIZED set to 0"
+    title_zh: "NODE_TLS_REJECT_UNAUTHORIZED 被设为 0"
     severity: high
-    confidence: low
-    kind: hotspot
-    cwe: CWE-89
-    owasp: A03:2021
+    confidence: high
+    cwe: CWE-295
+    owasp: A02:2021
     languages:
       - javascript
       - typescript
-    pattern: (?:query|execute)\s*\(
-    group: js-sql
-    message: The SQL text comes from a runtime value; confirm it is not attacker-controlled.
-    message_zh: SQL 文本来自运行时值；需确认不可被攻击者控制。
-    remediation: Use parameterized queries and keep SQL text constant.
-    remediation_zh: 使用参数化查询，保持 SQL 文本为常量。
+    pattern: '\bNODE_TLS_REJECT_UNAUTHORIZED\b[\"\x27\]]{0,2}\s*(?<![=!<>])[=:](?!=)\s*[\"\x27]?0\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-tls
+    message: "Setting NODE_TLS_REJECT_UNAUTHORIZED to 0 turns off certificate validation for every TLS connection of the process."
+    message_zh: "将 NODE_TLS_REJECT_UNAUTHORIZED 设为 0 会关闭整个进程所有 TLS 连接的证书校验。"
+    remediation: "Remove the setting and add the needed CA with NODE_EXTRA_CA_CERTS."
+    remediation_zh: "删除该设置，并用 NODE_EXTRA_CA_CERTS 添加所需的 CA。"
     references:
-      - CWE-89
-      - OWASP A03:2021
-  - id: js-exec-api
-    title: Node.js executes a subprocess from a runtime value
-    title_zh: Node.js 从运行时值执行子进程
-    severity: high
-    confidence: low
-    kind: hotspot
-    cwe: CWE-78
-    owasp: A03:2021
+      - CWE-295
+      - OWASP A02:2021
+  - id: js-tls-old-protocol
+    title: "Obsolete SSL/TLS protocol version"
+    title_zh: "使用过时的 SSL/TLS 协议版本"
+    severity: medium
+    confidence: high
+    cwe: CWE-327
+    owasp: A02:2021
     languages:
       - javascript
       - typescript
-    # Same receivers as js-command-injection.
-    pattern: '(?:(?<![.\w$])|\b(?:child_process|childProcess|cp|shell|shelljs)\.|\brequire\(\s*["\x27]child_process["\x27]\s*\)\.)exec(?:Sync)?\s*\('
-    group: js-command
-    message: The subprocess command comes from a runtime value; confirm the command and arguments are trusted.
-    message_zh: 子进程命令来自运行时值；需确认命令与参数可信。
-    remediation: Use execFile/spawn with an argument array and an allowlist.
-    remediation_zh: 使用 execFile/spawn 参数数组并做白名单校验。
+    pattern: '\bsecureProtocol\s*:\s*[\"\x27](?:SSLv2|SSLv3|TLSv1|TLSv1_1)_(?:client_|server_)?method[\"\x27]|\b(?:minVersion|maxVersion)\s*:\s*[\"\x27](?:SSLv3|TLSv1|TLSv1\.1)[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-tls
+    message: "SSLv3, TLS 1.0 and TLS 1.1 have known weaknesses and are disabled by modern clients."
+    message_zh: "SSLv3、TLS 1.0 和 TLS 1.1 存在已知弱点，现代客户端已禁用。"
+    remediation: "Use minVersion: 'TLSv1.2' (or TLSv1.3) and drop secureProtocol."
+    remediation_zh: "使用 minVersion: 'TLSv1.2'（或 TLSv1.3），不要设置 secureProtocol。"
     references:
-      - CWE-78
-      - OWASP A03:2021
-  - id: js-path-api
-    title: Node.js accesses a runtime file path
-    title_zh: Node.js 使用运行时文件路径
+      - CWE-327
+      - OWASP A02:2021
+  - id: js-cors-credentials-any-origin
+    title: "CORS allows any origin together with credentials"
+    title_zh: "CORS 允许任意来源并携带凭据"
+    severity: high
+    confidence: high
+    cwe: CWE-942
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bcors\s*(?:\(\s*|:\s*)\{(?:[^;]{0,300}?\borigin\s*:\s*(?:true\b|[\"\x27]\*[\"\x27])[^;]{0,300}?\bcredentials\s*:\s*true\b|[^;]{0,300}?\bcredentials\s*:\s*true\b[^;]{0,300}?\borigin\s*:\s*(?:true\b|[\"\x27]\*[\"\x27]))'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    group: js-cors
+    message: "The CORS options combine origin: true (reflect every Origin) or '*' with credentials: true, so any website can make authenticated requests and read the answers."
+    message_zh: "CORS 选项把 origin: true（反射任意 Origin）或 '*' 与 credentials: true 组合使用，任何网站都能发起带凭据的请求并读取响应。"
+    remediation: "List the trusted origins explicitly when credentials are allowed."
+    remediation_zh: "允许凭据时明确列出可信来源。"
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: js-cors-header-credentials
+    title: "Access-Control-Allow-Origin wildcard or reflected, with credentials"
+    title_zh: "Access-Control-Allow-Origin 为通配或反射且允许凭据"
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:setHeader|header|set|append)\s*\(\s*[\"\x27]Access-Control-Allow-Origin[\"\x27]\s*,\s*(?:[\"\x27]\*[\"\x27]|{{REQ}})'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    filePattern: 'Access-Control-Allow-Credentials[\"\x27]\s*,\s*[\"\x27]?true|\bcredentials\s*:\s*true\b'
+    group: js-cors
+    message: "The response sets Access-Control-Allow-Origin to '*' or the request's Origin while this file also allows credentials."
+    message_zh: "响应把 Access-Control-Allow-Origin 设为 '*' 或请求的 Origin，而本文件同时允许凭据。"
+    remediation: "Compare the Origin with an allowlist before echoing it."
+    remediation_zh: "回显 Origin 之前先与白名单比较。"
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: js-cookie-insecure
+    title: "Cookie explicitly set without HttpOnly or Secure"
+    title_zh: "Cookie 被显式设为不带 HttpOnly 或 Secure"
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bhttpOnly\s*:\s*false\b|\bcookie\s*:\s*\{[^}\n]{0,200}?\bsecure\s*:\s*false\b|\b(?:res\.cookie|cookies\.set|setCookie|cookie\.serialize)\s*\([^;\n]{0,300}?\bsecure\s*:\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    group: js-cookie
+    message: "httpOnly: false lets scripts read the cookie (stolen by XSS); secure: false sends it over plain HTTP."
+    message_zh: "httpOnly: false 让脚本可读取 Cookie（可被 XSS 窃取）；secure: false 会经明文 HTTP 发送。"
+    remediation: "Set httpOnly: true and secure: true on session and authentication cookies."
+    remediation_zh: "会话和认证 Cookie 设置 httpOnly: true 和 secure: true。"
+    references:
+      - CWE-614
+      - OWASP A05:2021
+  - id: js-cookie-samesite-none
+    title: "Cookie with SameSite=None"
+    title_zh: "Cookie 设置了 SameSite=None"
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1275
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bsameSite\s*:\s*(?:[\"\x27]none[\"\x27]|false\b)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    group: js-cookie
+    message: "SameSite=None sends the cookie on cross-site requests; confirm the endpoint has CSRF protection and the cookie is Secure."
+    message_zh: "SameSite=None 会在跨站请求中携带 Cookie；需确认端点具有 CSRF 防护且 Cookie 带 Secure。"
+    remediation: "Use SameSite=Lax or Strict unless cross-site use is required."
+    remediation_zh: "除非确需跨站使用，否则使用 SameSite=Lax 或 Strict。"
+    references:
+      - CWE-1275
+      - OWASP A05:2021
+  - id: js-session-hardcoded-secret
+    title: "Hard-coded session or cookie signing secret"
+    title_zh: "硬编码会话或 Cookie 签名密钥"
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '(?:\b(?:session|cookieSession|expressSession)\s*\(\s*\{[^;]{0,300}?\bsecret\s*:\s*|(?<![\w$.\"\x27`])cookieParser\s*\(\s*|^\s*secret\s*:\s*)[\"\x27](?<secret>[^\"\x27\n]{1,200})[\"\x27]'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    filePattern: 'express-session|cookie-session|cookie-parser|koa-session|\bsession\s*\(\s*\{'
+    redactEvidence: true
+    message: "The session / cookie signing secret is a literal in source: anyone with the code can forge session cookies."
+    message_zh: "会话/Cookie 签名密钥是源码中的字面量：拿到代码的人都能伪造会话 Cookie。"
+    remediation: "Load the secret from the environment or a secret manager and rotate the committed value."
+    remediation_zh: "从环境变量或密钥管理器加载密钥，并轮换已提交的值。"
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: js-helmet-csp-disabled
+    title: "Content-Security-Policy disabled in helmet"
+    title_zh: "helmet 中关闭了 Content-Security-Policy"
     severity: medium
     confidence: low
     kind: hotspot
-    cwe: CWE-22
+    cwe: CWE-1021
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bcontentSecurityPolicy\s*:\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    message: "contentSecurityPolicy: false removes the CSP header, the main defence in depth against XSS; confirm this is intended."
+    message_zh: "contentSecurityPolicy: false 会去掉 CSP 头，而它是防御 XSS 的主要纵深措施；需确认是有意为之。"
+    remediation: "Keep helmet's CSP and relax only the directives you need."
+    remediation_zh: "保留 helmet 的 CSP，只放宽需要的指令。"
+    references:
+      - CWE-1021
+      - OWASP A05:2021
+  - id: js-postmessage-no-origin
+    title: "message event handler without an origin check"
+    title_zh: "message 事件处理器未校验 origin"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-346
     owasp: A01:2021
     languages:
       - javascript
       - typescript
-    pattern: (?:readFile|sendFile|createReadStream)\s*\(
-    group: js-path
-    message: The file path comes from a runtime value; confirm it resolves inside the allowed directory.
-    message_zh: 文件路径来自运行时值；需确认解析后仍位于允许目录内。
-    remediation: Use path.basename or an allowlist, and verify the realpath.
-    remediation_zh: 使用 basename 或白名单，并校验 realpath。
+    pattern: '(?:(?<![\w$.])|\bwindow\.)addEventListener\s*\(\s*[\"\x27]message[\"\x27]|\bwindow\.onmessage\s*=(?!=)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|[Ww]orker|{{MINIFIED}}'
+    fileAbsentPattern: '\.origin\b|\borigin\s*[!=]==?'
+    message: "This file listens for window messages and never reads event.origin, so any page that can open or frame it can send commands."
+    message_zh: "本文件监听 window 消息却从不读取 event.origin，任何能打开或嵌入它的页面都能发送指令。"
+    remediation: "Compare event.origin with the expected origin before using event.data."
+    remediation_zh: "使用 event.data 之前将 event.origin 与预期来源比较。"
     references:
-      - CWE-22
+      - CWE-346
       - OWASP A01:2021
+  - id: js-xxe
+    title: "XML parsed with external entity expansion"
+    title_zh: "XML 解析启用了外部实体展开"
+    severity: high
+    confidence: medium
+    cwe: CWE-611
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bnoent\s*:\s*true\b|\bXML_PARSE_NOENT\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    message: "noent: true (XML_PARSE_NOENT) expands external entities, so an XML document can read local files or reach internal URLs (XXE)."
+    message_zh: "noent: true（XML_PARSE_NOENT）会展开外部实体，XML 文档可借此读取本地文件或访问内网 URL（XXE）。"
+    remediation: "Leave entity expansion off (the default) and reject DTDs in untrusted XML."
+    remediation_zh: "保持实体展开关闭（默认），并拒绝不可信 XML 中的 DTD。"
+    references:
+      - CWE-611
+      - OWASP A05:2021
+  - id: js-electron-node-integration
+    title: "Electron nodeIntegration enabled"
+    title_zh: "Electron 启用了 nodeIntegration"
+    severity: high
+    confidence: high
+    cwe: CWE-94
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bnodeIntegration(?:InWorker|InSubFrames)?\s*:\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-electron
+    message: "With nodeIntegration any XSS in the window becomes code execution on the user's machine."
+    message_zh: "启用 nodeIntegration 后，窗口中的任何 XSS 都会变成用户机器上的代码执行。"
+    remediation: "Set nodeIntegration: false and expose a minimal API through a preload script with contextBridge."
+    remediation_zh: "设置 nodeIntegration: false，通过 preload 脚本和 contextBridge 暴露最小 API。"
+    references:
+      - CWE-94
+      - OWASP A05:2021
+  - id: js-electron-context-isolation
+    title: "Electron contextIsolation disabled"
+    title_zh: "Electron 关闭了 contextIsolation"
+    severity: high
+    confidence: high
+    cwe: CWE-693
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bcontextIsolation\s*:\s*false\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-electron
+    message: "Without context isolation page scripts share the preload script's JavaScript world and can tamper with its privileged APIs."
+    message_zh: "关闭上下文隔离后，页面脚本与 preload 脚本共享 JavaScript 环境，可篡改其特权 API。"
+    remediation: "Keep contextIsolation: true (the default) and use contextBridge."
+    remediation_zh: "保持 contextIsolation: true（默认），并使用 contextBridge。"
+    references:
+      - CWE-693
+      - OWASP A05:2021
+  - id: js-electron-web-security
+    title: "Electron webSecurity disabled or insecure content allowed"
+    title_zh: "Electron 关闭 webSecurity 或允许不安全内容"
+    severity: high
+    confidence: high
+    cwe: CWE-693
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bwebSecurity\s*:\s*false\b|\ballowRunningInsecureContent\s*:\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-electron
+    message: "webSecurity: false turns off the same-origin policy; allowRunningInsecureContent: true runs HTTP scripts in HTTPS pages."
+    message_zh: "webSecurity: false 会关闭同源策略；allowRunningInsecureContent: true 会在 HTTPS 页面中运行 HTTP 脚本。"
+    remediation: "Remove both options."
+    remediation_zh: "删除这两个选项。"
+    references:
+      - CWE-693
+      - OWASP A05:2021
+  - id: js-electron-open-external
+    title: "shell.openExternal with a runtime URL"
+    title_zh: "shell.openExternal 使用运行时 URL"
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-939
+    owasp: A03:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bshell\.openExternal\s*\((?!\s*[\"\x27`]https?://)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{TESTPATH}}|{{MINIFIED}}'
+    group: js-electron
+    message: "shell.openExternal hands the URL to the operating system; file:, smb: or custom schemes can run programs. Confirm the URL is validated."
+    message_zh: "shell.openExternal 会把 URL 交给操作系统；file:、smb: 或自定义协议可启动程序。需确认 URL 已校验。"
+    remediation: "Allow only https: (and mailto:) URLs to known hosts."
+    remediation_zh: "只允许指向已知主机的 https:（及 mailto:）URL。"
+    references:
+      - CWE-939
+      - OWASP A03:2021
+  - id: js-token-localstorage
+    title: "Credential stored in Web Storage"
+    title_zh: "凭据存入 Web Storage"
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-922
+    owasp: A04:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\b(?:localStorage|sessionStorage)\.setItem\s*\(\s*[\"\x27`][^\"\x27`\n]{0,60}?(?:token|jwt|secret|password|passwd|credential|api[_-]?key)|\b(?:localStorage|sessionStorage)\.(?:token|jwt|authToken|accessToken|idToken|password)\s*=(?!=)|\b(?:localStorage|sessionStorage)\[\s*[\"\x27][^\"\x27\n]{0,40}?(?:token|jwt)[^\"\x27\n]{0,20}[\"\x27]\s*\]\s*=(?!=)'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    message: "localStorage / sessionStorage are readable by any script on the origin, so an XSS bug exposes the stored token."
+    message_zh: "localStorage/sessionStorage 可被同源的任何脚本读取，一旦存在 XSS，存储的令牌就会泄露。"
+    remediation: "Prefer an HttpOnly, Secure, SameSite cookie for session tokens."
+    remediation_zh: "会话令牌优先使用 HttpOnly、Secure、SameSite 的 Cookie。"
+    references:
+      - CWE-922
+      - OWASP A04:2021
+  - id: js-graphql-introspection
+    title: "GraphQL introspection explicitly enabled"
+    title_zh: "显式开启 GraphQL introspection"
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-200
+    owasp: A05:2021
+    languages:
+      - javascript
+      - typescript
+    pattern: '\bintrospection\s*:\s*true\b'
+    notPattern: '{{COMMENT}}'
+    pathExclude: '{{SAMPLEPATH}}|{{MINIFIED}}'
+    message: "Introspection publishes the whole schema; confirm it is not enabled in production."
+    message_zh: "introspection 会公开整个 schema；需确认生产环境未开启。"
+    remediation: "Enable introspection only outside production (introspection: process.env.NODE_ENV !== 'production')."
+    remediation_zh: "仅在非生产环境开启（introspection: process.env.NODE_ENV !== 'production'）。"
+    references:
+      - CWE-200
+      - OWASP A05:2021

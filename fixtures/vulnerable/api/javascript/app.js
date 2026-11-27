@@ -1,10 +1,11 @@
 const fs = require("fs");
 const { exec } = require("child_process");
+const { Pool } = require("pg");
 
-function fetch(client, callback) {
-  client.query("SELECT 1", callback);
-  exec("ls -l", callback);
-  fs.readFile("/data/static.txt", "utf8", callback);
+function fetch(client, sqlText, command, filePath, callback) {
+  client.query(sqlText, callback);
+  exec(command, callback);
+  fs.readFile(filePath, "utf8", callback);
 }
 
-module.exports = { fetch };
+module.exports = { fetch, Pool };

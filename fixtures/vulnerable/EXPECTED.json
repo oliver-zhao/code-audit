@@ -158,7 +158,616 @@
     {
       "file": "javascript/app.js",
       "line": 17,
+      "ruleId": "js-ssrf-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/app.js",
+      "line": 17,
       "ruleId": "js-tls-disabled",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/Component.tsx",
+      "line": 6,
+      "ruleId": "js-react-dangerously-set-html",
+      "language": "typescript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/Component.tsx",
+      "line": 13,
+      "ruleId": "js-angular-bypass-security",
+      "language": "typescript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 5,
+      "ruleId": "js-dom-xss-html",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 6,
+      "ruleId": "js-dom-xss-source",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 7,
+      "ruleId": "js-dom-xss-source",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 8,
+      "ruleId": "js-jquery-html",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 9,
+      "ruleId": "js-dom-xss-source",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 10,
+      "ruleId": "js-dom-xss-html",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 13,
+      "ruleId": "js-postmessage-no-origin",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/browser.js",
+      "line": 18,
+      "ruleId": "js-token-localstorage",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 7,
+      "ruleId": "js-cipher-no-iv",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 8,
+      "ruleId": "js-weak-cipher",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 9,
+      "ruleId": "js-weak-cipher",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 10,
+      "ruleId": "js-weak-password-hash",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 11,
+      "ruleId": "js-hardcoded-crypto-key",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 12,
+      "ruleId": "js-hardcoded-crypto-key",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 13,
+      "ruleId": "js-pbkdf2-low-iterations",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 18,
+      "ruleId": "js-weak-random",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 23,
+      "ruleId": "js-jwt-hardcoded-secret",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 27,
+      "ruleId": "js-jwt-none-alg",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 28,
+      "ruleId": "js-jwt-verify-no-algorithms",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 29,
+      "ruleId": "js-jwt-ignore-expiration",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 30,
+      "ruleId": "js-jwt-decode",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 34,
+      "ruleId": "js-tls-disabled",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 35,
+      "ruleId": "js-tls-env-disabled",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 36,
+      "ruleId": "js-tls-old-protocol",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/crypto.js",
+      "line": 37,
+      "ruleId": "js-tls-old-protocol",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 13,
+      "ruleId": "js-sql-builder-interpolation",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 14,
+      "ruleId": "js-sql-injection",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 15,
+      "ruleId": "js-sql-builder-interpolation",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 16,
+      "ruleId": "js-sql-injection",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 17,
+      "ruleId": "js-prisma-raw-unsafe",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 18,
+      "ruleId": "js-sql-injection",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/db.ts",
+      "line": 19,
+      "ruleId": "js-sql-api",
+      "language": "typescript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 8,
+      "ruleId": "js-electron-node-integration",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 9,
+      "ruleId": "js-electron-context-isolation",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 10,
+      "ruleId": "js-electron-web-security",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 13,
+      "ruleId": "js-electron-open-external",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/electron-main.js",
+      "line": 17,
+      "ruleId": "js-graphql-introspection",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 11,
+      "ruleId": "js-code-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 12,
+      "ruleId": "js-code-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 13,
+      "ruleId": "js-code-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 14,
+      "ruleId": "js-code-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 15,
+      "ruleId": "js-require-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 16,
+      "ruleId": "js-deserialize-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 21,
+      "ruleId": "js-new-function",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 22,
+      "ruleId": "js-string-timer",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 23,
+      "ruleId": "js-vm-run",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 28,
+      "ruleId": "js-command-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 29,
+      "ruleId": "js-command-injection",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 30,
+      "ruleId": "js-spawn-shell",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 34,
+      "ruleId": "js-command-injection",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 35,
+      "ruleId": "js-exec-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 40,
+      "ruleId": "js-sql-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 41,
+      "ruleId": "js-sql-injection-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 42,
+      "ruleId": "js-sql-injection",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 43,
+      "ruleId": "js-sql-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 48,
+      "ruleId": "js-nosql-where",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 49,
+      "ruleId": "js-nosql-where",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 50,
+      "ruleId": "js-nosql-query-object",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 51,
+      "ruleId": "js-nosql-query-object",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 14,
+      "ruleId": "js-session-hardcoded-secret",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 15,
+      "ruleId": "js-cors-credentials-any-origin",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 16,
+      "ruleId": "js-helmet-csp-disabled",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 19,
+      "ruleId": "js-path-traversal-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 20,
+      "ruleId": "js-path-traversal-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 21,
+      "ruleId": "js-path-traversal-request",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 25,
+      "ruleId": "js-path-traversal",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 29,
+      "ruleId": "js-path-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 30,
+      "ruleId": "js-path-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 34,
+      "ruleId": "js-ssrf",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 36,
+      "ruleId": "js-ssrf-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 41,
+      "ruleId": "js-open-redirect",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 43,
+      "ruleId": "js-redirect-api",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 47,
+      "ruleId": "js-res-send-xss",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 48,
+      "ruleId": "js-res-send-xss",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 52,
+      "ruleId": "js-prototype-pollution",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 53,
+      "ruleId": "js-prototype-pollution",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 54,
+      "ruleId": "js-regexp-request",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 59,
+      "ruleId": "js-yaml-unsafe-load",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 60,
+      "ruleId": "js-yaml-load",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 61,
+      "ruleId": "js-xxe",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 66,
+      "ruleId": "js-cookie-insecure",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 67,
+      "ruleId": "js-cookie-insecure",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 68,
+      "ruleId": "js-cookie-samesite-none",
+      "language": "javascript",
+      "kind": "hotspot"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 69,
+      "ruleId": "js-cors-header-credentials",
       "language": "javascript",
       "kind": "finding"
     },
@@ -1025,21 +1634,21 @@
     },
     {
       "file": "api/javascript/app.js",
-      "line": 5,
+      "line": 6,
       "ruleId": "js-sql-api",
       "language": "javascript",
       "kind": "hotspot"
     },
     {
       "file": "api/javascript/app.js",
-      "line": 6,
+      "line": 7,
       "ruleId": "js-exec-api",
       "language": "javascript",
       "kind": "hotspot"
     },
     {
       "file": "api/javascript/app.js",
-      "line": 7,
+      "line": 8,
       "ruleId": "js-path-api",
       "language": "javascript",
       "kind": "hotspot"
@@ -1390,15 +1999,117 @@
     },
     {
       "file": "javascript/app.js",
+      "line": 9,
+      "ruleId": "js-opengrep-req-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/app.js",
       "line": 10,
       "ruleId": "js-opengrep-child-process-exec",
       "confidence": "medium"
     },
     {
       "file": "javascript/app.js",
+      "line": 10,
+      "ruleId": "js-opengrep-req-command",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/app.js",
       "line": 11,
       "ruleId": "js-opengrep-eval",
       "confidence": "high"
+    },
+    {
+      "file": "javascript/app.js",
+      "line": 11,
+      "ruleId": "js-opengrep-req-code",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/app.js",
+      "line": 13,
+      "ruleId": "js-opengrep-req-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 12,
+      "ruleId": "js-opengrep-req-code",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 13,
+      "ruleId": "js-opengrep-req-code",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 14,
+      "ruleId": "js-opengrep-req-code",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 28,
+      "ruleId": "js-opengrep-req-command",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 29,
+      "ruleId": "js-opengrep-req-command",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 40,
+      "ruleId": "js-opengrep-req-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/injection.js",
+      "line": 41,
+      "ruleId": "js-opengrep-req-sql",
+      "confidence": "high"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 19,
+      "ruleId": "js-opengrep-req-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 20,
+      "ruleId": "js-opengrep-req-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 21,
+      "ruleId": "js-opengrep-req-path",
+      "confidence": "medium"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 41,
+      "ruleId": "js-opengrep-req-redirect",
+      "confidence": "low"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 47,
+      "ruleId": "js-opengrep-req-xss",
+      "confidence": "medium"
+    },
+    {
+      "file": "javascript/web.js",
+      "line": 48,
+      "ruleId": "js-opengrep-req-xss",
+      "confidence": "medium"
     },
     {
       "file": "python/app.py",
