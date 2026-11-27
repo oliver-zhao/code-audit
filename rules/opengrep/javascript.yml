@@ -1,5 +1,15 @@
-# Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# Not copied from the Semgrep registry; validated as YAML only.
+# Opengrep/Semgrep-syntax rules for JavaScript/TypeScript, written for
+# code-audit (Apache-2.0). Not copied from the Semgrep registry or any other
+# project.
+#
+# Verified with Opengrep 1.33.1 on fixtures/vulnerable/javascript and
+# fixtures/clean/javascript (see packages/core/test/realtools.test.ts).
+#
+# The js-opengrep-req-* rules are taint rules (mode: taint): request data of an
+# Express / Koa handler (req.query, req.body, req.params, req.headers,
+# req.cookies, ctx.query, ctx.request.body, ...) followed to a sink in the same
+# file. Their ids do not contain "taint" because realtools.test.ts reserves
+# that word for the Python taint rule set.
 rules:
   - id: js-opengrep-eval
     languages: [javascript]
@@ -18,3 +28,220 @@ rules:
       cwe: "CWE-78"
       confidence: MEDIUM
     pattern: child_process.exec($COMMAND)
+
+  - id: js-opengrep-req-command
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data reaches a shell command (child_process exec / execSync,
+      shelljs exec): remote command execution. Use execFile or spawn with a
+      fixed program and an argument array.
+    metadata:
+      cwe: "CWE-78"
+      confidence: HIGH
+      category: security
+    options: &js-options
+      taint_intrafile: true
+      taint_assume_safe_comparisons: true
+      taint_assume_safe_booleans: true
+      taint_assume_safe_numbers: true
+    pattern-sources: &js-sources
+      - pattern-either:
+          - pattern: req.query
+          - pattern: req.body
+          - pattern: req.params
+          - pattern: req.headers
+          - pattern: req.cookies
+          - pattern: req.files
+          - pattern: req.param(...)
+          - pattern: req.get(...)
+          - pattern: req.header(...)
+          - pattern: ctx.query
+          - pattern: ctx.params
+          - pattern: ctx.request.body
+          - pattern: ctx.request.query
+    pattern-sanitizers: &js-number-sanitizers
+      - pattern-either:
+          - pattern: parseInt(...)
+          - pattern: parseFloat(...)
+          - pattern: Number(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+          - metavariable-regex:
+              metavariable: $CP
+              regex: ^(child_process|childProcess|cp|shell|shelljs|require\(.*child_process.*\))$
+          - focus-metavariable: $CMD
+      - patterns:
+          - pattern-either:
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+          - focus-metavariable: $CMD
+
+  - id: js-opengrep-req-code
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data is evaluated as JavaScript (eval, Function, vm, a string
+      timer or a math evaluator): server-side code injection. Parse the value
+      instead of evaluating it.
+    metadata:
+      cwe: "CWE-95"
+      confidence: HIGH
+      category: security
+    options: *js-options
+    pattern-sources: *js-sources
+    pattern-sanitizers: *js-number-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: eval($CODE)
+              - pattern: new Function(..., $CODE)
+              - pattern: Function(..., $CODE)
+              - pattern: vm.runInNewContext($CODE, ...)
+              - pattern: vm.runInThisContext($CODE, ...)
+              - pattern: vm.runInContext($CODE, ...)
+              - pattern: new vm.Script($CODE, ...)
+              - pattern: setTimeout($CODE, ...)
+              - pattern: setInterval($CODE, ...)
+              - pattern: $MATH.eval($CODE, ...)
+              - pattern: $MATH.evaluate($CODE, ...)
+          - pattern-not: setTimeout((...) => {...}, ...)
+          - pattern-not: setTimeout(function (...) {...}, ...)
+          - pattern-not: setInterval((...) => {...}, ...)
+          - pattern-not: setInterval(function (...) {...}, ...)
+          - focus-metavariable: $CODE
+
+  - id: js-opengrep-req-path
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data reaches a file path (fs read/write, sendFile, download):
+      path traversal can read or overwrite files outside the intended
+      directory. Use path.basename or an allowlist, or sendFile with the root
+      option.
+    metadata:
+      cwe: "CWE-22"
+      confidence: MEDIUM
+      category: security
+    options: *js-options
+    pattern-sources: *js-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: path.basename(...)
+          - pattern: basename(...)
+          - pattern: parseInt(...)
+          - pattern: Number(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $FS.readFile($P, ...)
+              - pattern: $FS.readFileSync($P, ...)
+              - pattern: $FS.writeFile($P, ...)
+              - pattern: $FS.writeFileSync($P, ...)
+              - pattern: $FS.appendFile($P, ...)
+              - pattern: $FS.createReadStream($P, ...)
+              - pattern: $FS.createWriteStream($P, ...)
+              - pattern: $FS.unlink($P, ...)
+              - pattern: $FS.unlinkSync($P, ...)
+              - pattern: $RES.sendFile($P)
+              - pattern: $RES.sendFile($P, $CB)
+              - pattern: $RES.download($P, ...)
+          - pattern-not: '$RES.sendFile($P, {..., root: $ROOT, ...})'
+          - pattern-not: '$RES.sendFile($P, {..., root: $ROOT, ...}, $CB)'
+          - pattern-not: '$RES.download($P, {..., root: $ROOT, ...}, ...)'
+          - pattern-not: '$RES.download($P, $NAME, {..., root: $ROOT, ...}, ...)'
+          - focus-metavariable: $P
+
+  - id: js-opengrep-req-xss
+    mode: taint
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Request data is concatenated or interpolated into a string sent with
+      res.send (Express answers strings as text/html): reflected cross-site
+      scripting.
+      Escape the value, render through an escaping template, or use res.json.
+    metadata:
+      cwe: "CWE-79"
+      confidence: MEDIUM
+      category: security
+    options: *js-options
+    pattern-sources: *js-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: escapeHtml(...)
+          - pattern: escape(...)
+          - pattern: encodeURIComponent(...)
+          - pattern: $X.escape(...)
+          - pattern: DOMPurify.sanitize(...)
+          - pattern: sanitizeHtml(...)
+          - pattern: parseInt(...)
+          - pattern: Number(...)
+          - pattern: JSON.stringify(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.send($A + $B)
+              - pattern: $RES.send(`...`)
+
+  - id: js-opengrep-req-redirect
+    mode: taint
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Request data chooses the target of a redirect: open redirect to a
+      phishing page. Redirect only to relative paths or an allowlist of hosts.
+    metadata:
+      cwe: "CWE-601"
+      # LOW: on Ghost most flagged targets were built by URL helpers from a
+      # request value plus a fixed site URL, which taint cannot tell apart.
+      confidence: LOW
+      category: security
+    options: *js-options
+    pattern-sources: *js-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.redirect($URL)
+              - pattern: $RES.redirect($CODE, $URL)
+              - pattern: $RES.location($URL)
+          # A target that starts with a literal (a path on this site) or is
+          # the Referer header (redirect back) is not an open redirect.
+          - metavariable-regex:
+              metavariable: $URL
+              regex: ^(?!['"`])(?!.*\b[Rr]eferr?er\b)
+          - focus-metavariable: $URL
+
+  - id: js-opengrep-req-sql
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data is concatenated or interpolated into the SQL text of a
+      query (mysql/pg/sqlite query, Sequelize query, knex raw, Prisma
+      $queryRawUnsafe): SQL injection. Pass values as bound parameters.
+    metadata:
+      cwe: "CWE-89"
+      confidence: HIGH
+      category: security
+    options: *js-options
+    pattern-sources: *js-sources
+    pattern-sanitizers: *js-number-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.query($SQL, ...)
+              - pattern: $DB.execute($SQL, ...)
+              - pattern: $DB.raw($SQL, ...)
+              - pattern: $DB.whereRaw($SQL, ...)
+              - pattern: $DB.$queryRawUnsafe($SQL, ...)
+              - pattern: $DB.$executeRawUnsafe($SQL, ...)
+          - focus-metavariable: $SQL
