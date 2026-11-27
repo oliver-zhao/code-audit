@@ -1,10 +1,15 @@
 # Opengrep/Semgrep-syntax rules written for code-audit (Apache-2.0).
-# Not copied from the Semgrep registry; validated as YAML only.
+# Not copied from the Semgrep registry. Every rule here was executed with
+# Opengrep 1.33.1 against fixtures/vulnerable and fixtures/clean.
+#
+# The request-data rules are taint rules (mode: taint) that share one source
+# list: net/http, gorilla/mux and gin accessors. Their ids do not contain
+# "taint": that word is reserved for the Python taint rule set.
 rules:
   - id: go-opengrep-exec-command
     languages: [go]
     severity: ERROR
-    message: exec.Command() runs a program whose arguments may be influenced by untrusted input.
+    message: exec.Command() runs a program whose name or arguments come from the HTTP request; the client chooses what runs.
     metadata:
       cwe: "CWE-78"
       confidence: MEDIUM
@@ -12,15 +17,198 @@ rules:
     # as exec.Command("ls", "-l") are not reported.
     mode: taint
     pattern-sources:
-      - pattern: $R.URL.Query().Get($KEY)
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: mux.Vars(...)
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).Param(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: net.ParseIP(...)
     pattern-sinks:
       - pattern: exec.Command(...)
+      - pattern: exec.CommandContext(...)
+
+  - id: go-opengrep-sql-request
+    languages: [go]
+    severity: ERROR
+    message: Data from the HTTP request is formatted or concatenated into SQL text that is executed; use placeholders and pass values as arguments.
+    metadata:
+      cwe: "CWE-89"
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: mux.Vars(...)
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).Param(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+    pattern-sinks:
+      # Only the SQL text argument is a sink; bind arguments are not.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.Query($Q, ...)
+              - pattern: $DB.QueryRow($Q, ...)
+              - pattern: $DB.Exec($Q, ...)
+              - pattern: $DB.Prepare($Q)
+              - pattern: $DB.Queryx($Q, ...)
+              - pattern: $DB.QueryRowx($Q, ...)
+              - pattern: $DB.MustExec($Q, ...)
+              - pattern: $DB.QueryContext($CTX, $Q, ...)
+              - pattern: $DB.QueryRowContext($CTX, $Q, ...)
+              - pattern: $DB.ExecContext($CTX, $Q, ...)
+              - pattern: $DB.PrepareContext($CTX, $Q)
+              - pattern: $DB.Get($DEST, $Q, ...)
+              - pattern: $DB.Select($DEST, $Q, ...)
+              - pattern: $DB.Raw($Q, ...)
+              - pattern: $DB.Where($Q, ...)
+              - pattern: $DB.Order($Q)
+              - pattern: $DB.Group($Q)
+              - pattern: $DB.Having($Q, ...)
+          # gin's c.Query(...) is a source, not a database call, and a
+          # prepared statement's Exec/Query take only bind arguments.
+          - pattern-not: '($C : *gin.Context).$METHOD(...)'
+          - metavariable-regex:
+              metavariable: $DB
+              regex: '^(?![A-Za-z0-9_]*(?:[sS]tmt|STMT)$)'
+          - focus-metavariable: $Q
+
+  - id: go-opengrep-path-request
+    languages: [go]
+    severity: ERROR
+    message: Data from the HTTP request reaches a file path; ../ or an absolute path can escape the intended directory.
+    metadata:
+      cwe: "CWE-22"
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: mux.Vars(...)
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).Param(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sanitizers:
+      - pattern: filepath.Base(...)
+      - pattern: path.Base(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.Open($P)
+              - pattern: os.OpenFile($P, ...)
+              - pattern: os.ReadFile($P)
+              - pattern: os.Create($P)
+              - pattern: os.WriteFile($P, ...)
+              - pattern: os.Remove($P)
+              - pattern: os.RemoveAll($P)
+              - pattern: ioutil.ReadFile($P)
+              - pattern: http.ServeFile($W, $REQ, $P)
+              - pattern: '($C : *gin.Context).File($P)'
+          - focus-metavariable: $P
+
+  - id: go-opengrep-redirect-request
+    languages: [go]
+    severity: WARNING
+    message: The redirect target comes from the HTTP request, so a link on this site can send users to any other site (open redirect).
+    metadata:
+      cwe: "CWE-601"
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Redirect($W, $REQ, $U, ...)
+              - pattern: '($C : *gin.Context).Redirect($CODE, $U)'
+          - focus-metavariable: $U
+
+  - id: go-opengrep-ssrf-request
+    languages: [go]
+    severity: ERROR
+    message: The server sends a request to a URL taken from the HTTP request; it can be pointed at internal services or cloud metadata (SSRF).
+    metadata:
+      cwe: "CWE-918"
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Get($U)
+              - pattern: http.Head($U)
+              - pattern: http.Post($U, ...)
+              - pattern: http.PostForm($U, ...)
+              - pattern: http.NewRequest($M, $U, ...)
+              - pattern: http.NewRequestWithContext($CTX, $M, $U, ...)
+          - focus-metavariable: $U
+
+  - id: go-opengrep-xss-request
+    languages: [go]
+    severity: ERROR
+    message: Data from the HTTP request is converted to template.HTML/JS/URL, which html/template writes without escaping (cross-site scripting).
+    metadata:
+      cwe: "CWE-79"
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '($R : *http.Request).URL.Query().Get(...)'
+      - pattern: '($R : *http.Request).FormValue(...)'
+      - pattern: '($R : *http.Request).PostFormValue(...)'
+      - pattern: '($R : *http.Request).Header.Get(...)'
+      - pattern: '($C : *gin.Context).Query(...)'
+      - pattern: '($C : *gin.Context).DefaultQuery(...)'
+      - pattern: '($C : *gin.Context).Param(...)'
+      - pattern: '($C : *gin.Context).PostForm(...)'
+    pattern-sanitizers:
+      - pattern: html.EscapeString(...)
+      - pattern: template.HTMLEscapeString(...)
+    pattern-sinks:
+      - pattern: template.HTML(...)
+      - pattern: template.JS(...)
+      - pattern: template.URL(...)
+      - pattern: template.HTMLAttr(...)
 
   - id: go-opengrep-template-html
     languages: [go]
     severity: WARNING
-    message: template.HTML marks content as safe and bypasses HTML escaping, enabling XSS.
+    message: template.HTML marks a runtime value as safe and bypasses HTML escaping; confirm it is sanitized.
     metadata:
       cwe: "CWE-79"
-      confidence: MEDIUM
-    pattern: template.HTML($CONTENT)
+      confidence: LOW
+    patterns:
+      - pattern: template.HTML($CONTENT)
+      - pattern-not: template.HTML("...")

@@ -6,8 +6,8 @@ import (
 	"os/exec"
 )
 
-func handler(db *sql.DB) {
-	db.Query("SELECT 1")
-	exec.Command("sh", "-c", "ls -l")
-	os.Open("/data/static.txt")
+func handler(db *sql.DB, query, script, name string) {
+	db.Query(query)
+	exec.Command("sh", "-c", script)
+	os.Open("/data/" + name)
 }

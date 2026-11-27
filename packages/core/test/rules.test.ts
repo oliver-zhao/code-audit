@@ -1073,6 +1073,8 @@ describe("evidence of credential rules", () => {
       "agent-mcp-inline-secret",
       "dep-http-install",
       "dep-pip-trusted-host",
+      "go-hardcoded-crypto-key",
+      "go-jwt-hardcoded-secret",
       "k8s-secret-in-env",
       "py-hardcoded-secret",
       "py-secret-key-literal",
