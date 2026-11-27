@@ -118,7 +118,7 @@ export function isUrlPasswordReference(value: string): boolean {
  * masked, not what is reported.
  */
 const SECRET_WORD_SOURCE =
-  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp)(?![A-Za-z])|[_-]key(?![A-Za-z])";
+  "pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|signing|signature|auth(?!ors?(?![A-Za-z])|orit(?:y|ies)(?![A-Za-z])|oriz(?:e|ed|er)(?![A-Za-z]))|bearer|salt|hmac|jwt|dsn|conn(?:ection)?[_-]?str(?:ing)?|session[_-]?key|(?<![A-Za-z])(?:key|iv|nonce|pin|otp)(?![A-Za-z])|[_-]key(?![A-Za-z])";
 const SECRET_WORD = new RegExp(SECRET_WORD_SOURCE, "gi");
 const SECRET_WORD_TEST = new RegExp(SECRET_WORD_SOURCE, "i");
 
@@ -469,6 +469,29 @@ function looksLikeTokenWord(value: string): boolean {
 
 const UNQUOTED_KEYWORDS = /^(?:none|null|nil|true|false|undefined|yes|no|on|off|self|this)$/i;
 
+/**
+ * Values that a secret-like name is often set to but that are not secrets:
+ * setting words (`http_tokens = "optional"`, `secrets: inherit`) and JOSE and
+ * hash algorithm names (`algorithm="HS256"`).
+ */
+const NON_SECRET_WORD =
+  /^(?:optional|required|enabled|disabled|inherit|none|null|nil|true|false|yes|no|on|off|auto|default|unset|strict|lax|(?:HS|RS|ES|PS)(?:256|384|512)|EdDSA|sha-?(?:1|224|256|384|512)|sha3-(?:224|256|384|512)|md5)$/i;
+
+/**
+ * A dotted class path: lower-case package segments and a capitalised class
+ * name (`django.contrib.auth.hashers.PBKDF2PasswordHasher`,
+ * `org.example.security.TokenFilter`). A JWT, a random token or a dotted
+ * passphrase does not have this shape.
+ */
+const CLASS_PATH = /^(?:[a-z_][a-z0-9_]{0,40}\.){2,12}[A-Z][A-Za-z0-9_]{0,80}$/;
+
+/** True for a setting word, an algorithm name or a class path (see above). */
+export function isNonSecretValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length > 400) return false;
+  return NON_SECRET_WORD.test(trimmed) || CLASS_PATH.test(trimmed);
+}
+
 function skipSpaces(line: string, from: number, limit: number): number {
   let index = from;
   while (index < limit && (line[index] === " " || line[index] === "\t")) index += 1;
@@ -526,7 +549,8 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
   };
   const addLiteral = (literal: Literal): void => {
     if (literal.contentEnd <= literal.contentStart) return;
-    if (isReferenceValue(line.slice(literal.contentStart, literal.contentEnd))) return;
+    const content = line.slice(literal.contentStart, literal.contentEnd);
+    if (isReferenceValue(content) || isNonSecretValue(content)) return;
     ranges.push({ start: literal.contentStart, end: literal.contentEnd });
   };
 
@@ -564,7 +588,8 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       // A quoted value nested in the literal: password='...'
       let end = start + 1;
       while (end < limit && line[end] !== first) end += 1;
-      if (end > start + 1 && !isReferenceValue(line.slice(start + 1, end))) {
+      const quoted = line.slice(start + 1, end);
+      if (end > start + 1 && !isReferenceValue(quoted) && !isNonSecretValue(quoted)) {
         ranges.push({ start: start + 1, end });
       }
       return;
@@ -572,7 +597,14 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
     let end = start;
     while (end < limit && !/[\s"'`,;&]/.test(line[end] as string)) end += 1;
     const value = line.slice(start, end);
-    if (value.length === 0 || isReferenceValue(value) || UNQUOTED_KEYWORDS.test(value)) return;
+    if (
+      value.length === 0 ||
+      isReferenceValue(value) ||
+      UNQUOTED_KEYWORDS.test(value) ||
+      isNonSecretValue(value)
+    ) {
+      return;
+    }
     if (insideString || configLike) {
       if (value.length < (insideString ? 4 : 1)) return;
       // A format placeholder or a concatenation point, not a value.
@@ -657,7 +689,8 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
             continue;
           }
         } else if (isFlag && scan > nameEnd) {
-          maskUnquoted(scan, inside.contentEnd, true);
+          // `--allow-unauthenticated --region x`: the next word is a flag.
+          if (line[scan] !== "-") maskUnquoted(scan, inside.contentEnd, true);
           continue;
         } else if (scan < inside.contentEnd) {
           continue;
@@ -715,7 +748,8 @@ function secretValueRanges(line: string, configLike: boolean): RedactRange[] {
       // `--password value`, `ENV API_TOKEN value`
       const literal = literalOpeningAt(position);
       if (literal) addLiteral(literal);
-      else maskUnquoted(position, line.length, true);
+      // A flag followed by another flag is a switch, not a name and a value.
+      else if (!(isFlag && line[position] === "-")) maskUnquoted(position, line.length, true);
     } else if (!keyLiteral && position > afterName && !/[)\]]/.test(line.slice(afterName, position))) {
       // `password VALUE`: the value is separated from the name by blanks
       // only (redis `requirepass`-style settings, `.netrc`, notes, comments).
@@ -761,33 +795,107 @@ export const LINE_MASK_ALL = 2;
 const PRIVATE_KEY_END = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/;
 
 /**
+ * A private-key block ends after this many lines even without an END marker
+ * (a 16384-bit RSA key in PEM is about 200 lines of 64 characters).
+ */
+export const PRIVATE_KEY_MAX_LINES = 400;
+
+/**
+ * True when a line can be part of the body of a PEM block: base64 text (also
+ * quoted, concatenated or with a `\n` escape, as when a key is written in
+ * source code), a PEM header such as `Proc-Type:` / `DEK-Info:`, or blank.
+ * Code such as `if (pem.startsWith(...)) {` is not, and ends the block.
+ */
+function isPemBodyLine(line: string): boolean {
+  if (line.length > 4096) return false;
+  let text = line.trim();
+  if (text.length === 0) return true;
+  if (/^(?:Proc-Type|DEK-Info|Comment)\s*:/i.test(text)) return true;
+  // A comment marker in front of the line (`# `, `// `, ` * `).
+  text = text.replace(/^(?:\/\/|#|\*|--|;)\s?/, "");
+  // Quotes, concatenation, `\n` escapes and line continuations around it.
+  text = text
+    .replace(/\\[nr]/g, "")
+    .replace(/^[\s"'`+,;(&.]+/, "")
+    .replace(/[\s"'`+,;)&.\\]+$/, "")
+    // A string prefix (b"...", r"...", L"...").
+    .replace(/^[bBrRuUL]{1,2}(?=["'])["']/, "");
+  return /^[A-Za-z0-9+/]{1,}={0,2}$/.test(text);
+}
+
+/**
+ * Secret words that, as the name of an opened mapping (`"AuthServer": {`,
+ * `jwt:`), usually name a settings section rather than a credential: inside
+ * such a section only the values of secret-like keys are masked.
+ */
+const STRONG_SECRET_WORD =
+  /pass(?:word|wd|phrase|code)|pass(?![A-Za-z])|requirepass|masterauth|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|encryption[_-]?key|master[_-]?key|credential|conn(?:ection)?[_-]?str(?:ing)?|dsn|session[_-]?key/i;
+
+/** A `key: value` / `"key": value` / `key = value` line inside a mapping. */
+const KEY_VALUE_LINE = /^\s*(?:"[^"\n]{1,200}"|'[^'\n]{1,200}'|[A-Za-z_$][\w$.-]{0,200})\s*(?::(?!:)|=(?![=>]))/;
+
+/** Every string literal of the line is a reference or a non-secret value. */
+function literalsAreHarmless(line: string): boolean {
+  const literals = lexLiterals(line);
+  if (literals.length === 0) return false;
+  for (const literal of literals) {
+    const content = line.slice(literal.contentStart, literal.contentEnd);
+    if (!isReferenceValue(content) && !isNonSecretValue(content)) return false;
+  }
+  return true;
+}
+
+/**
  * Per-line redaction state that needs more than one line to decide:
  *
- * - lines inside a `-----BEGIN ... PRIVATE KEY-----` block;
+ * - lines inside a `-----BEGIN ... PRIVATE KEY-----` block: the block ends at
+ *   the END marker, at the first line that cannot be part of a PEM body (so a
+ *   BEGIN marker in a string literal of code does not mask the rest of the
+ *   file), or after `PRIVATE_KEY_MAX_LINES` lines;
  * - lines that continue the value of a secret-like name that ended its line
- *   with `=`, `:`, `(` or an open bracket (`SECRET_KEY = (` + `"..."`);
+ *   with `=`, `:`, `(` or an open bracket (`SECRET_KEY = (` + `"..."`). When
+ *   the name opens a mapping and is only weakly secret-like (`"AuthServer": {`,
+ *   `jwt:`), the `key: value` lines inside are left to the per-line
+ *   redaction, which masks the values of secret-like keys only. A line whose
+ *   literals are all references or non-secret values (class paths, algorithm
+ *   names) is not masked either;
  * - the body of a YAML block scalar under a secret-like key.
  */
 export function sensitiveLines(lines: string[]): Uint8Array {
   const flags = new Uint8Array(lines.length);
   let inPrivateKey = false;
+  let keyLines = 0;
   let continuation = 0;
+  let relaxed = false;
   let blockIndent = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
     if (line.length > 20_000) {
       continuation = 0;
       blockIndent = -1;
+      inPrivateKey = false;
       continue;
     }
     const ends = PRIVATE_KEY_END.test(line);
     if (inPrivateKey) {
-      flags[index] = LINE_MASK_ALL;
-      if (ends) inPrivateKey = false;
-      continue;
+      if (ends) {
+        flags[index] = LINE_MASK_ALL;
+        inPrivateKey = false;
+        continue;
+      }
+      keyLines += 1;
+      if (keyLines <= PRIVATE_KEY_MAX_LINES && isPemBodyLine(line)) {
+        flags[index] = LINE_MASK_ALL;
+        continue;
+      }
+      // Not key material: the block ended without an END marker.
+      inPrivateKey = false;
     }
     if (PRIVATE_KEY_MARKER.test(line)) {
-      if (!ends) inPrivateKey = true;
+      if (!ends) {
+        inPrivateKey = true;
+        keyLines = 0;
+      }
       continue;
     }
     const indent = line.length - line.trimStart().length;
@@ -799,7 +907,9 @@ export function sensitiveLines(lines: string[]): Uint8Array {
       blockIndent = -1;
     }
     if (continuation > 0) {
-      flags[index] = LINE_MASK_STRINGS;
+      const harmless =
+        (relaxed && KEY_VALUE_LINE.test(line)) || literalsAreHarmless(line);
+      if (!harmless) flags[index] = LINE_MASK_STRINGS;
       continuation -= 1;
       const trimmed = line.trim();
       // The value ends at a blank line or at a line that closes the bracket
@@ -811,7 +921,10 @@ export function sensitiveLines(lines: string[]): Uint8Array {
     // Tested without trailing blanks, so the patterns need no trailing \s*.
     const body = line.trimEnd();
     if (SECRET_BLOCK_SCALAR.test(body)) blockIndent = indent;
-    else if (SECRET_CONTINUES.test(body)) continuation = 20;
+    else if (SECRET_CONTINUES.test(body)) {
+      continuation = 20;
+      relaxed = /[{:]$/.test(body) && !STRONG_SECRET_WORD.test(body);
+    }
   }
   return flags;
 }

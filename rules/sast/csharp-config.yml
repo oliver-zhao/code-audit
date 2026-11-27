@@ -6,6 +6,9 @@ definitions:
   TESTPATH: '(?:^|/)(?:[Tt]ests?|[Tt]esting|[Ss]pecs?)/|(?:^|/)[^/]{0,200}\.(?:[A-Za-z]{1,40}\.)?Tests?/'
   SAMPLEPATH: '{{TESTPATH}}|(?:^|/)(?:[Ee]xamples?|[Ss]amples?|[Dd]ocs?|[Dd]emos?)/'
   # web.config transforms for local builds, where debug settings are expected.
+  # .NET XML configuration files. Other XML (Maven, MyBatis, Spring) is also
+  # language xml; these rules read elements of web.config / app.config only.
+  NETCONFIG: '\.[Cc]onfig$'
   DEVCONFIG: '(?:^|/)[Ww]eb\.[Dd]ebug\.config$|{{SAMPLEPATH}}'
   # appsettings files of a production-like environment (not Development,
   # Local or a test environment).
@@ -20,6 +23,7 @@ rules:
     cwe: CWE-489
     owasp: A05:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{DEVCONFIG}}'
     pattern: '<compilation\b[^>]{0,600}\bdebug\s*=\s*["\x27]true["\x27]'
     message: debug="true" disables batch compilation and timeouts and adds debug information to error pages; it is not meant for a deployed site. Project templates set it and a Web.Release.config transform usually removes it, so confirm what is deployed.
@@ -34,6 +38,7 @@ rules:
     cwe: CWE-209
     owasp: A05:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{DEVCONFIG}}'
     pattern: '<customErrors\b[^>]{0,600}\bmode\s*=\s*["\x27]Off["\x27]'
     message: customErrors mode="Off" shows detailed error pages with stack traces to every visitor.
@@ -48,6 +53,7 @@ rules:
     cwe: CWE-614
     owasp: A05:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{DEVCONFIG}}'
     pattern: '<httpCookies\b[^>]{0,600}\b(?:httpOnlyCookies|requireSSL)\s*=\s*["\x27]false["\x27]'
     message: Cookies are readable by scripts (httpOnlyCookies="false") or sent over plain HTTP (requireSSL="false").
@@ -62,6 +68,7 @@ rules:
     cwe: CWE-489
     owasp: A05:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{DEVCONFIG}}'
     pattern: '<trace\b[^>]{0,600}\benabled\s*=\s*["\x27]true["\x27]'
     notPattern: '\blocalOnly\s*=\s*["\x27]true["\x27]'
@@ -77,6 +84,7 @@ rules:
     cwe: CWE-79
     owasp: A03:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{SAMPLEPATH}}'
     pattern: '\bvalidateRequest\s*=\s*["\x27]false["\x27]|\brequestValidationMode\s*=\s*["\x27](?:[0-3]\.\d)["\x27]'
     message: Request validation is off for all pages (validateRequest="false"), or limited to pages only (requestValidationMode="2.0"); HTML and script reach the application unchecked.
@@ -91,6 +99,7 @@ rules:
     cwe: CWE-642
     owasp: A08:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pattern: '\benableViewStateMac\s*=\s*["\x27]false["\x27]'
     message: Without the ViewState MAC a client can send a forged ViewState, which ASP.NET deserializes (code execution through LosFormatter gadgets).
     message_zh: 没有 ViewState MAC 时客户端可以发送伪造的 ViewState，ASP.NET 会反序列化它（可通过 LosFormatter 利用链执行代码）。
@@ -104,6 +113,7 @@ rules:
     cwe: CWE-798
     owasp: A02:2021
     languages: [xml]
+    pathInclude: '{{NETCONFIG}}'
     pathExclude: '{{SAMPLEPATH}}'
     pattern: '(?<=<machineKey\b[^>]{0,800})\b(?:validationKey|decryptionKey)\s*=\s*["\x27](?<secret>[0-9A-Fa-f]{16,512})["\x27]'
     redactEvidence: true

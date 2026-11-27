@@ -7,6 +7,7 @@ import type { InventoryFile } from "./inventory.js";
 import type { Confidence, Severity } from "./finding.js";
 import { CONFIDENCE_ORDER } from "./finding.js";
 import { InterruptedError, runInterruptible } from "./interrupt.js";
+import { passesPrefilter, requiredLiterals, type LiteralPrefilter } from "./prefilter.js";
 import {
   LINE_MASK_ALL,
   LINE_MASK_STRINGS,
@@ -34,6 +35,11 @@ export const RULE_LANGUAGES = [
   "markdown",
   "razor",
   "xml",
+  "toml",
+  "ini",
+  "properties",
+  "shell",
+  "template",
 ] as const;
 
 const RuleLanguageSchema = z.enum(RULE_LANGUAGES);
@@ -132,6 +138,34 @@ export interface CompiledRule {
   pathExclude?: RegExp;
   filePattern?: RegExp;
   fileAbsentPattern?: RegExp;
+  /**
+   * Literals of which every match of the rule contains one (see
+   * `prefilter.ts`); a unit that contains none is not matched. Absent when
+   * none could be derived with certainty.
+   */
+  prefilter?: LiteralPrefilter;
+}
+
+/**
+ * The most selective literal prefilter of a rule's patterns: the locator and
+ * every other entry of `patterns` must all match, so any one of them that has
+ * required literals can rule a unit out.
+ */
+export function rulePrefilter(definition: Pick<RuleDefinition, "pattern" | "patterns" | "flags">): LiteralPrefilter | undefined {
+  const flags = definition.flags ?? "i";
+  let best: LiteralPrefilter | undefined;
+  let bestScore = -Infinity;
+  for (const source of definition.pattern !== undefined ? [definition.pattern] : definition.patterns ?? []) {
+    const candidate = requiredLiterals(source, flags);
+    if (!candidate) continue;
+    const shortest = Math.min(...candidate.literals.map((literal) => literal.length));
+    const candidateScore = shortest * 100 - candidate.literals.length;
+    if (candidateScore > bestScore) {
+      best = candidate;
+      bestScore = candidateScore;
+    }
+  }
+  return best;
 }
 
 export interface LoadedRule extends RuleDefinition {
@@ -197,6 +231,7 @@ function compileRule(definition: RuleDefinition, sourceFile: string): LoadedRule
         "fileAbsentPattern",
         "im",
       ),
+      prefilter: rulePrefilter(definition),
     },
   };
 }
@@ -2256,6 +2291,12 @@ export interface RuleScanOptions {
    * this off.
    */
   inlineIgnore?: boolean;
+  /**
+   * Skip a rule on a unit that contains none of the rule's required literals
+   * (default true; see `prefilter.ts`). Turned off only to check that the
+   * prefilter changes no result.
+   */
+  prefilter?: boolean;
 }
 
 interface HitPlacement {
@@ -2300,6 +2341,7 @@ export function scanRules(
   let slowFiles = 0;
   const fullBudget = options.fileBudgetMs ?? FILE_MATCH_BUDGET_MS;
   const inlineIgnore = options.inlineIgnore !== false;
+  const usePrefilter = options.prefilter !== false;
 
   for (const file of files) {
     if (!file.scannable || file.language === "unknown") continue;
@@ -2486,6 +2528,9 @@ export function scanRules(
       // secondary patterns must hold for the expression, not for the guess.
       const patternsPerSpan =
         codeLines > WHOLE_UNIT_PATTERNS_MAX_LINES || unit.bridge === true;
+      // Lower-cased text for the prefilter, computed once per distinct text.
+      let lowerOf: string | undefined;
+      let lowerText: string | undefined;
 
       for (const rule of fileRules) {
         if (maskedIsBlank && !rule.matchDeclarations) continue;
@@ -2504,6 +2549,13 @@ export function scanRules(
         }
 
         const compiled = rule.compiled;
+        if (usePrefilter && compiled.prefilter) {
+          if (compiled.prefilter.lowerCase && lowerOf !== text) {
+            lowerOf = text;
+            lowerText = text.toLowerCase();
+          }
+          if (!passesPrefilter(compiled.prefilter, text, lowerText ?? "")) continue;
+        }
         const rest = compiled.patterns?.slice(1);
         if (rest && !rest.every((pattern) => pattern.test(text))) continue;
         const locator = compiled.locator;

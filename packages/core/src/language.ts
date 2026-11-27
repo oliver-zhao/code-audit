@@ -14,6 +14,11 @@ export type Language =
   | "markdown"
   | "razor"
   | "xml"
+  | "toml"
+  | "ini"
+  | "properties"
+  | "shell"
+  | "template"
   | "unknown";
 
 export const SOURCE_LANGUAGES: readonly Language[] = [
@@ -27,6 +32,26 @@ export const SOURCE_LANGUAGES: readonly Language[] = [
   "cpp",
   "rust",
   "razor",
+  "shell",
+];
+
+/**
+ * Languages whose files are reported as source (`kind: "source"`, findings in
+ * category `sast`): the code languages above plus HTML-style templates, which
+ * are where cross-site scripting is written. Templates are not counted as
+ * excluded source in vendored directories (`SOURCE_LANGUAGES`).
+ */
+export const SOURCE_LIKE_LANGUAGES: readonly Language[] = [...SOURCE_LANGUAGES, "template"];
+
+/** Languages whose files are configuration (`kind: "config"`). */
+export const CONFIG_LANGUAGES: readonly Language[] = [
+  "json",
+  "yaml",
+  "xml",
+  "dockerfile",
+  "toml",
+  "ini",
+  "properties",
 ];
 
 const EXTENSION_LANGUAGE: Record<string, Language> = {
@@ -63,8 +88,52 @@ const EXTENSION_LANGUAGE: Record<string, Language> = {
   // ASP.NET Razor views and components: matched as plain lines.
   ".cshtml": "razor",
   ".razor": "razor",
-  // .NET XML configuration (web.config, app.config, *.config).
+  // .NET XML configuration (web.config, app.config, *.config) and other XML
+  // (Maven, MyBatis mappers, Spring contexts, Android manifests).
   ".config": "xml",
+  ".xml": "xml",
+  // TOML: Cargo.toml, pyproject.toml, uv.toml, .codex/config.toml.
+  ".toml": "toml",
+  // INI-style settings: tox.ini, setup.cfg, pip.ini.
+  ".ini": "ini",
+  ".cfg": "ini",
+  ".properties": "properties",
+  ".sh": "shell",
+  ".bash": "shell",
+  ".zsh": "shell",
+  ".ksh": "shell",
+  // Cursor project rules.
+  ".mdc": "markdown",
+  // HTML and server-side templates: matched as plain lines.
+  ".html": "template",
+  ".htm": "template",
+  ".jinja": "template",
+  ".jinja2": "template",
+  ".j2": "template",
+  ".njk": "template",
+  ".twig": "template",
+  ".vue": "template",
+  ".svelte": "template",
+  ".ejs": "template",
+  ".hbs": "template",
+  ".handlebars": "template",
+  ".mustache": "template",
+};
+
+/** Files known by their whole name (lower case). */
+const BASENAME_LANGUAGE: Record<string, Language> = {
+  // Agent instruction files without a .md extension.
+  ".cursorrules": "markdown",
+  ".windsurfrules": "markdown",
+  ".clinerules": "markdown",
+  // Zed's project rules file.
+  ".rules": "markdown",
+  // INI-style package-manager settings.
+  ".npmrc": "ini",
+  ".yarnrc": "ini",
+  ".pypirc": "ini",
+  "pip.conf": "ini",
+  ".pip.conf": "ini",
 };
 
 export function detectLanguage(filePath: string): Language {
@@ -76,6 +145,8 @@ export function detectLanguage(filePath: string): Language {
   ) {
     return "dockerfile";
   }
+  const byName = BASENAME_LANGUAGE[base];
+  if (byName) return byName;
   const ext = base.includes(".") ? `.${base.split(".").pop()}` : "";
   return EXTENSION_LANGUAGE[ext] ?? "unknown";
 }
@@ -97,6 +168,11 @@ export function languageDisplayName(language: Language | string): string {
     markdown: "Markdown",
     razor: "Razor",
     xml: "XML",
+    toml: "TOML",
+    ini: "INI",
+    properties: "Java properties",
+    shell: "Shell",
+    template: "HTML/template",
     unknown: "unknown",
   };
   return names[language] ?? language;
