@@ -184,6 +184,11 @@ then `code-audit baseline <run-id>`).
 
 ### Fixed
 
+- MCP `audit_findings` cursors are opaque tokens and a shortened page carries a
+  `page_note`: in host tests an agent computed the next offset itself and
+  skipped the items a size-capped page had left out. A computed or garbled
+  cursor is refused with `INVALID_CURSOR`.
+
 - Precision fixes from review on public repositories in every language,
   among them: JavaScript `RegExp.prototype.exec` and `query.exec()` are not
   subprocesses; minified files (lines of 1000+ characters) are skipped by

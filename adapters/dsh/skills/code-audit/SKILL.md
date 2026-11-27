@@ -140,8 +140,10 @@ your tool list whose name ends with the bare name.
   medium` before anything else.
 - Read at most a few hundred lines per finding. `audit_read` returns at most 400
   lines per call and `audit_search` defaults to 50 matches.
-- `audit_findings` returns at most 20 items per page; use `next_cursor` rather
-  than requesting everything at once.
+- `audit_findings` returns at most 20 items per page, often fewer because
+  responses are capped at about 8 KB. Continue with `next_cursor` exactly as
+  returned (an opaque token); never compute a cursor yourself, or items are
+  skipped.
 - If the budget runs out, use `needs_review` with a rationale that states what
   remains unverified. Stop and report rather than guessing.
 - Prefer one targeted search over many broad ones; narrow with `glob`.

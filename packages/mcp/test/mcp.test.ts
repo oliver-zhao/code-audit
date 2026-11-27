@@ -24,7 +24,7 @@ async function call(
     isError?: boolean;
   };
   const text = result.content[0]?.text ?? "{}";
-  expect(result.isError).toBeUndefined();
+  expect(result.isError, JSON.stringify(result.content).slice(0, 300)).toBeUndefined();
   return JSON.parse(text) as Record<string, unknown>;
 }
 
@@ -200,7 +200,9 @@ describe("MCP server", () => {
     };
     expect(first.items).toHaveLength(2);
     expect(first.items[0]?.kind).toBe("finding");
-    expect(first.next_cursor).toBe("2");
+    // Opaque, so an agent cannot compute the next one itself.
+    expect(first.next_cursor).toMatch(/^c[0-9a-z]+$/);
+    expect(first.next_cursor).not.toBe("2");
     const second = (await call("audit_findings", {
       run_id: runId,
       kind: "finding",
@@ -216,7 +218,35 @@ describe("MCP server", () => {
     expect(Buffer.byteLength(raw.content[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(
       8000,
     );
-  });
+    // Walking every page with next_cursor visits each item exactly once, also
+    // when pages are shortened to fit the size cap.
+    const seen: string[] = [];
+    let cursor: string | null | undefined;
+    let pages = 0;
+    do {
+      const page = (await call("audit_findings", {
+        run_id: runId,
+        kind: "all",
+        limit: 20,
+        ...(cursor ? { cursor } : {}),
+      })) as { items: Array<{ id: string }>; next_cursor: string | null; total: number };
+      for (const item of page.items) seen.push(item.id);
+      cursor = page.next_cursor;
+      pages += 1;
+      if (pages === 1) expect(page.total).toBeGreaterThan(20);
+    } while (cursor && pages < 500);
+    expect(new Set(seen).size).toBe(seen.length);
+    const total = ((await call("audit_findings", { run_id: runId, kind: "all", limit: 1 })) as { total: number }).total;
+    expect(seen.length).toBe(total);
+
+    // A computed or garbled cursor is refused instead of silently skipping.
+    const bad = (await client.callTool({
+      name: "audit_findings",
+      arguments: { run_id: runId, kind: "all", cursor: "20" },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]?.text).toContain("INVALID_CURSOR");
+  }, 120_000);
 
   it("reads snippets with delimiters and redacts secrets", async () => {
     const snippet = (await call("audit_read", {
