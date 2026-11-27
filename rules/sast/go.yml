@@ -18,18 +18,30 @@ definitions:
   GOTEST: '_test\.go$|(?:^|/)(?:testdata|vendor|third_party)/'
   # Request data accessors. The gin/echo/fiber forms require a literal key so
   # that c.Query(sql) on a database handle named c is not taken for one.
-  REQ: '(?:\b(?:r|req|request|httpReq|c\.Request|ctx\.Request)\.(?:URL\.Query\(\)\.Get|FormValue|PostFormValue|Header\.Get|Form\.Get|PostForm\.Get)\(|\b(?:r|req|request)\.URL\.Query\(\)\[|\bmux\.Vars\(\s*\w+\s*\)\[|\b(?:c|ctx|gc|ec|fc)\.(?:Query|DefaultQuery|Param|Params|PostForm|DefaultPostForm|GetHeader|FormValue|QueryParam|GetQuery|GetPostForm)\(\s*")'
+  # net/http (including Go 1.22 PathValue and the Form/Header maps), gorilla
+  # mux (mux.Vars(r)[..] and the usual vars[..] idiom), chi, httprouter.
+  REQ: '(?:\b(?:r|req|request|httpReq|c\.Request|ctx\.Request)\.(?:URL\.Query\(\)\.Get|FormValue|PostFormValue|Header\.Get|Form\.Get|PostForm\.Get|PathValue)\(|\b(?:r|req|request|c\.Request|ctx\.Request)\.(?:URL\.Query\(\)|Form|PostForm|Header)\[|\bmux\.Vars\(\s*\w+\s*\)\[|\bvars\[\s*"|\bchi\.URLParam\(|\b(?:ps|params)\.ByName\(|\b(?:c|ctx|gc|ec|fc)\.(?:Query|DefaultQuery|Param|Params|PostForm|DefaultPostForm|GetHeader|FormValue|QueryParam|GetQuery|GetPostForm)\(\s*")'
   # A Go interpreted string literal (escaped quotes included).
   STR: '"(?:[^"\\\n]|\\.){0,600}"'
   # A leading context.Context argument.
-  CTXARG: '(?:ctx|c|context\.\w+\(\)|\w{0,30}[cC]tx(?:\(\))?|\w{1,20}\.Context\(\))'
+  CTXARG: '(?:ctx|c|context\.\w+\(\)|\w{0,30}[cC]tx(?:\(\))?|\w{1,30}(?:\.\w{1,30}){0,2}\.Context\(\))'
   # A database/sql, sqlx or gorm call that takes SQL text, positioned at its
   # SQL argument (a leading context argument is skipped).
   SQLCALL: '(?<!stmt)\.(?:Query|QueryRow|Exec|Prepare|Queryx|QueryRowx|MustExec|NamedExec|NamedQuery|Raw)(?:Context)?\(\s*(?:{{CTXARG}}\s*,\s*)?'
   # sqlx Get/Select(&dest, query, ...) and gorm clause builders that take SQL.
   SQLCALL2: '(?:\.(?:Get|Select)\(\s*&\w+\s*,\s*|\.(?:Where|Or|Not|Order|Group|Having|Joins|Pluck)\(\s*)'
-  SHELL: '"(?:/usr)?(?:/bin/)?(?:sh|bash|zsh|ksh|dash)"\s*,\s*"-c"|"cmd(?:\.exe)?"\s*,\s*"/[cC]"|"(?:powershell|pwsh)(?:\.exe)?"\s*,\s*"-(?:c|Command)"'
-  EXECCALL: '\bexec\.Command(?:Context)?\('
+  # sh -c, bash -lc, /usr/bin/env bash -c, $SHELL -c, cmd /C, powershell -Command.
+  SHELL: '(?:"(?:/usr)?(?:/bin/)?(?:sh|bash|zsh|ksh|dash)"|"(?:/usr)?/bin/env"\s*,\s*"(?:sh|bash|zsh|ksh|dash)"|os\.Getenv\(\s*"SHELL"\s*\))\s*,\s*"-(?:l?c|cl)"|"cmd(?:\.exe)?"\s*,\s*"/[cC]"|"(?:powershell|pwsh)(?:\.exe)?"\s*,\s*"-(?:c|Command)"'
+  # exec.Command( or exec.CommandContext(ctx, , positioned at the program.
+  EXECCALL: '(?:\bexec\.Command\(\s*|\bexec\.CommandContext\(\s*{{CTXARG}}\s*,\s*)'
+  # A raw string literal; it may span lines once units are joined.
+  BSTR: '`[^`]{0,400}`'
+  # The first argument of a call, up to its first top-level comma, ending at
+  # request data. filepath.Join / path.Join / fmt.Sprintf in that argument are
+  # followed through their own comma-separated arguments (without nested
+  # calls before the request value), so a later argument (WriteFile data, a
+  # request body) is never taken for the path or URL.
+  ARGREQ: '(?:(?:(?:filepath|path)\.Join\(\s*|fmt\.Sprintf\(\s*(?:{{STR}}|{{BSTR}})\s*,\s*)(?:[^,;()\n]{1,100},\s*){0,4})?[^,;\n]{0,200}?{{REQ}}'
   # File APIs that take a path as their first argument.
   FILECALL: '\b(?:os\.(?:Open|OpenFile|ReadFile|Create|WriteFile|Remove|RemoveAll|ReadDir|Stat|Lstat|Mkdir|MkdirAll|Rename|Truncate)|ioutil\.(?:ReadFile|WriteFile|ReadDir))\('
 rules:
@@ -44,7 +56,7 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     patterns:
-      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:{{REQ}}|fmt\.Sprintf\(\s*"[^"\n]{0,400}"\s*,[^()\n]{0,200}?{{REQ}}|(?:"[^"\n]{0,400}"\s*\+\s*|[\w.]{1,60}\s*\+\s*){1,3}{{REQ}})'
+      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:{{REQ}}|fmt\.Sprintf\(\s*(?:"[^"\n]{0,400}"|{{BSTR}})\s*,[^()\n]{0,200}?{{REQ}}|(?:(?:"[^"\n]{0,400}"|{{BSTR}})\s*\+\s*|[\w.]{1,60}\s*\+\s*){1,3}{{REQ}})'
     group: go-sql
     message: A request value is formatted or concatenated into SQL text, so the client controls the query.
     message_zh: 请求参数被格式化或拼接进 SQL 文本，客户端可以控制查询语句。
@@ -63,7 +75,7 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}|(?:^|/)(?:migrations?|modelmigration|migrate)/'
     patterns:
-      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:fmt\.Sprintf\(\s*)?"[^"\n]{0,400}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}(?:%[sv]|"\s*\+)|"\s*\+|%[sv]\b)|\bfmt\.Sprintf\(\s*[`"]\s*(?:SELECT|UPDATE|DELETE|INSERT)\b[^`"]{0,600}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}%[sv]|%[sv]\b)'
+      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:fmt\.Sprintf\(\s*)?(?:"[^"\n]{0,400}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}(?:%[sv]|"\s*\+)|"\s*\+|%[sv]\b)|`[^`]{0,400}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}(?:%[sv]|`\s*\+)|`\s*\+|%[sv]\b))|\bfmt\.Sprintf\(\s*[`"]\s*(?:SELECT|UPDATE|DELETE|INSERT)\b[^`"]{0,600}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}%[sv]|%[sv]\b)'
       - '\b(?:SELECT|UPDATE|DELETE|INSERT|WHERE)\b'
     group: go-sql
     message: A value is spliced into a SQL comparison with fmt.Sprintf or +, instead of being passed as a bind parameter.
@@ -126,7 +138,7 @@ rules:
     owasp: A03:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '{{EXECCALL}}(?:\s*\w+\s*,)?\s*(?:{{SHELL}})\s*,\s*(?:fmt\.Sprintf\(|"[^"\n]{0,400}"\s*\+|[\w.]+\s*\+|strings\.Join\()'
+    pattern: '{{EXECCALL}}(?:{{SHELL}})\s*,\s*(?:fmt\.Sprintf\(|"[^"\n]{0,400}"\s*\+|[\w.]+\s*\+|strings\.Join\()'
     group: go-command
     message: A command line is built with fmt.Sprintf or + and run through a shell; any shell metacharacter in a value runs extra commands.
     message_zh: 命令行通过 fmt.Sprintf 或 + 拼接后交给 shell 执行；值中的任何 shell 元字符都会执行额外命令。
@@ -146,7 +158,7 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     # A shell with a non-literal script; a fixed script is not reported.
-    pattern: '{{EXECCALL}}(?:\s*\w+\s*,)?\s*(?:{{SHELL}})\s*,\s*(?!\s*{{STR}}\s*[,)])(?!\s*`[^`\n]{0,600}`\s*[,)])'
+    pattern: '{{EXECCALL}}(?:{{SHELL}})\s*,\s*(?!\s*{{STR}}\s*[,)])(?!\s*`[^`\n]{0,600}`\s*[,)])'
     group: go-command
     message: A command runs through sh -c with a runtime script; confirm it contains no untrusted input.
     message_zh: 通过 sh -c 执行运行时生成的脚本；需确认其中不含不可信输入。
@@ -165,7 +177,7 @@ rules:
     owasp: A03:2021
     languages: [go]
     pathExclude: '{{GOTEST}}|(?:^|/)(?:tools|scripts|hack|build|magefiles|internal/tools)/'
-    pattern: '\bexec\.Command\(\s*(?!")[\w.]+(?:\[\w{1,20}\])?\s*[,)]|\bexec\.CommandContext\(\s*[\w.()]+\s*,\s*(?!")[\w.]+(?:\[\w{1,20}\])?\s*[,)]'
+    pattern: '{{EXECCALL}}(?!")(?!os\.Getenv\(\s*"SHELL")[\w.]+(?:\[\w{1,20}\])?\s*[,)]'
     group: go-command
     message: The program name is a runtime value; confirm it cannot come from user input or untrusted configuration.
     message_zh: 程序名是运行时值；需确认它不可能来自用户输入或不可信配置。
@@ -185,8 +197,8 @@ rules:
     owasp: A01:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '(?:{{FILECALL}}|\bhttp\.ServeFile\(\s*\w+\s*,\s*[\w.]+\s*,\s*|\b(?:c|ctx)\.(?:File|FileAttachment|SendFile|Attachment)\(\s*|\b(?:filepath|path)\.Join\()[^;\n]{0,300}?{{REQ}}'
-    notPattern: '\bfilepath\.Base\(\s*{{REQ}}|\bpath\.Base\(\s*{{REQ}}'
+    pattern: '(?:{{FILECALL}}\s*|\bhttp\.ServeFile\(\s*\w+\s*,\s*[\w.]+\s*,\s*|\b(?:c|ctx)\.(?:File|FileAttachment|SendFile|Attachment)\(\s*){{ARGREQ}}|\b(?:filepath|path)\.Join\(\s*(?:[^,;()\n]{1,100},\s*){0,4}[^,;()\n]{0,100}?{{REQ}}'
+    notPattern: '\b(?:filepath|path)\.Base\(\s*{{REQ}}|\bfilepath\.Clean\(\s*"/"\s*\+'
     group: go-path
     message: A request value becomes part of a file path; ../ sequences or an absolute path escape the intended directory.
     message_zh: 请求参数成为文件路径的一部分；../ 或绝对路径可以逃出预期目录。
@@ -226,9 +238,10 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     filePattern: '"archive/(?:zip|tar)"'
-    # A file that checks the joined path anywhere (HasPrefix, Rel, IsLocal,
-    # securejoin, a ".." test) is left to review.
-    fileAbsentPattern: 'strings\.HasPrefix\(|filepath\.Rel\(|filepath\.IsLocal\(|SecureJoin|filepath\.Localize\(|os\.OpenRoot\(|"\.\."'
+    # A file that checks a path against the destination (HasPrefix with the
+    # destination or a cleaned path as prefix, Rel, IsLocal, securejoin, a
+    # ".." test) is left to review; an unrelated HasPrefix does not count.
+    fileAbsentPattern: 'strings\.HasPrefix\([^;\n]{1,100},\s*(?:filepath\.Clean\(|\w{0,20}(?:dest|dst|dir|root|base|target|out)\w{0,20})|filepath\.Rel\(|filepath\.IsLocal\(|SecureJoin|filepath\.Localize\(|os\.OpenRoot\(|"\.\."'
     pattern: '\b(?:filepath|path)\.Join\(\s*[\w.]+\s*,\s*(?:\w+\.)?(?:\w+)\.Name\s*\)'
     group: go-path
     message: An archive entry name is joined to the destination directory without checking the result; an entry such as ../../etc/cron.d/x writes outside it (Zip Slip).
@@ -256,27 +269,28 @@ rules:
       - CWE-552
       - OWASP A01:2021
   - id: go-file-permissions
-    title: Go file or directory created world-writable
-    title_zh: Go 创建了所有人可写的文件或目录
+    title: Go chmod to a world-writable mode
+    title_zh: Go 使用 chmod 设置所有人可写的权限
     severity: medium
     confidence: medium
     cwe: CWE-732
     owasp: A01:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    # 0666 for a new file is what os.Create uses and is reduced by the umask;
-    # reported are 0777 on files and explicit chmods to world-writable modes.
-    pattern: '\b(?:os\.(?:WriteFile|OpenFile)|ioutil\.WriteFile)\([^;\n]{0,300},\s*0o?777\s*\)|\bos\.(?:Chmod|Lchmod)\([^;\n]{0,300},\s*0o?(?:777|666|776|766|667)\s*\)|\.Chmod\(\s*0o?(?:777|666)\s*\)'
+    # Modes passed when a file is created are reduced by the umask (0666 is
+    # what os.Create uses), so they are only a hotspot (go-file-permissions-api);
+    # chmod is applied as given.
+    pattern: '\bos\.(?:Chmod|Lchmod)\([^;\n]{0,300},\s*0o?(?:777|666|776|766|667)\s*\)|\.Chmod\(\s*0o?(?:777|666)\s*\)'
     group: go-file-perms
-    message: The mode makes the file writable (and for 0777 executable) by every local user; chmod is not reduced by the umask.
-    message_zh: 该权限使所有本地用户都可写该文件（0777 还可执行）；chmod 不受 umask 影响。
+    message: chmod is not reduced by the umask, so this mode makes the file writable by every local user.
+    message_zh: chmod 不受 umask 影响，该权限使所有本地用户都可写该文件。
     remediation: Use 0600/0640 for files and 0700/0750 for directories unless other users really need access.
     remediation_zh: 文件使用 0600/0640，目录使用 0700/0750，除非确实需要其他用户访问。
     references:
       - CWE-732
       - OWASP A01:2021
   - id: go-file-permissions-api
-    title: Go creates a file or directory with permissive mode
+    title: Go creates a file or directory with a permissive mode
     title_zh: Go 以宽松权限创建文件或目录
     severity: low
     confidence: low
@@ -287,8 +301,8 @@ rules:
     pathExclude: '{{GOTEST}}'
     pattern: '\b(?:os\.(?:WriteFile|OpenFile|Mkdir|MkdirAll)|ioutil\.WriteFile)\([^;\n]{0,300},\s*(?:0o?(?:777|666|776|766)|os\.ModePerm)\s*\)'
     group: go-file-perms
-    message: The file or directory is created with a world-writable mode before the umask; confirm the process umask or the data makes this acceptable.
-    message_zh: 文件或目录以所有人可写的模式创建（umask 之前）；需确认进程 umask 或数据性质使其可接受。
+    message: The requested mode grants write (and for 0777 execute) access to every local user; only the process umask narrows it. Confirm the umask or the data makes this acceptable.
+    message_zh: 请求的权限允许所有本地用户写入（0777 还可执行），只有进程 umask 会收窄它；需确认 umask 或数据性质使其可接受。
     remediation: Use 0600/0640 for files and 0700/0750 for directories.
     remediation_zh: 文件使用 0600/0640，目录使用 0700/0750。
     references:
@@ -342,7 +356,7 @@ rules:
     owasp: A10:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '\bhttp\.(?:Get|Head|Post|PostForm|NewRequest(?:WithContext)?)\([^;\n]{0,200}?{{REQ}}|\b(?:client|\w{0,20}Client)\.(?:Get|Head|Post|PostForm)\(\s*{{REQ}}'
+    pattern: '\bhttp\.(?:Get|Head|Post|PostForm)\(\s*{{ARGREQ}}|\bhttp\.NewRequest\(\s*[^,;\n]{1,60},\s*{{ARGREQ}}|\bhttp\.NewRequestWithContext\(\s*{{CTXARG}}\s*,\s*[^,;\n]{1,60},\s*{{ARGREQ}}|\b(?:http\.DefaultClient|httpClient|\w{0,20}(?:HTTP|Http)Client)\.(?:Get|Head|Post|PostForm)\(\s*{{ARGREQ}}'
     group: go-ssrf
     message: The server fetches a URL that the client supplies, so it can be pointed at internal services and cloud metadata endpoints.
     message_zh: 服务器请求客户端提供的 URL，可被指向内网服务和云元数据端点。
@@ -361,7 +375,7 @@ rules:
     owasp: A10:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '\bhttp\.(?:Get|Head|Post|PostForm)\(\s*(?!")[\w.]+\s*[,)+]|\bhttp\.NewRequest(?:WithContext)?\((?:\s*[\w.()]+\s*,)?\s*(?:"[A-Z]{3,7}"|http\.Method\w+)\s*,\s*(?!")[\w.]+(?:\(\))?\s*[,+]'
+    pattern: '\bhttp\.(?:Get|Head|Post|PostForm)\(\s*(?:(?!")[\w.]+\s*[,)+]|fmt\.Sprintf\(|"https?://[^"\n]{0,200}"\s*\+)|\bhttp\.NewRequest(?:WithContext)?\((?:\s*{{CTXARG}}\s*,)?\s*(?:"[A-Z]{3,7}"|http\.Method\w+)\s*,\s*(?:(?!")[\w.]+(?:\(\))?\s*[,+]|fmt\.Sprintf\(|"https?://[^"\n]{0,200}"\s*\+)'
     group: go-ssrf
     message: The request target is a runtime value; confirm it cannot be chosen by a user (internal services, cloud metadata).
     message_zh: 请求目标是运行时值；需确认用户无法决定它（内网服务、云元数据）。
@@ -379,7 +393,7 @@ rules:
     owasp: A01:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '\bhttp\.Redirect\(\s*\w+\s*,\s*[\w.]+\s*,\s*{{REQ}}|\b(?:c|ctx)\.Redirect\(\s*[\w.]+\s*,\s*{{REQ}}'
+    pattern: '\bhttp\.Redirect\(\s*\w+\s*,\s*[\w.]+\s*,\s*{{ARGREQ}}|\b(?:c|ctx)\.Redirect\(\s*(?:[\w.]+\s*,\s*)?{{REQ}}'
     message: The redirect target comes from the request, so a link on this site can send users to an attacker's page (phishing, token theft).
     message_zh: 重定向目标来自请求，本站链接可以把用户送到攻击者页面（钓鱼、令牌窃取）。
     remediation: Redirect only to relative paths you validate (starting with a single /) or to an allowlist of hosts.
@@ -487,8 +501,9 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples)/'
     # The blank import registers /debug/pprof on http.DefaultServeMux; the
-    # file also serves that mux (a nil handler).
-    filePattern: '\bhttp\.ListenAndServe(?:TLS)?\([^;\n]{1,200},\s*nil\s*\)'
+    # file also serves that mux (a nil handler) on an address that is not
+    # loopback-only.
+    filePattern: '\bhttp\.ListenAndServe(?:TLS)?\(\s*(?!"(?:localhost|127\.0\.0\.1|\[::1\]):)[^;\n]{1,200},\s*nil\s*\)'
     pattern: '^\s*(?:import\s+)?_\s+"net/http/pprof"'
     message: Importing net/http/pprof exposes /debug/pprof (heap dumps, goroutine stacks, CPU profiles) on the default mux that this program serves.
     message_zh: 导入 net/http/pprof 会在本程序对外服务的默认 mux 上暴露 /debug/pprof（堆转储、goroutine 栈、CPU 剖析）。
@@ -510,10 +525,32 @@ rules:
     pathExclude: '{{GOTEST}}'
     pattern: '\btemplate\.(?:HTML|HTMLAttr|JS|JSStr|URL|CSS|Srcset)\([^;\n]{0,200}?{{REQ}}'
     group: go-template-unescaped
+    notPattern: 'EscapeString\(|\.Sanitize\(|\.SanitizeBytes\('
     message: Request data is converted to a template.HTML/JS/URL type, which html/template inserts without escaping (cross-site scripting).
     message_zh: 请求数据被转换为 template.HTML/JS/URL 类型，html/template 会不经转义直接输出（跨站脚本）。
     remediation: Pass the plain string to the template and let html/template escape it; sanitize HTML with a policy library if markup is required.
     remediation_zh: 把普通字符串交给模板，由 html/template 转义；确需保留标记时用策略型清洗库处理。
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: go-xss-response-write
+    title: Go request data written raw to the HTTP response
+    title_zh: Go 将请求数据原样写入 HTTP 响应
+    severity: high
+    confidence: medium
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # Request data at the start of the body (Content-Type is sniffed from it)
+    # or inside an HTML format string.
+    pattern: '\b(?:w|rw|writer|resp|res|response|c\.Writer|ctx\.Writer)\.Write\(\s*\[\]byte\(\s*{{REQ}}|\b(?:io\.WriteString|fmt\.Fprint(?:ln)?)\(\s*(?:w|rw|writer|resp|res|response|c\.Writer|ctx\.Writer)\s*,\s*{{REQ}}|\bfmt\.Fprintf\(\s*(?:w|rw|writer|resp|res|response|c\.Writer|ctx\.Writer)\s*,\s*"[^"\n]{0,200}<[^"\n]{0,200}"\s*,[^;\n]{0,200}?{{REQ}}'
+    notPattern: 'EscapeString\(|\.Sanitize\(|strconv\.Quote\('
+    group: go-xss
+    message: Request data is written to the response without HTML escaping; when the response is served (or sniffed) as HTML, the client's markup and scripts run in the page (reflected XSS).
+    message_zh: 请求数据未经 HTML 转义就写入响应；当响应以 HTML 提供（或被嗅探为 HTML）时，客户端提交的标记和脚本会在页面中执行（反射型 XSS）。
+    remediation: Render HTML with html/template, or escape with html.EscapeString and set an explicit non-HTML Content-Type for plain text.
+    remediation_zh: 使用 html/template 渲染 HTML，或用 html.EscapeString 转义，并为纯文本设置明确的非 HTML Content-Type。
     references:
       - CWE-79
       - OWASP A03:2021
@@ -567,7 +604,7 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     filePattern: '"(?:text|html)/template"'
-    pattern: '(?:\btemplate\.(?:New\([^()\n]{0,100}\)\.)?|\b(?:t|tp|tmpl|tpl|templ|\w{0,20}template)\.)Parse\([^;\n]{0,200}?{{REQ}}'
+    pattern: '(?:\btemplate\.(?:New\([^()\n]{0,100}\)(?:\.(?:Funcs|Option|Delims)\([^;\n]{0,200}?\)){0,3}\.)?|\b(?:t|tp|tmpl|tpl|templ|\w{0,20}template)\.)Parse\([^;\n]{0,200}?{{REQ}}'
     message: A template is compiled from request data; the client can call any method or function reachable from the template data (server-side template injection).
     message_zh: 模板由请求数据编译而成；客户端可以调用模板数据可达的任何方法或函数（服务端模板注入）。
     remediation: Parse only templates from the code base; pass user input as template data.
@@ -607,6 +644,7 @@ rules:
     pathExclude: '{{GOTEST}}'
     pattern: '\b(?:md5|sha1|sha256|sha512)\.Sum(?:256|512)?\([^;\n]{0,120}?\b\w{0,20}(?:passw(?:or)?d|passwd|pwd)\w{0,20}'
     group: go-weak-hash
+    notPattern: '\w{0,30}(?:token|reset)\w{0,30}'
     message: A fast unsalted hash of a password can be brute-forced at billions of guesses per second.
     message_zh: 口令的快速无盐哈希可以每秒数十亿次的速度被暴力破解。
     remediation: Use bcrypt, scrypt or argon2id (golang.org/x/crypto).
@@ -659,9 +697,10 @@ rules:
     languages: [go]
     pathExclude: '{{GOTEST}}'
     # The file imports math/rand under its own name (an aliased math/rand
-    # leaves rand.* to crypto/rand).
+    # leaves rand.* to crypto/rand). The secret-like name must end the
+    # identifier, so tokenCount or retryTokens are not secrets.
     filePattern: '^\s*(?:import\s+)?"math/rand(?:/v2)?"'
-    pattern: '\b\w{0,30}(?:token|secret|passw(?:or)?d|salt|nonce|otp|csrf|session_?id|api_?key|reset_?code|verif\w{0,10}code)\w{0,30}\b[^;\n]{0,80}?\brand\.(?:Intn?|Int31n?|Int63n?|Uint32|Uint64|IntN|Read|Perm|Shuffle)\('
+    pattern: '\b\w{0,30}(?:token|secret|passw(?:or)?d|salt|nonce|otp|csrf|session_?id|api_?key|reset_?code|verif\w{0,10}code)\b[^;\n]{0,80}?\brand\.(?:Intn?|Int31n?|Int63n?|Uint32|Uint64|IntN|Read|Perm|Shuffle)\(|\brand\.Read\(\s*\w{0,30}(?:token|secret|salt|nonce|key|iv|otp)s?\s*[\[)]'
     message: math/rand is predictable (seeded, not a CSPRNG); a token or key drawn from it can be guessed.
     message_zh: math/rand 可预测（有种子，不是密码学安全随机数）；由它生成的令牌或密钥可以被猜出。
     remediation: Use crypto/rand (rand.Read, rand.Text) for tokens, keys, and salts.
@@ -712,7 +751,7 @@ rules:
     owasp: A02:2021
     languages: [go]
     pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples|samples?|docs?)/'
-    pattern: '(?:\b(?:aes\.NewCipher|chacha20poly1305\.NewX?|blowfish\.NewCipher)\(\s*|\bhmac\.New\(\s*[\w.]+\s*,\s*|\b(?:\w{0,30}(?:secret|enc(?:ryption)?_?key|signing_?key|hmac_?key|aes_?key|cipher_?key|master_?key|crypto_?key|private_?key)|key)\s*(?::=|=)\s*)\[\]byte\(\s*"(?<secret>[^"\n]{8,200})"\s*\)'
+    pattern: '(?:\b(?:aes\.NewCipher|chacha20poly1305\.NewX?|blowfish\.NewCipher)\(\s*|\bhmac\.New\(\s*[\w.]+\s*,\s*|\b(?:\w{0,30}(?:secret|enc(?:ryption)?_?key|hmac_?key|aes_?key|cipher_?key|master_?key|crypto_?key|private_?key)|key)\s*(?::=|=)\s*)\[\]byte\(\s*"(?<secret>[^"\n]{8,200})"\s*\)'
     notPattern: '"[^"\n]{0,200}(?:example|changeme|change_me|your|xxx|dummy|placeholder|fake|sample|replace|todo|test)[^"\n]{0,200}"|\bjwt'
     redactEvidence: true
     group: go-hardcoded-key
@@ -732,7 +771,8 @@ rules:
     owasp: A02:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    pattern: '\bbcrypt\.GenerateFromPassword\([^;\n]{1,200},\s*(?:[0-9]|bcrypt\.MinCost)\s*\)'
+    pattern: '\bbcrypt\.GenerateFromPassword\([^;\n]{1,200},\s*(?:[4-9]|bcrypt\.MinCost)\s*\)'
+    # Costs below 4 (MinCost) are replaced by DefaultCost by x/crypto/bcrypt.
     message: A bcrypt cost below 10 makes offline guessing of leaked hashes many times cheaper.
     message_zh: bcrypt 成本因子低于 10 会使泄露哈希的离线猜测成本大幅降低。
     remediation: Use bcrypt.DefaultCost (10) or higher, tuned to about 100 ms per hash.
@@ -792,7 +832,7 @@ rules:
     pathExclude: '{{GOTEST}}'
     flags: ''
     pattern: '\bjwt\.(?:SigningMethodNone|UnsafeAllowNoneSignatureType)\b'
-    notPattern: '[!=]=\s*jwt\.SigningMethodNone|jwt\.SigningMethodNone\s*[!=]='
+    notPattern: '[!=]=\s*jwt\.SigningMethodNone|jwt\.SigningMethodNone\s*[!=]=|^\s*case\b'
     message: Tokens signed with the 'none' algorithm carry no signature, so anyone can mint them.
     message_zh: 使用 none 算法的令牌没有签名，任何人都能伪造。
     remediation: Sign with HS256/RS256/EdDSA and reject 'none' (jwt.WithValidMethods).
@@ -809,7 +849,7 @@ rules:
     owasp: A07:2021
     languages: [go]
     pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples|samples?|docs?)/'
-    pattern: '(?:\.SignedString\(\s*\[\]byte\(\s*|\b\w{0,20}(?:jwt_?(?:secret|key|signing_?key)|token_?secret|signing_?(?:secret|key))\w{0,10}\s*(?::=|=)\s*(?:\[\]byte\(\s*)?|\*jwt\.Token\s*\)\s*\(\s*(?:interface\{\}|any)\s*,\s*error\s*\)\s*\{\s*return\s+\[\]byte\(\s*)"(?<secret>[^"\n]{6,200})"'
+    pattern: '(?:\.SignedString\(\s*\[\]byte\(\s*|\b\w{0,20}(?:jwt_?(?:secret|key|signing_?key)|signing_?(?:secret|key))\s*(?::=|=)\s*(?:\[\]byte\(\s*)?|\*jwt\.Token\s*\)\s*\(\s*(?:interface\{\}|any)\s*,\s*error\s*\)\s*\{\s*return\s+\[\]byte\(\s*)"(?<secret>[^"\n]{6,200})"'
     notPattern: '"[^"\n]{0,200}(?:example|changeme|change_me|your|xxx|dummy|placeholder|fake|sample|replace|todo)[^"\n]{0,200}"'
     redactEvidence: true
     group: go-hardcoded-key
@@ -841,18 +881,44 @@ rules:
 
   # ---------------------------------------------------------------- CORS / cookies
   - id: go-cors-credentials-any-origin
-    title: Go CORS allows credentials from any origin
-    title_zh: Go CORS 允许任意来源携带凭据
+    title: Go CORS accepts every origin with credentials
+    title_zh: Go CORS 对所有来源放行且允许凭据
     severity: high
     confidence: medium
     cwe: CWE-942
     owasp: A05:2021
     languages: [go]
     pathExclude: '{{GOTEST}}'
-    filePattern: 'AllowedOrigins\s*:\s*\[\]string\{\s*"\*"|AllowAllOrigins\s*:\s*true|AllowOriginFunc\s*:\s*func\([^)]{0,100}\)\s*bool\s*\{\s*return\s+true'
+    # An AllowOriginFunc that returns true makes rs/cors and gin-contrib/cors
+    # echo the caller's Origin, which browsers accept with credentials.
+    filePattern: 'AllowOriginFunc\s*:\s*func\([^)]{0,100}\)\s*bool\s*\{\s*return\s+true'
     pattern: '\bAllowCredentials\s*:\s*true\b'
-    message: The CORS configuration accepts every origin and also allows credentials, so any web site can make authenticated requests and read the responses.
-    message_zh: CORS 配置接受所有来源且允许携带凭据，任何网站都能发起带身份的请求并读取响应。
+    group: go-cors
+    message: The CORS configuration accepts every origin (AllowOriginFunc returns true), echoes it back and allows credentials, so any web site can make authenticated requests and read the responses.
+    message_zh: CORS 配置接受所有来源（AllowOriginFunc 恒返回 true）并原样回显，同时允许凭据，任何网站都能发起带身份的请求并读取响应。
+    remediation: Check the origin against a list of trusted origins in AllowOriginFunc, or list them in AllowedOrigins.
+    remediation_zh: 在 AllowOriginFunc 中将来源与可信来源列表比对，或在 AllowedOrigins 中列出它们。
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: go-cors-wildcard-credentials
+    title: Go CORS wildcard origin combined with credentials
+    title_zh: Go CORS 通配来源与凭据同时启用
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # Current rs/cors and gin-contrib/cors answer "*" here, which browsers
+    # refuse for credentialed requests; older versions and custom middleware
+    # echo the Origin instead.
+    filePattern: 'AllowedOrigins\s*:\s*\[\]string\{\s*"\*"|AllowAllOrigins\s*:\s*true'
+    pattern: '\bAllowCredentials\s*:\s*true\b'
+    group: go-cors
+    message: The CORS configuration allows every origin and credentials; confirm the library version answers "*" rather than echoing the Origin, and that every origin is really meant.
+    message_zh: CORS 配置允许所有来源并允许凭据；需确认所用库版本返回 "*" 而不是回显 Origin，并确认确实要放行所有来源。
     remediation: List the trusted origins explicitly when credentials are allowed.
     remediation_zh: 允许凭据时显式列出可信来源。
     references:
