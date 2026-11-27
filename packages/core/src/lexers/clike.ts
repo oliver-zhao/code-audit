@@ -703,6 +703,17 @@ export function clikeLogicalLines(
       rawSuppression = true;
     } else {
       let index = 0;
+      // Last `*/` of the line, for the glued `/*` check below (one scan).
+      const lastCommentClose = js ? line.lastIndexOf("*/") : -1;
+      if (inDirective && stack.length === 0) {
+        // `#include <sys/*.h>`: a header name is text, not a comment opener.
+        const header = INCLUDE_HEADER.exec(line);
+        if (header) {
+          code = header[0];
+          skeleton = header[0];
+          index = header[0].length;
+        }
+      }
       while (index < length) {
         const ch = line[index] as string;
         const top = stack[stack.length - 1];
@@ -876,6 +887,29 @@ export function clikeLogicalLines(
             if (!sawCode && text.trim().length > 0) sawCode = true;
             continue;
           }
+        }
+
+        // JavaScript: `//` or `/*` in JSX text (`<a>see http://x</a>`,
+        // `<p>src/*.js</p>`) is text. So is a `/*` glued to a word that
+        // does not close on its line (`src/*.js` in multi-line JSX text).
+        if (
+          js &&
+          ch === "/" &&
+          (line[index + 1] === "/" || line[index + 1] === "*") &&
+          (jsxTextBefore(line, index) ||
+            (line[index + 1] === "*" &&
+              index > 0 &&
+              /[\w.$]/.test(line[index - 1] as string) &&
+              lastCommentClose < index + 2))
+        ) {
+          const text = line.slice(index, index + 2);
+          code += text;
+          skeleton += hole ? SKELETON_FIELD.repeat(2) : text;
+          sawCode = true;
+          noteCode("/");
+          noteCode(text[1] as string);
+          index += 2;
+          continue;
         }
 
         if (ch === "/" && line[index + 1] === "/" && (!hole || hole.js)) {
@@ -1115,6 +1149,21 @@ export function clikeLogicalLines(
       }
     }
 
+    // Java: javac decodes \uXXXX before lexing, so an escape in a comment
+    // (a \u000a ends a // comment), an escape that decodes to a quote,
+    // backslash or line break in a string, or one in code may hide live code
+    // from this lexer. Such a line is also matched as written (fail open).
+    if (family === "java" && line.includes("\\u") && javaUnicodeEscapeMatters(line, skeleton, commentRanges)) {
+      windows.push({
+        start: lineIndex,
+        text: line.slice(0, MAX_PATTERN_LINE_LENGTH),
+        offsets: [0],
+        declaration: false,
+        headerEnd: 0,
+        extra: true,
+      });
+    }
+
     if (comments) {
       if (!line.toLowerCase().includes("code-audit:ignore")) comments[lineIndex] = "";
       else if (rawSuppression || csDirective) comments[lineIndex] = line;
@@ -1294,6 +1343,43 @@ function stringRun(top: StringContext): RegExp | null {
   return run;
 }
 
+/** `#include <...>` / `#import <...>` up to the closing `>` of the header name. */
+const INCLUDE_HEADER = /^\s*#\s*(?:include|include_next|import)\s*<[^>\n]*>/;
+
+/**
+ * JavaScript: does the text before `index` end in JSX children text? A tag in
+ * expression position (after `(`, `,`, `=`, `:`, `?`, `&`, `|`, `>`, `}`,
+ * `return` or at the start), then only text and tags. Reads at most 300
+ * characters back, so the cost per comment opener is bounded.
+ */
+const JSX_TEXT_BEFORE =
+  /(?:^|[(,=:?&|>}]|\breturn)\s*<[A-Za-z][\w.:-]*(?:\s[^<>]*)?>(?:[^<>{}()=;]|<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*)?>)*$/;
+function jsxTextBefore(line: string, index: number): boolean {
+  return JSX_TEXT_BEFORE.test(line.slice(Math.max(0, index - 300), index));
+}
+
+const JAVA_UNICODE_ESCAPE = /\\+u+([0-9A-Fa-f]{4})/g;
+
+/** See the Java unicode-escape note in `clikeLogicalLines`. */
+function javaUnicodeEscapeMatters(line: string, skeleton: string, commentRanges: number[]): boolean {
+  JAVA_UNICODE_ESCAPE.lastIndex = 0;
+  let range = 0;
+  let match: RegExpExecArray | null;
+  while ((match = JAVA_UNICODE_ESCAPE.exec(line)) !== null) {
+    const backslashes = match[0].indexOf("u");
+    // `\\u0041` is an escaped backslash followed by text, not an escape.
+    if (backslashes % 2 === 0) continue;
+    const at = match.index + backslashes - 1;
+    // Ranges and matches are both in column order: one moving pointer.
+    while (range < commentRanges.length && (commentRanges[range + 1] as number) <= at) range += 2;
+    if (range < commentRanges.length && at >= (commentRanges[range] as number)) return true;
+    const decoded = String.fromCharCode(parseInt(match[1] as string, 16));
+    const inString = skeleton[at] === " ";
+    if (!inString || "\n\r\"'\\".includes(decoded)) return true;
+  }
+  return false;
+}
+
 /**
  * The line as inline suppression reads it: comments as written, code as in
  * the skeleton (string and regex text blank), so a `code-audit:ignore` inside
@@ -1341,16 +1427,22 @@ function rustTestRegions(
   for (let index = 0; index < skeletons.length; index += 1) {
     const text = (skeletons[index] ?? "").trim();
     if (inModule) {
+      let closeAt = -1;
       for (let at = 0; at < text.length; at += 1) {
         const ch = text[at];
         if (ch === "{") depth += 1;
         else if (ch === "}") {
           depth -= 1;
-          if (depth === 0) break;
+          if (depth === 0) {
+            closeAt = at;
+            break;
+          }
         }
       }
       if (depth === 0) {
-        regions.push({ from: attributeLine, to: index });
+        // Code after the closing brace is not test code: the line is left out.
+        const to = text.slice(closeAt + 1).trim().length > 0 ? index - 1 : index;
+        if (to >= attributeLine) regions.push({ from: attributeLine, to });
         inModule = false;
         attributeLine = -1;
       }
@@ -1372,20 +1464,22 @@ function rustTestRegions(
       continue;
     }
     depth = 0;
-    let closed = false;
+    let closeAt = -1;
     for (let at = opening[0].length - 1; at < rest.length; at += 1) {
       const ch = rest[at];
       if (ch === "{") depth += 1;
       else if (ch === "}") {
         depth -= 1;
         if (depth === 0) {
-          closed = true;
+          closeAt = at;
           break;
         }
       }
     }
-    if (closed) {
-      regions.push({ from: attributeLine, to: index });
+    if (closeAt >= 0) {
+      // A module closed on its last line: code after it is not test code.
+      const to = rest.slice(closeAt + 1).trim().length > 0 ? index - 1 : index;
+      if (to >= attributeLine) regions.push({ from: attributeLine, to });
       attributeLine = -1;
     } else {
       inModule = true;

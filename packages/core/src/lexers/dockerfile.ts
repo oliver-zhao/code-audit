@@ -19,24 +19,24 @@ import {
   type LogicalLine,
 } from "../rules.js";
 
-const ESCAPE_DIRECTIVE = /^\s*#\s*escape\s*=\s*([\\`])\s*$/i;
-const PARSER_DIRECTIVE = /^\s*#\s*[a-z]+\s*=/i;
+/** A parser directive Docker knows: `# syntax=`, `# escape=`, `# check=`. */
+const PARSER_DIRECTIVE = /^\s*#\s*(syntax|escape|check)\s*=\s*(\S*)\s*$/i;
 
 export function dockerfileLogicalLines(
   lines: string[],
   overLong?: number[],
   diagnostics?: LexDiagnostics,
 ): LogicalLine[] {
-  // Parser directives come first in the file; `# escape=` sets the character.
+  // Parser directives are read only at the very start of the file: the first
+  // blank line, comment, unknown directive or instruction ends them, as in
+  // Docker. `# escape=` sets the continuation character.
   let escape = "\\";
-  for (const line of lines.slice(0, 20)) {
-    if (line.trim().length === 0) continue;
-    const directive = ESCAPE_DIRECTIVE.exec(line);
-    if (directive) {
-      escape = directive[1] as string;
-      continue;
+  for (const line of lines) {
+    const directive = PARSER_DIRECTIVE.exec(line);
+    if (!directive) break;
+    if ((directive[1] as string).toLowerCase() === "escape" && (directive[2] === "`" || directive[2] === "\\")) {
+      escape = directive[2] as string;
     }
-    if (!PARSER_DIRECTIVE.test(line)) break;
   }
 
   const result: LogicalLine[] = [];

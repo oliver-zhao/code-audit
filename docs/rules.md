@@ -75,9 +75,14 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
      `\n  .arg(x)` joins). C/C++ preprocessor directives (with their `\`
      continuation lines) are units of their own; C# directives are not code.
      Rust `#[cfg(test)] mod ... { }` modules are test code: findings there
-     are lowered like findings in a test path.
-   - **Dockerfile**: an instruction continued with `\` (or the `# escape=`
-     character) is one unit, and comment lines are blank.
+     are lowered like findings in a test path (a line that also holds code
+     after the module's closing brace is not). A Java line whose comment or
+     string holds a `\uXXXX` escape that javac could turn into live code is
+     also matched as written. In JavaScript, `//` and `/*` in JSX text
+     (`<a>see http://x</a>`) are text.
+   - **Dockerfile**: an instruction continued with `\` (or the character of
+     an `# escape=` parser directive at the start of the file) is one unit,
+     and comment lines are blank.
    - **XML**: `<!-- -->` comments are blanked and a start tag that spans
      several lines is one unit. **Razor**: `@* *@` comments are blanked;
      every line is its own unit.
@@ -153,7 +158,9 @@ naming the file and line. The Python lexer fails open: when it cannot tell
 whether text is code or a string, the region is matched again as plain lines;
 so does the C-family lexer (a string not closed on its line, a file that ends
 inside a comment or an open bracket, a declaration inside an open `(`), with a
-warning naming the language, file and lines.
+warning naming the language, file and lines (the first five regions of a
+file one by one, the rest counted in one warning; a rule scan lists at most
+1,000 warnings and counts the others).
 
 ## Rule file schema
 

@@ -503,6 +503,7 @@ describe("C-family lexer: limits", () => {
       [repeat('"')], [repeat("'")], [repeat("`")], [repeat("\\")], [repeat("/ ")], [repeat("=/[")],
       [repeat("`${")], [repeat("'a ")], [repeat("r#")], [repeat('r###"')], [repeat("/*")], [repeat("(")],
       [repeat('R"(')], [repeat("1'")], [repeat("${f}")], [repeat("f({a")],
+      [repeat("<p>x/*")], [repeat("(<p>a//")], [repeat('/**/"\\u0041" ')],
       repeat("'\n").split("\n"), repeat("f(\n").split("\n"), repeat("#define X \\\n").split("\n"),
       repeat("// \\\n").split("\n"), repeat("`${\n").split("\n"), repeat('r#"\n').split("\n"),
       repeat("f(\npub fn x(\n").split("\n"), repeat(".a\n").split("\n"),
@@ -811,5 +812,109 @@ describe("Dockerfile units", () => {
       [1, 1],
       [2, 2],
     ]);
+  });
+});
+
+describe("release review fixes", () => {
+  const ruleSet = loadRules(RULES_DIR);
+  let caseCounter = 0;
+
+  function scan(files: Record<string, string[]>) {
+    caseCounter += 1;
+    const project = path.join(temp, `review-${caseCounter}`);
+    for (const [file, lines] of Object.entries(files)) writeFile(project, file, [...lines, ""].join("\n"));
+    return scanRules(inventory(project).files, ruleSet);
+  }
+  const keys = (result: ReturnType<typeof scan>): string[] =>
+    result.hits.map((hit) => `${hit.file.relPath}:${hit.line}:${hit.rule.id}`).sort();
+
+  it("Java: matches a line whose comment or string holds a unicode escape as written too", () => {
+    const result = scan({
+      "src/A.java": [
+        "class A {",
+        "  void m(HttpServletRequest request) throws Exception {",
+        '    int x = 1; // \\u000a Runtime.getRuntime().exec(request.getParameter("c"));',
+        '    /* \\u002a/ Runtime.getRuntime().exec(request.getParameter("d")); /* */',
+        '    /* \\\\u002a/ not an escape: Runtime.getRuntime().exec(request.getParameter("e")); */',
+        "  }",
+        "}",
+      ],
+    });
+    const lines = new Set(result.hits.filter((hit) => hit.rule.id.startsWith("java-")).map((hit) => hit.line));
+    expect(lines).toEqual(new Set([3, 4]));
+    // A harmless escape in a string adds nothing.
+    const { units } = lex("java", ['String s = "caf\\u00e9"; run(s);']);
+    expect(units.some((unit) => unit.extra)).toBe(false);
+  });
+
+  it("JavaScript: // and /* in JSX text are text and hide no code", () => {
+    const result = scan({
+      "src/a.jsx": [
+        "function F() {",
+        "  return <p>Matches files like src/*.js</p>;",
+        "}",
+        "function G({ html }) {",
+        "  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+        "}",
+        'const L = () => <a href="/">see http://example.com</a>; eval(req.query.x);',
+      ],
+    });
+    expect(keys(result).filter((key) => /:(5|7):/.test(key))).toEqual([
+      "src/a.jsx:5:js-react-dangerously-set-html",
+      "src/a.jsx:7:js-code-injection-request",
+    ]);
+    // Ordinary comments are still comments.
+    expect(shown("javascript", ["run(); // eval(x)", "a = b; /* eval(y) */ c();", "x = y/* note */;"])).toEqual([
+      [0, "run();"],
+      [1, `a = b; ${" ".repeat(13)} c();`],
+      [2, `x = y${" ".repeat(10)};`],
+    ]);
+  });
+
+  it("C: a header name in #include <...> is text", () => {
+    expect(shown("c", ["#include <sys/*.h>", "int main(void) { gets(b); }"])).toEqual([
+      [0, "#include <sys/*.h>"],
+      [1, "int main(void) { gets(b); }"],
+    ]);
+  });
+
+  it("Rust: code on the closing line of a test module is not test code", () => {
+    const { extras } = lex("rust", [
+      "#[cfg(test)]",
+      "mod tests {",
+      "    fn t() {}",
+      '} pub fn handler(input: &str) { Command::new("sh").arg("-c").arg(input).output(); }',
+      '#[cfg(test)] mod t {} pub fn h2(input: &str) { run(input); }',
+      "#[cfg(test)] mod u { fn x() {} }",
+    ]);
+    expect(extras.testRegions).toEqual([
+      { from: 0, to: 2 },
+      { from: 5, to: 5 },
+    ]);
+  });
+
+  it("Dockerfile: honours parser directives only at the start of the file", () => {
+    const units = (lines: string[]) =>
+      dockerfileLogicalLines(lines)
+        .filter((unit) => unit.text.trim())
+        .map((unit) => [unit.start, unit.offsets.length]);
+    expect(units(["# syntax=docker/dockerfile:1", "# escape=`", "RUN a `", "  b"])).toEqual([[2, 2]]);
+    expect(units(["FROM x", "# escape=`", "RUN a `", "  b"])).toEqual([[0, 1], [2, 1], [3, 1]]);
+    expect(units(["", "# escape=`", "RUN a `", "  b"])).toEqual([[2, 1], [3, 1]]);
+    expect(units(["# note", "# escape=`", "RUN a `", "  b"])).toEqual([[2, 1], [3, 1]]);
+    expect(units(["# unknown=1", "# escape=`", "RUN a \\", "  b"])).toEqual([[2, 2]]);
+  });
+
+  it("caps lexer-fallback warnings per file and the warnings of a scan", () => {
+    const hostile: string[] = [];
+    for (let index = 0; index < 300; index += 1) hostile.push('x = "a', "run();", "go();");
+    const one = scan({ "a.js": hostile });
+    expect(one.warnings.filter((warning) => warning.includes("a.js")).length).toBe(6);
+    expect(one.warnings.some((warning) => /295 more region\(s\)/.test(warning))).toBe(true);
+    const many: Record<string, string[]> = {};
+    for (let index = 0; index < 180; index += 1) many[`f${index}.js`] = hostile.slice(0, 30);
+    const result = scan(many);
+    expect(result.warnings.length).toBe(1001);
+    expect(result.warnings[1000]).toMatch(/more rule-engine warning\(s\) not listed/);
   });
 });

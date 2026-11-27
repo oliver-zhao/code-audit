@@ -1899,6 +1899,22 @@ function literalScannerFor(ruleSet: RuleSet, language: string): LiteralScanner |
   return scanner;
 }
 
+/** Lexer fallback regions listed one by one in the warnings of a file. */
+export const MAX_FALLBACK_WARNINGS_PER_FILE = 5;
+
+/** Warnings of one rule scan; beyond this they are counted, not listed. */
+export const MAX_RULE_SCAN_WARNINGS = 1000;
+
+/** Keep the first warnings and replace the rest with one that counts them. */
+function capWarnings(warnings: string[]): string[] {
+  if (warnings.length <= MAX_RULE_SCAN_WARNINGS) return warnings;
+  const dropped = warnings.length - MAX_RULE_SCAN_WARNINGS;
+  return [
+    ...warnings.slice(0, MAX_RULE_SCAN_WARNINGS),
+    `${dropped} more rule-engine warning(s) not listed (the first ${MAX_RULE_SCAN_WARNINGS} are shown)`,
+  ];
+}
+
 export function scanRules(
   files: InventoryFile[],
   ruleSet: RuleSet,
@@ -2053,9 +2069,16 @@ export function scanRules(
             : ""),
       );
     }
-    for (const fallback of diagnostics.fallbacks) {
+    // At most a few warnings per file: a hostile file can have a fallback
+    // region every few lines.
+    for (const fallback of diagnostics.fallbacks.slice(0, MAX_FALLBACK_WARNINGS_PER_FILE)) {
       warnings.push(
         `${file.language} lexer fallback in ${file.relPath} from line ${fallback.from + 1} to line ${fallback.to + 1}: ${fallback.reason}; these lines were also matched as plain text`,
+      );
+    }
+    if (diagnostics.fallbacks.length > MAX_FALLBACK_WARNINGS_PER_FILE) {
+      warnings.push(
+        `${file.language} lexer fallback in ${file.relPath}: ${diagnostics.fallbacks.length - MAX_FALLBACK_WARNINGS_PER_FILE} more region(s) up to line ${(diagnostics.fallbacks[diagnostics.fallbacks.length - 1] as { to: number }).to + 1} were also matched as plain text`,
       );
     }
     if (diagnostics.cuts.length > 0) {
@@ -2449,7 +2472,7 @@ export function scanRules(
   }
   const dedupedHits = hits.filter((hit) => !hit.rule.group || winners.has(hit));
 
-  return { hits: dedupedHits, suppressedHits, suppressed, warnings, scannedFiles, redactions, testRegions };
+  return { hits: dedupedHits, suppressedHits, suppressed, warnings: capWarnings(warnings), scannedFiles, redactions, testRegions };
 }
 
 /**
