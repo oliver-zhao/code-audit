@@ -4,6 +4,7 @@ This file is test data. It is never imported or executed. The Opengrep taint
 rules must report nothing in this file.
 """
 
+import html
 import json
 import subprocess
 from typing import Optional
@@ -11,7 +12,7 @@ from typing import Optional
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -82,3 +83,21 @@ async def state(request: Request):
 async def manifest(request: Request):
     raw = await request.body()
     return yaml.safe_load(raw.decode())
+
+
+@app.get("/hello/{name}")
+async def hello(name: str):
+    return HTMLResponse(content="<h1>Hello " + html.escape(name) + "</h1>")
+
+
+@app.post("/orders/search")
+async def order_search(request: Request):
+    criteria = await request.json()
+    order = await orders.find_one({"customer": str(criteria.get("customer", ""))})
+    return {"id": str(order["_id"])}
+
+
+@app.get("/people/{number}")
+async def people(number: int):
+    entries = conn.search_s("dc=example,dc=com", 2, "(uidNumber=%d)" % number)
+    return {"count": len(entries)}

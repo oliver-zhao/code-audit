@@ -17,7 +17,7 @@ import urllib.request
 
 import requests
 import yaml
-from flask import Flask, redirect, render_template_string, request, send_file
+from flask import Flask, make_response, redirect, render_template_string, request, send_file
 from jinja2 import Template
 from sqlalchemy import text
 
@@ -276,3 +276,34 @@ def run_snippet(code):
 def exec_helper_sink():
     snippet = request.form.get("code")
     return str(run_snippet("result = " + snippet))
+
+
+# --- Cross-site scripting (CWE-79) ------------------------------------------
+
+
+@app.route("/welcome")
+def xss_greeting():
+    who = request.args.get("who", "")
+    banner = "<h1>Welcome " + who + "</h1>"
+    return make_response(banner)  # expect: py-taint-xss
+
+
+# --- NoSQL injection (CWE-943) ----------------------------------------------
+
+
+@app.route("/api/orders", methods=["POST"])
+def nosql_filter_from_body():
+    criteria = request.get_json()
+    order = mongo.shop.orders.find_one(criteria)  # expect: py-taint-nosql
+    return {"id": str(order["_id"])}
+
+
+# --- LDAP injection (CWE-90) ------------------------------------------------
+
+
+@app.route("/directory")
+def ldap_filter_chain():
+    uid = request.args["uid"]
+    query = "(&(uid=%s)(objectClass=person))" % uid
+    entries = directory.search_s("dc=example,dc=com", 2, query)  # expect: py-taint-ldap
+    return {"count": len(entries)}

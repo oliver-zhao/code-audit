@@ -1075,6 +1075,7 @@ describe("evidence of credential rules", () => {
       "dep-pip-trusted-host",
       "k8s-secret-in-env",
       "py-hardcoded-secret",
+      "py-jwt-hardcoded-key",
       "py-secret-key-literal",
       "py-static-iv",
       "tf-hardcoded-credentials",

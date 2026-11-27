@@ -9,6 +9,7 @@ taint rules must report nothing in this file.
 """
 
 import ast
+import html
 import json
 import os
 import shlex
@@ -17,8 +18,9 @@ import subprocess
 
 import requests
 import yaml
-from flask import Flask, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, Response, make_response, redirect, render_template, request, send_from_directory, url_for
 from sqlalchemy import text
+from ldap.filter import escape_filter_chars
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -236,3 +238,32 @@ def literal_eval_only():
 def numeric_arithmetic():
     value = float(request.args.get("value", "0"))
     return str(value * 2)
+
+
+@app.route("/welcome")
+def xss_greeting():
+    who = request.args.get("who", "")
+    banner = "<h1>Welcome " + html.escape(who) + "</h1>"
+    return make_response(banner)
+
+
+@app.route("/welcome.txt")
+def text_greeting():
+    who = request.args.get("who", "")
+    return Response("Welcome " + who, mimetype="text/plain")
+
+
+@app.route("/api/orders", methods=["POST"])
+def nosql_filter_from_body():
+    criteria = request.get_json()
+    order = mongo.shop.orders.find_one({"customer": str(criteria.get("customer", ""))})
+    position = request.args.get("q", "").find("x")
+    return {"id": str(order["_id"]), "position": position}
+
+
+@app.route("/directory")
+def ldap_filter_chain():
+    uid = escape_filter_chars(request.args["uid"])
+    query = "(&(uid=%s)(objectClass=person))" % uid
+    entries = directory.search_s("dc=example,dc=com", 2, query)
+    return {"count": len(entries)}

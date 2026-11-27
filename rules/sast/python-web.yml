@@ -110,8 +110,8 @@ rules:
     cwe: CWE-614
     owasp: A05:2021
     languages: [python]
-    pathExclude: '{{TESTPATH}}'
-    pattern: '^\s*(?:SESSION_COOKIE_SECURE|SESSION_COOKIE_HTTPONLY|CSRF_COOKIE_SECURE)\s*=\s*False\b|\bset_cookie\s*\([^)]{0,600}\b(?:secure|httponly)\s*=\s*False\b'
+    pathExclude: '{{TESTPATH}}|(?:^|/)global_settings\.py$'
+    pattern: '^\s*(?:SESSION_COOKIE_SECURE|SESSION_COOKIE_HTTPONLY|CSRF_COOKIE_SECURE)\s*=\s*False\b|\bset_cookie\s*\([^)]{0,600}\b(?:secure|httponly)\s*=\s*False\b|\bconfig\s*\[\s*["\x27](?:SESSION|REMEMBER|CSRF)_COOKIE_(?:SECURE|HTTPONLY)["\x27]\s*\]\s*=\s*False\b|\bconfig\.update\s*\([^)]{0,600}\b(?:SESSION|REMEMBER|CSRF)_COOKIE_(?:SECURE|HTTPONLY)\s*=\s*False\b'
     message: The cookie is explicitly sent without Secure (allowed over plain HTTP) or without HttpOnly (readable by scripts).
     message_zh: 该 Cookie 被显式设为不带 Secure（可经明文 HTTP 发送）或不带 HttpOnly（可被脚本读取）。
     remediation: Set Secure and HttpOnly on session cookies.
