@@ -1,127 +1,78 @@
 version: 1
+# Built-in Go rules. Written for code-audit (Apache-2.0); gosec's list of
+# checks was used as a checklist only, every pattern here is original.
+#
+# Conventions:
+# - Today the engine matches Go one physical line at a time (comments
+#   included). A C-family lexer will later strip comments and join a call that
+#   spans lines while ( or [ are open, so every pattern below must stay correct
+#   when a unit is several lines long. Gaps are written as [^;\n]{0,N} where a
+#   match must stay within one line, and as [^;]{0,N} where a joined call is
+#   meant to be seen whole (for example the jwt key function).
+# - {{REQ}} is an expression that reads attacker-controlled request data:
+#   net/http, gorilla/mux, gin, echo and fiber accessors. A rule that sees
+#   {{REQ}} reach a sink is a high-confidence finding; a rule that only sees
+#   a runtime value is a medium finding or a hotspot.
+definitions:
+  # Test, fixture and vendored trees.
+  GOTEST: '_test\.go$|(?:^|/)(?:testdata|vendor|third_party)/'
+  # Request data accessors. The gin/echo/fiber forms require a literal key so
+  # that c.Query(sql) on a database handle named c is not taken for one.
+  REQ: '(?:\b(?:r|req|request|httpReq|c\.Request|ctx\.Request)\.(?:URL\.Query\(\)\.Get|FormValue|PostFormValue|Header\.Get|Form\.Get|PostForm\.Get)\(|\b(?:r|req|request)\.URL\.Query\(\)\[|\bmux\.Vars\(\s*\w+\s*\)\[|\b(?:c|ctx|gc|ec|fc)\.(?:Query|DefaultQuery|Param|Params|PostForm|DefaultPostForm|GetHeader|FormValue|QueryParam|GetQuery|GetPostForm)\(\s*")'
+  # A Go interpreted string literal (escaped quotes included).
+  STR: '"(?:[^"\\\n]|\\.){0,600}"'
+  # A leading context.Context argument.
+  CTXARG: '(?:ctx|c|context\.\w+\(\)|\w{0,30}[cC]tx(?:\(\))?|\w{1,20}\.Context\(\))'
+  # A database/sql, sqlx or gorm call that takes SQL text, positioned at its
+  # SQL argument (a leading context argument is skipped).
+  SQLCALL: '(?<!stmt)\.(?:Query|QueryRow|Exec|Prepare|Queryx|QueryRowx|MustExec|NamedExec|NamedQuery|Raw)(?:Context)?\(\s*(?:{{CTXARG}}\s*,\s*)?'
+  # sqlx Get/Select(&dest, query, ...) and gorm clause builders that take SQL.
+  SQLCALL2: '(?:\.(?:Get|Select)\(\s*&\w+\s*,\s*|\.(?:Where|Or|Not|Order|Group|Having|Joins|Pluck)\(\s*)'
+  SHELL: '"(?:/usr)?(?:/bin/)?(?:sh|bash|zsh|ksh|dash)"\s*,\s*"-c"|"cmd(?:\.exe)?"\s*,\s*"/[cC]"|"(?:powershell|pwsh)(?:\.exe)?"\s*,\s*"-(?:c|Command)"'
+  EXECCALL: '\bexec\.Command(?:Context)?\('
+  # File APIs that take a path as their first argument.
+  FILECALL: '\b(?:os\.(?:Open|OpenFile|ReadFile|Create|WriteFile|Remove|RemoveAll|ReadDir|Stat|Lstat|Mkdir|MkdirAll|Rename|Truncate)|ioutil\.(?:ReadFile|WriteFile|ReadDir))\('
 rules:
+  # ---------------------------------------------------------------- SQL
   - id: go-sql-injection
-    title: Go SQL query built with string concatenation
-    title_zh: Go SQL 查询字符串拼接
+    title: Go SQL query built from request data
+    title_zh: Go SQL 查询由请求数据拼接而成
     severity: critical
     confidence: high
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - go
-    pattern: \.(?:Query|Exec)\([^;\n]{0,600}\+
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    patterns:
+      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:{{REQ}}|fmt\.Sprintf\(\s*"[^"\n]{0,400}"\s*,[^()\n]{0,200}?{{REQ}}|(?:"[^"\n]{0,400}"\s*\+\s*|[\w.]{1,60}\s*\+\s*){1,3}{{REQ}})'
     group: go-sql
-    message: Request values are concatenated into SQL text.
-    message_zh: 请求参数被拼接到 SQL 文本中。
-    remediation: Use placeholders ($1 / ?) and pass values as separate arguments.
-    remediation_zh: 使用参数占位符（$1 / ?）并把值作为单独参数传入。
+    message: A request value is formatted or concatenated into SQL text, so the client controls the query.
+    message_zh: 请求参数被格式化或拼接进 SQL 文本，客户端可以控制查询语句。
+    remediation: Use placeholders ($1 / ?) and pass values as separate arguments; map sort columns and directions through an allowlist.
+    remediation_zh: 使用参数占位符（$1 / ?）并把值作为单独参数传入；排序列和方向通过白名单映射。
     references:
       - CWE-89
       - OWASP A03:2021
-  - id: go-command-injection
-    title: Go exec.Command with a concatenated command
-    title_zh: Go exec.Command 调用 shell
-    severity: critical
-    confidence: high
-    cwe: CWE-78
+  - id: go-sql-string-building
+    title: Go SQL comparison value spliced into the query text
+    title_zh: Go SQL 比较值被拼接进查询文本
+    severity: high
+    confidence: medium
+    cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - go
-    pattern: exec\.Command\([^)\n]{0,600}\+
-    group: go-command
-    message: External input is concatenated into a command passed to a shell.
-    message_zh: 通过 sh -c 执行外部输入会引入命令注入。
-    remediation: Execute the target program directly with an argument array; avoid shells and allowlist arguments.
-    remediation_zh: 直接调用目标程序并使用参数数组；避免 shell，必要时校验参数白名单。
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:migrations?|modelmigration|migrate)/'
+    patterns:
+      - '(?:{{SQLCALL}}|{{SQLCALL2}})(?:fmt\.Sprintf\(\s*)?"[^"\n]{0,400}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}(?:%[sv]|"\s*\+)|"\s*\+|%[sv]\b)|\bfmt\.Sprintf\(\s*[`"]\s*(?:SELECT|UPDATE|DELETE|INSERT)\b[^`"]{0,600}?(?:=|<>|\bLIKE)\s*(?:''%{0,2}%[sv]|%[sv]\b)'
+      - '\b(?:SELECT|UPDATE|DELETE|INSERT|WHERE)\b'
+    group: go-sql
+    message: A value is spliced into a SQL comparison with fmt.Sprintf or +, instead of being passed as a bind parameter.
+    message_zh: 比较值通过 fmt.Sprintf 或 + 拼接进 SQL，而不是作为绑定参数传入。
+    remediation: Use placeholders ($1 / ?) and pass the value as a separate argument.
+    remediation_zh: 使用参数占位符（$1 / ?），并把值作为单独参数传入。
     references:
-      - CWE-78
+      - CWE-89
       - OWASP A03:2021
-  - id: go-path-traversal
-    title: Go file path built from untrusted input
-    title_zh: Go 文件路径拼接
-    severity: high
-    confidence: high
-    cwe: CWE-22
-    owasp: A01:2021
-    languages:
-      - go
-    pattern: os\.Open\([^)\n]{0,600}(?:\+|r\.|filepath\.Join)
-    group: go-path
-    message: Untrusted input reaches a file open call and may escape the intended directory.
-    message_zh: 不可信路径进入文件打开操作，可能穿越目录。
-    remediation: Clean the path and verify it stays inside the allowed root; reject .. and absolute paths.
-    remediation_zh: 使用 filepath.Clean 后校验路径位于允许根目录内；拒绝 .. 与绝对路径。
-    references:
-      - CWE-22
-      - OWASP A01:2021
-  - id: go-weak-hash
-    title: Go weak hash algorithm (MD5/SHA1)
-    title_zh: Go 使用 MD5/SHA1
-    severity: medium
-    confidence: low
-    cwe: CWE-328
-    owasp: A02:2021
-    languages:
-      - go
-    pattern: (?:md5|sha1)\.New\(\)
-    message: MD5/SHA1 are unsuitable for security-sensitive hashing.
-    message_zh: MD5/SHA1 不适合安全用途。
-    remediation: Use crypto/sha256 or sha512; hash passwords with bcrypt/argon2.
-    remediation_zh: 使用 crypto/sha256 或 sha512；口令使用 bcrypt/argon2。
-    references:
-      - CWE-328
-      - OWASP A02:2021
-  - id: go-weak-random
-    title: Go math/rand used for security-sensitive values
-    title_zh: Go 使用 math/rand
-    severity: medium
-    confidence: low
-    cwe: CWE-338
-    owasp: A02:2021
-    languages:
-      - go
-    pattern: \brand\.(?:Intn|Int|Float|Read)\(
-    message: math/rand is predictable and not cryptographically secure.
-    message_zh: math/rand 不是密码学安全的随机源，种子可预测。
-    remediation: Use crypto/rand for tokens, keys, and salts.
-    remediation_zh: 使用 crypto/rand 生成令牌、密钥与盐。
-    references:
-      - CWE-338
-      - OWASP A02:2021
-  - id: go-ssrf
-    title: Go server-side request to a dynamic URL
-    title_zh: Go 服务端请求 URL 可控
-    severity: high
-    confidence: low
-    cwe: CWE-918
-    owasp: A10:2021
-    languages:
-      - go
-    pattern: http\.(?:Get|Post)\(\s*(?:name|url|target|r\.)
-    message: External input is used as an HTTP request target and may reach internal networks.
-    message_zh: 外部输入直接作为 HTTP 请求目标，可能访问内网。
-    remediation: Use a URL allowlist and a custom Dialer that blocks private addresses.
-    remediation_zh: 使用 URL 白名单与自定义 Dialer 阻断私网地址。
-    references:
-      - CWE-918
-      - OWASP A10:2021
-  - id: go-tls-disabled
-    title: Go TLS certificate validation disabled
-    title_zh: Go 关闭 TLS 证书校验
-    severity: high
-    confidence: low
-    cwe: CWE-295
-    owasp: A02:2021
-    languages:
-      - go
-    pattern: InsecureSkipVerify\s*:\s*true
-    message: InsecureSkipVerify disables certificate validation and enables man-in-the-middle attacks.
-    message_zh: InsecureSkipVerify 会关闭证书校验，易受中间人攻击。
-    remediation: Keep InsecureSkipVerify false and configure RootCAs.
-    remediation_zh: 保持 InsecureSkipVerify 为 false，并配置 RootCAs。
-    references:
-      - CWE-295
-      - OWASP A02:2021
   - id: go-sql-api
     title: Go executes a dynamic SQL statement
     title_zh: Go 执行动态 SQL 语句
@@ -130,9 +81,14 @@ rules:
     kind: hotspot
     cwe: CWE-89
     owasp: A03:2021
-    languages:
-      - go
-    pattern: \.(?:Query|Exec)\s*\(
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:migrations?|modelmigration|migrate)/'
+    # The SQL argument is not a plain string literal (a variable, a call, or a
+    # literal followed by +). Prepared statements (stmt.Exec(args)) and calls
+    # without arguments (r.URL.Query()) are not SQL text.
+    pattern: '(?<!stmt|\bc|\br|\breq|\burl|\bu|\bURL|\bctx|\bquery)(?:{{SQLCALL}})(?!\s*\))(?!\s*(?:{{CTXARG}}\s*,\s*)?(?:{{STR}}|`[^`\n]{0,600}`)\s*[,)])'
+    # DDL templates (table, index and sequence names cannot be bound).
+    notPattern: '\bfmt\.Sprintf\(\s*["`]\s*(?:DROP|ALTER|CREATE|TRUNCATE|SET|PRAGMA|sp_rename|ANALYZE|VACUUM|SHOW|DESCRIBE|USE)\b'
     group: go-sql
     message: The SQL statement comes from a runtime value; confirm it is not attacker-controlled.
     message_zh: SQL 语句来自运行时值；需确认不可被攻击者控制。
@@ -140,6 +96,44 @@ rules:
     remediation_zh: 使用占位符并把值作为单独参数传入。
     references:
       - CWE-89
+      - OWASP A03:2021
+
+  # ---------------------------------------------------------------- commands
+  - id: go-command-request
+    title: Go command run with request data
+    title_zh: Go 使用请求数据执行命令
+    severity: critical
+    confidence: high
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '{{EXECCALL}}[^;\n]{0,400}?{{REQ}}'
+    group: go-command
+    message: A request value is passed to exec.Command, so the client chooses the program or its arguments.
+    message_zh: 请求参数被传给 exec.Command，客户端可以决定执行的程序或其参数。
+    remediation: Run a fixed program, pass request values only as validated arguments (allowlist), and never through a shell.
+    remediation_zh: 执行固定程序，请求值只能作为经过白名单校验的参数传入，绝不经过 shell。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+  - id: go-command-injection
+    title: Go shell command built at run time
+    title_zh: Go 在运行时拼接 shell 命令
+    severity: critical
+    confidence: medium
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '{{EXECCALL}}(?:\s*\w+\s*,)?\s*(?:{{SHELL}})\s*,\s*(?:fmt\.Sprintf\(|"[^"\n]{0,400}"\s*\+|[\w.]+\s*\+|strings\.Join\()'
+    group: go-command
+    message: A command line is built with fmt.Sprintf or + and run through a shell; any shell metacharacter in a value runs extra commands.
+    message_zh: 命令行通过 fmt.Sprintf 或 + 拼接后交给 shell 执行；值中的任何 shell 元字符都会执行额外命令。
+    remediation: Execute the target program directly with an argument array; avoid shells and allowlist arguments.
+    remediation_zh: 直接调用目标程序并使用参数数组；避免 shell，必要时校验参数白名单。
+    references:
+      - CWE-78
       - OWASP A03:2021
   - id: go-exec-shell
     title: Go executes a command through a shell
@@ -149,17 +143,58 @@ rules:
     kind: hotspot
     cwe: CWE-78
     owasp: A03:2021
-    languages:
-      - go
-    pattern: exec\.Command\(\s*"(?:sh|bash)"
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # A shell with a non-literal script; a fixed script is not reported.
+    pattern: '{{EXECCALL}}(?:\s*\w+\s*,)?\s*(?:{{SHELL}})\s*,\s*(?!\s*{{STR}}\s*[,)])(?!\s*`[^`\n]{0,600}`\s*[,)])'
     group: go-command
-    message: A command runs through sh -c; confirm its arguments contain no untrusted input.
-    message_zh: 通过 sh -c 执行命令；需确认参数不含不可信输入。
+    message: A command runs through sh -c with a runtime script; confirm it contains no untrusted input.
+    message_zh: 通过 sh -c 执行运行时生成的脚本；需确认其中不含不可信输入。
     remediation: Execute the target program directly with an argument array and avoid shells.
     remediation_zh: 直接执行目标程序并使用参数数组，避免 shell。
     references:
       - CWE-78
       - OWASP A03:2021
+  - id: go-exec-dynamic-program
+    title: Go executes a program chosen at run time
+    title_zh: Go 执行运行时决定的程序
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-78
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:tools|scripts|hack|build|magefiles|internal/tools)/'
+    pattern: '\bexec\.Command\(\s*(?!")[\w.]+(?:\[\w{1,20}\])?\s*[,)]|\bexec\.CommandContext\(\s*[\w.()]+\s*,\s*(?!")[\w.]+(?:\[\w{1,20}\])?\s*[,)]'
+    group: go-command
+    message: The program name is a runtime value; confirm it cannot come from user input or untrusted configuration.
+    message_zh: 程序名是运行时值；需确认它不可能来自用户输入或不可信配置。
+    remediation: Use a fixed program path or an allowlist of programs.
+    remediation_zh: 使用固定程序路径或程序白名单。
+    references:
+      - CWE-78
+      - OWASP A03:2021
+
+  # ---------------------------------------------------------------- files
+  - id: go-path-traversal
+    title: Go file path built from request data
+    title_zh: Go 文件路径由请求数据构成
+    severity: high
+    confidence: high
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '(?:{{FILECALL}}|\bhttp\.ServeFile\(\s*\w+\s*,\s*[\w.]+\s*,\s*|\b(?:c|ctx)\.(?:File|FileAttachment|SendFile|Attachment)\(\s*|\b(?:filepath|path)\.Join\()[^;\n]{0,300}?{{REQ}}'
+    notPattern: '\bfilepath\.Base\(\s*{{REQ}}|\bpath\.Base\(\s*{{REQ}}'
+    group: go-path
+    message: A request value becomes part of a file path; ../ sequences or an absolute path escape the intended directory.
+    message_zh: 请求参数成为文件路径的一部分；../ 或绝对路径可以逃出预期目录。
+    remediation: Use filepath.Base for single names, or join with filepath.Clean and verify the result stays inside the root (filepath.Rel, filepath.IsLocal, os.Root).
+    remediation_zh: 单个文件名使用 filepath.Base；否则 Clean 后拼接并校验结果位于根目录内（filepath.Rel、filepath.IsLocal、os.Root）。
+    references:
+      - CWE-22
+      - OWASP A01:2021
   - id: go-path-api
     title: Go opens a runtime file path
     title_zh: Go 使用运行时文件路径
@@ -168,14 +203,754 @@ rules:
     kind: hotspot
     cwe: CWE-22
     owasp: A01:2021
-    languages:
-      - go
-    pattern: os\.Open\s*\(
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # Only paths that are concatenated at the call; a bare variable or a
+    # literal is not reported (too common to be useful).
+    pattern: '(?:\bos\.(?:Open|OpenFile|ReadFile|Create)|\bioutil\.ReadFile|\bhttp\.ServeFile\(\s*\w+\s*,\s*\w+\s*,)\(?\s*(?:"[^"\n]{0,300}"\s*\+|[\w.]+\s*\+\s*(?!"[^"\n]{0,100}"\s*[,)]))'
     group: go-path
-    message: The file path comes from a runtime value; confirm it stays inside the allowed root after cleaning.
-    message_zh: 文件路径来自运行时值；需确认清理后仍位于允许根目录内。
+    message: The file path is concatenated at run time; confirm it stays inside the allowed root after cleaning.
+    message_zh: 文件路径在运行时拼接；需确认清理后仍位于允许根目录内。
     remediation: Use filepath.Clean and verify the path stays inside the allowed root.
     remediation_zh: 使用 filepath.Clean 并校验路径位于允许根目录内。
     references:
       - CWE-22
       - OWASP A01:2021
+  - id: go-zip-slip
+    title: Go archive entry name joined to the extraction directory unchecked
+    title_zh: Go 解压时未校验归档条目名就拼接目标路径
+    severity: high
+    confidence: medium
+    cwe: CWE-22
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '"archive/(?:zip|tar)"'
+    # A file that checks the joined path anywhere (HasPrefix, Rel, IsLocal,
+    # securejoin, a ".." test) is left to review.
+    fileAbsentPattern: 'strings\.HasPrefix\(|filepath\.Rel\(|filepath\.IsLocal\(|SecureJoin|filepath\.Localize\(|os\.OpenRoot\(|"\.\."'
+    pattern: '\b(?:filepath|path)\.Join\(\s*[\w.]+\s*,\s*(?:\w+\.)?(?:\w+)\.Name\s*\)'
+    group: go-path
+    message: An archive entry name is joined to the destination directory without checking the result; an entry such as ../../etc/cron.d/x writes outside it (Zip Slip).
+    message_zh: 归档条目名被直接拼接到目标目录且未校验结果；../../etc/cron.d/x 这样的条目会写到目录之外（Zip Slip）。
+    remediation: After joining, verify the cleaned path is inside the destination (filepath.Rel or strings.HasPrefix with a trailing separator, or filepath.IsLocal on the entry name); reject links that point outside.
+    remediation_zh: 拼接后校验清理过的路径仍位于目标目录内（filepath.Rel，或带结尾分隔符的 strings.HasPrefix，或对条目名使用 filepath.IsLocal）；拒绝指向目录外的链接。
+    references:
+      - CWE-22
+      - OWASP A01:2021
+  - id: go-http-dir-root
+    title: Go file server exposes the file system root
+    title_zh: Go 文件服务暴露文件系统根目录
+    severity: high
+    confidence: high
+    cwe: CWE-552
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bhttp\.Dir\(\s*"/"\s*\)'
+    message: http.Dir("/") serves the whole file system, including /etc and the process environment under /proc.
+    message_zh: http.Dir("/") 会提供整个文件系统，包括 /etc 和 /proc 下的进程环境。
+    remediation: Serve a dedicated static directory (or an embed.FS) instead of the root.
+    remediation_zh: 只提供专用的静态目录（或 embed.FS），不要提供根目录。
+    references:
+      - CWE-552
+      - OWASP A01:2021
+  - id: go-file-permissions
+    title: Go file or directory created world-writable
+    title_zh: Go 创建了所有人可写的文件或目录
+    severity: medium
+    confidence: medium
+    cwe: CWE-732
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # 0666 for a new file is what os.Create uses and is reduced by the umask;
+    # reported are 0777 on files and explicit chmods to world-writable modes.
+    pattern: '\b(?:os\.(?:WriteFile|OpenFile)|ioutil\.WriteFile)\([^;\n]{0,300},\s*0o?777\s*\)|\bos\.(?:Chmod|Lchmod)\([^;\n]{0,300},\s*0o?(?:777|666|776|766|667)\s*\)|\.Chmod\(\s*0o?(?:777|666)\s*\)'
+    group: go-file-perms
+    message: The mode makes the file writable (and for 0777 executable) by every local user; chmod is not reduced by the umask.
+    message_zh: 该权限使所有本地用户都可写该文件（0777 还可执行）；chmod 不受 umask 影响。
+    remediation: Use 0600/0640 for files and 0700/0750 for directories unless other users really need access.
+    remediation_zh: 文件使用 0600/0640，目录使用 0700/0750，除非确实需要其他用户访问。
+    references:
+      - CWE-732
+      - OWASP A01:2021
+  - id: go-file-permissions-api
+    title: Go creates a file or directory with permissive mode
+    title_zh: Go 以宽松权限创建文件或目录
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-276
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:os\.(?:WriteFile|OpenFile|Mkdir|MkdirAll)|ioutil\.WriteFile)\([^;\n]{0,300},\s*(?:0o?(?:777|666|776|766)|os\.ModePerm)\s*\)'
+    group: go-file-perms
+    message: The file or directory is created with a world-writable mode before the umask; confirm the process umask or the data makes this acceptable.
+    message_zh: 文件或目录以所有人可写的模式创建（umask 之前）；需确认进程 umask 或数据性质使其可接受。
+    remediation: Use 0600/0640 for files and 0700/0750 for directories.
+    remediation_zh: 文件使用 0600/0640，目录使用 0700/0750。
+    references:
+      - CWE-276
+      - OWASP A01:2021
+  - id: go-predictable-temp-file
+    title: Go file with a fixed name in the shared temp directory
+    title_zh: Go 在共享临时目录中使用固定文件名
+    severity: low
+    confidence: medium
+    cwe: CWE-377
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:os\.(?:Create|OpenFile|WriteFile)|ioutil\.WriteFile)\(\s*(?:"/(?:var/)?tmp/[^"\n]{1,200}"\s*[,)]|(?:filepath|path)\.Join\(\s*os\.TempDir\(\)\s*,\s*"[^"\n]{1,200}"\s*\))'
+    message: A fixed file name in /tmp can be pre-created or symlinked by another local user, who then reads or redirects what is written.
+    message_zh: /tmp 中的固定文件名可被其他本地用户预先创建或做成符号链接，从而读取或重定向写入内容。
+    remediation: Use os.CreateTemp / os.MkdirTemp, or a private directory.
+    remediation_zh: 使用 os.CreateTemp / os.MkdirTemp，或私有目录。
+    references:
+      - CWE-377
+      - OWASP A01:2021
+  - id: go-decompression-bomb
+    title: Go decompresses a stream without a size limit
+    title_zh: Go 解压数据流时没有大小限制
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-409
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '\b(?:gzip|zlib|flate|bzip2|lzw|zstd)\.NewReader\('
+    fileAbsentPattern: 'io\.LimitReader\(|io\.LimitedReader\{|io\.CopyN\(|http\.MaxBytesReader\('
+    pattern: '\bio\.Copy(?:Buffer)?\(\s*[\w.&*]+\s*,\s*(?:gz\w{0,20}|zr|zlib\w{0,20}|flate\w{0,20}|\w{0,20}gzip\w{0,20}|\w{0,20}decomp\w{0,20}|bz\w{0,10}|fr|rc)\s*[,)]|\b(?:io|ioutil)\.ReadAll\(\s*(?:gz\w{0,20}|zr|zlib\w{0,20}|flate\w{0,20}|\w{0,20}gzip\w{0,20}|\w{0,20}decomp\w{0,20}|bz\w{0,10}|fr)\s*\)'
+    message: Decompressed output is copied without a size limit; a small compressed input can expand to gigabytes and exhaust memory or disk.
+    message_zh: 解压输出在没有大小限制的情况下被复制；很小的压缩输入可能膨胀到数 GB，耗尽内存或磁盘。
+    remediation: Wrap the reader in io.LimitReader (or use io.CopyN) with a maximum size and fail when it is reached.
+    remediation_zh: 用 io.LimitReader 包装读取器（或使用 io.CopyN）并设置上限，超限时报错。
+    references:
+      - CWE-409
+      - OWASP A05:2021
+
+  # ---------------------------------------------------------------- network
+  - id: go-ssrf-request
+    title: Go server-side request to a URL from request data
+    title_zh: Go 服务端请求的 URL 来自请求数据
+    severity: high
+    confidence: high
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bhttp\.(?:Get|Head|Post|PostForm|NewRequest(?:WithContext)?)\([^;\n]{0,200}?{{REQ}}|\b(?:client|\w{0,20}Client)\.(?:Get|Head|Post|PostForm)\(\s*{{REQ}}'
+    group: go-ssrf
+    message: The server fetches a URL that the client supplies, so it can be pointed at internal services and cloud metadata endpoints.
+    message_zh: 服务器请求客户端提供的 URL，可被指向内网服务和云元数据端点。
+    remediation: Allow only known hosts and schemes, and use a dialer that refuses private, loopback and link-local addresses.
+    remediation_zh: 只允许已知主机和协议，并使用拒绝私网、回环和链路本地地址的 Dialer。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: go-ssrf
+    title: Go server-side request to a dynamic URL
+    title_zh: Go 服务端请求 URL 可控
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-918
+    owasp: A10:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bhttp\.(?:Get|Head|Post|PostForm)\(\s*(?!")[\w.]+\s*[,)+]|\bhttp\.NewRequest(?:WithContext)?\((?:\s*[\w.()]+\s*,)?\s*(?:"[A-Z]{3,7}"|http\.Method\w+)\s*,\s*(?!")[\w.]+(?:\(\))?\s*[,+]'
+    group: go-ssrf
+    message: The request target is a runtime value; confirm it cannot be chosen by a user (internal services, cloud metadata).
+    message_zh: 请求目标是运行时值；需确认用户无法决定它（内网服务、云元数据）。
+    remediation: Use a URL allowlist and a custom Dialer that blocks private addresses.
+    remediation_zh: 使用 URL 白名单与自定义 Dialer 阻断私网地址。
+    references:
+      - CWE-918
+      - OWASP A10:2021
+  - id: go-open-redirect
+    title: Go redirect to a URL from request data
+    title_zh: Go 重定向到来自请求数据的 URL
+    severity: medium
+    confidence: high
+    cwe: CWE-601
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bhttp\.Redirect\(\s*\w+\s*,\s*[\w.]+\s*,\s*{{REQ}}|\b(?:c|ctx)\.Redirect\(\s*[\w.]+\s*,\s*{{REQ}}'
+    message: The redirect target comes from the request, so a link on this site can send users to an attacker's page (phishing, token theft).
+    message_zh: 重定向目标来自请求，本站链接可以把用户送到攻击者页面（钓鱼、令牌窃取）。
+    remediation: Redirect only to relative paths you validate (starting with a single /) or to an allowlist of hosts.
+    remediation_zh: 只重定向到经过校验的相对路径（以单个 / 开头）或白名单主机。
+    references:
+      - CWE-601
+      - OWASP A01:2021
+  - id: go-tls-disabled
+    title: Go TLS certificate validation disabled
+    title_zh: Go 关闭 TLS 证书校验
+    severity: high
+    confidence: medium
+    cwe: CWE-295
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bInsecureSkipVerify\s*:\s*true\b|\.InsecureSkipVerify\s*=\s*true\b'
+    message: InsecureSkipVerify disables certificate validation and enables man-in-the-middle attacks.
+    message_zh: InsecureSkipVerify 会关闭证书校验，易受中间人攻击。
+    remediation: Keep InsecureSkipVerify false and configure RootCAs (or VerifyPeerCertificate for pinning).
+    remediation_zh: 保持 InsecureSkipVerify 为 false，并配置 RootCAs（证书固定可用 VerifyPeerCertificate）。
+    references:
+      - CWE-295
+      - OWASP A02:2021
+  - id: go-tls-min-version
+    title: Go TLS configuration allows SSL 3.0, TLS 1.0 or TLS 1.1
+    title_zh: Go TLS 配置允许 SSL 3.0、TLS 1.0 或 TLS 1.1
+    severity: medium
+    confidence: high
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:MinVersion|MaxVersion)\s*[:=]\s*tls\.Version(?:SSL30|TLS10|TLS11)\b'
+    message: Protocol versions before TLS 1.2 are deprecated (RFC 8996) and have known weaknesses.
+    message_zh: TLS 1.2 之前的协议版本已被弃用（RFC 8996），存在已知弱点。
+    remediation: Set MinVersion to tls.VersionTLS12 or tls.VersionTLS13.
+    remediation_zh: 将 MinVersion 设为 tls.VersionTLS12 或 tls.VersionTLS13。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: go-tls-weak-cipher
+    title: Go TLS cipher suite with RC4 or 3DES
+    title_zh: Go TLS 使用 RC4 或 3DES 密码套件
+    severity: medium
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    flags: ''
+    pattern: '\btls\.TLS_(?:ECDHE_)?(?:RSA|ECDSA)_WITH_(?:RC4_128_SHA|3DES_EDE_CBC_SHA)\b'
+    # Name tables and switch cases that only describe a suite are not a configuration.
+    notPattern: '^\s*case\b|:\s*"|"\s*:|==|!='
+    message: RC4 and 3DES suites are broken or weak (RFC 7465, Sweet32).
+    message_zh: RC4 和 3DES 密码套件已被攻破或强度不足（RFC 7465、Sweet32）。
+    remediation: Leave CipherSuites unset (Go's defaults) or list only AEAD suites (AES-GCM, ChaCha20-Poly1305).
+    remediation_zh: 不设置 CipherSuites（使用 Go 默认值），或只列出 AEAD 套件（AES-GCM、ChaCha20-Poly1305）。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: go-ssh-insecure-host-key
+    title: Go SSH client accepts any host key
+    title_zh: Go SSH 客户端接受任意主机密钥
+    severity: high
+    confidence: high
+    cwe: CWE-322
+    owasp: A07:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bssh\.InsecureIgnoreHostKey\(\)|\bHostKeyCallback\s*:\s*func\([^)]{0,200}\)\s*error\s*\{\s*return\s+nil\b'
+    message: Host keys are not verified, so anyone on the network path can impersonate the server and read the credentials and session.
+    message_zh: 不校验主机密钥，网络路径上的任何人都可冒充服务器并读取凭据和会话内容。
+    remediation: Verify against known_hosts (golang.org/x/crypto/ssh/knownhosts) or a pinned key (ssh.FixedHostKey).
+    remediation_zh: 通过 known_hosts（golang.org/x/crypto/ssh/knownhosts）或固定密钥（ssh.FixedHostKey）校验。
+    references:
+      - CWE-322
+      - OWASP A07:2021
+  - id: go-http-server-no-timeout
+    title: Go HTTP server without a read header timeout
+    title_zh: Go HTTP 服务器未设置读取请求头超时
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-400
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples)/'
+    fileAbsentPattern: '\bRead(?:Header)?Timeout\s*[:=]'
+    pattern: '\bhttp\.ListenAndServe(?:TLS)?\(|&?\bhttp\.Server\s*\{'
+    message: Without ReadHeaderTimeout (or ReadTimeout) a client can keep connections open by sending headers slowly (Slowloris); http.ListenAndServe sets no timeouts at all.
+    message_zh: 未设置 ReadHeaderTimeout（或 ReadTimeout）时，客户端可以缓慢发送请求头来占住连接（Slowloris）；http.ListenAndServe 不设置任何超时。
+    remediation: Use an http.Server with ReadHeaderTimeout (and ReadTimeout, WriteTimeout, IdleTimeout) set.
+    remediation_zh: 使用设置了 ReadHeaderTimeout（以及 ReadTimeout、WriteTimeout、IdleTimeout）的 http.Server。
+    references:
+      - CWE-400
+      - OWASP A05:2021
+  - id: go-pprof-exposed
+    title: Go net/http/pprof registered on the served default mux
+    title_zh: Go 在对外服务的默认 mux 上注册了 net/http/pprof
+    severity: medium
+    confidence: medium
+    cwe: CWE-215
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples)/'
+    # The blank import registers /debug/pprof on http.DefaultServeMux; the
+    # file also serves that mux (a nil handler).
+    filePattern: '\bhttp\.ListenAndServe(?:TLS)?\([^;\n]{1,200},\s*nil\s*\)'
+    pattern: '^\s*(?:import\s+)?_\s+"net/http/pprof"'
+    message: Importing net/http/pprof exposes /debug/pprof (heap dumps, goroutine stacks, CPU profiles) on the default mux that this program serves.
+    message_zh: 导入 net/http/pprof 会在本程序对外服务的默认 mux 上暴露 /debug/pprof（堆转储、goroutine 栈、CPU 剖析）。
+    remediation: Serve the application on its own ServeMux and register the pprof handlers only on a separate, local-only listener.
+    remediation_zh: 应用使用独立的 ServeMux，pprof 处理器只注册在单独的仅本地监听端口上。
+    references:
+      - CWE-215
+      - OWASP A05:2021
+
+  # ---------------------------------------------------------------- XSS / templates
+  - id: go-xss-template-request
+    title: Go request data marked as safe HTML/JS
+    title_zh: Go 将请求数据标记为安全的 HTML/JS
+    severity: high
+    confidence: high
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\btemplate\.(?:HTML|HTMLAttr|JS|JSStr|URL|CSS|Srcset)\([^;\n]{0,200}?{{REQ}}'
+    group: go-template-unescaped
+    message: Request data is converted to a template.HTML/JS/URL type, which html/template inserts without escaping (cross-site scripting).
+    message_zh: 请求数据被转换为 template.HTML/JS/URL 类型，html/template 会不经转义直接输出（跨站脚本）。
+    remediation: Pass the plain string to the template and let html/template escape it; sanitize HTML with a policy library if markup is required.
+    remediation_zh: 把普通字符串交给模板，由 html/template 转义；确需保留标记时用策略型清洗库处理。
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: go-template-unescaped
+    title: Go value marked as safe HTML/JS/URL
+    title_zh: Go 将运行时值标记为安全的 HTML/JS/URL
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\btemplate\.(?:HTML|HTMLAttr|JS|JSStr|URL|CSS|Srcset)\(\s*(?!\s*{{STR}}\s*\))(?!\s*`[^`\n]{0,600}`\s*\))(?!\s*\))'
+    group: go-template-unescaped
+    message: A runtime value bypasses html/template escaping; confirm it is constant or sanitized.
+    message_zh: 运行时值绕过了 html/template 的转义；需确认它是常量或已清洗。
+    remediation: Let html/template escape the value, or sanitize it with a policy library before the conversion.
+    remediation_zh: 让 html/template 转义该值，或在转换前用策略型清洗库处理。
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: go-text-template-http
+    title: Go text/template rendered to an HTTP response
+    title_zh: Go 用 text/template 渲染 HTTP 响应
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-79
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '^\s*(?:import\s+)?(?:\w+\s+)?"text/template"'
+    fileAbsentPattern: '^\s*(?:import\s+)?(?:\w+\s+)?"html/template"'
+    pattern: '\.Execute(?:Template)?\(\s*(?:w|rw|writer|resp|res|response|c\.Writer|ctx\.Writer|c\.Response\(\)(?:\.Writer)?)\s*,'
+    message: text/template does no HTML escaping; rendering it into an HTTP response turns any user value into markup.
+    message_zh: text/template 不做 HTML 转义；渲染到 HTTP 响应时任何用户值都会成为标记。
+    remediation: Use html/template for HTML output.
+    remediation_zh: HTML 输出使用 html/template。
+    references:
+      - CWE-79
+      - OWASP A03:2021
+  - id: go-template-injection
+    title: Go template parsed from request data
+    title_zh: Go 从请求数据解析模板
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1336
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '"(?:text|html)/template"'
+    pattern: '(?:\btemplate\.(?:New\([^()\n]{0,100}\)\.)?|\b(?:t|tp|tmpl|tpl|templ|\w{0,20}template)\.)Parse\([^;\n]{0,200}?{{REQ}}'
+    message: A template is compiled from request data; the client can call any method or function reachable from the template data (server-side template injection).
+    message_zh: 模板由请求数据编译而成；客户端可以调用模板数据可达的任何方法或函数（服务端模板注入）。
+    remediation: Parse only templates from the code base; pass user input as template data.
+    remediation_zh: 只解析代码库中的模板；用户输入只作为模板数据传入。
+    references:
+      - CWE-1336
+      - OWASP A03:2021
+
+  # ---------------------------------------------------------------- crypto
+  - id: go-weak-hash
+    title: Go weak hash algorithm (MD5/SHA1)
+    title_zh: Go 使用 MD5/SHA1
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-328
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:md5|sha1)\.(?:New\(\)|Sum\()'
+    group: go-weak-hash
+    message: MD5/SHA1 are unsuitable for security-sensitive hashing; confirm this is a checksum or cache key.
+    message_zh: MD5/SHA1 不适合安全用途；需确认这里只是校验和或缓存键。
+    remediation: Use crypto/sha256 or sha512; hash passwords with bcrypt/argon2.
+    remediation_zh: 使用 crypto/sha256 或 sha512；口令使用 bcrypt/argon2。
+    references:
+      - CWE-328
+      - OWASP A02:2021
+  - id: go-weak-password-hash
+    title: Go password hashed with MD5/SHA1/SHA-256
+    title_zh: Go 使用 MD5/SHA1/SHA-256 哈希口令
+    severity: high
+    confidence: medium
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:md5|sha1|sha256|sha512)\.Sum(?:256|512)?\([^;\n]{0,120}?\b\w{0,20}(?:passw(?:or)?d|passwd|pwd)\w{0,20}'
+    group: go-weak-hash
+    message: A fast unsalted hash of a password can be brute-forced at billions of guesses per second.
+    message_zh: 口令的快速无盐哈希可以每秒数十亿次的速度被暴力破解。
+    remediation: Use bcrypt, scrypt or argon2id (golang.org/x/crypto).
+    remediation_zh: 使用 bcrypt、scrypt 或 argon2id（golang.org/x/crypto）。
+    references:
+      - CWE-916
+      - OWASP A02:2021
+  - id: go-weak-cipher
+    title: Go DES, 3DES or RC4 cipher
+    title_zh: Go 使用 DES、3DES 或 RC4 加密
+    severity: high
+    confidence: medium
+    cwe: CWE-327
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\b(?:des\.New(?:TripleDES)?Cipher|rc4\.NewCipher)\('
+    message: DES and RC4 are broken and 3DES is deprecated (64-bit blocks, Sweet32); data encrypted with them is not protected.
+    message_zh: DES 和 RC4 已被攻破，3DES 已弃用（64 位分组，Sweet32）；用它们加密的数据得不到保护。
+    remediation: Use AES-GCM or ChaCha20-Poly1305.
+    remediation_zh: 使用 AES-GCM 或 ChaCha20-Poly1305。
+    references:
+      - CWE-327
+      - OWASP A02:2021
+  - id: go-static-iv
+    title: Go cipher IV or nonce is a constant
+    title_zh: Go 加密 IV 或 nonce 为常量
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-329
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bcipher\.New(?:CBC|CFB|OFB|CTR)(?:Encrypter|Decrypter)?\(\s*\w+\s*,\s*(?:\[\]byte\(\s*"|\[\]byte\{)|\b(?:iv|nonce)\s*(?::=|=)\s*(?:\[\]byte\(\s*"|\[\]byte\{\s*0x)|\.Seal\(\s*\w+\s*,\s*\[\]byte\(\s*"'
+    message: The IV or nonce is a literal; reusing it leaks plaintext relations (CBC) or breaks confidentiality and integrity entirely (CTR, GCM).
+    message_zh: IV 或 nonce 是字面量；重复使用会泄露明文关系（CBC），或彻底破坏机密性和完整性（CTR、GCM）。
+    remediation: Generate a fresh random IV/nonce with crypto/rand for every message and store it with the ciphertext.
+    remediation_zh: 每条消息都用 crypto/rand 生成新的随机 IV/nonce，并与密文一同保存。
+    references:
+      - CWE-329
+      - OWASP A02:2021
+  - id: go-weak-random
+    title: Go math/rand used for a token, key or secret
+    title_zh: Go 使用 math/rand 生成令牌、密钥或机密
+    severity: high
+    confidence: medium
+    cwe: CWE-338
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # The file imports math/rand under its own name (an aliased math/rand
+    # leaves rand.* to crypto/rand).
+    filePattern: '^\s*(?:import\s+)?"math/rand(?:/v2)?"'
+    pattern: '\b\w{0,30}(?:token|secret|passw(?:or)?d|salt|nonce|otp|csrf|session_?id|api_?key|reset_?code|verif\w{0,10}code)\w{0,30}\b[^;\n]{0,80}?\brand\.(?:Intn?|Int31n?|Int63n?|Uint32|Uint64|IntN|Read|Perm|Shuffle)\('
+    message: math/rand is predictable (seeded, not a CSPRNG); a token or key drawn from it can be guessed.
+    message_zh: math/rand 可预测（有种子，不是密码学安全随机数）；由它生成的令牌或密钥可以被猜出。
+    remediation: Use crypto/rand (rand.Read, rand.Text) for tokens, keys, and salts.
+    remediation_zh: 令牌、密钥与盐使用 crypto/rand（rand.Read、rand.Text）生成。
+    references:
+      - CWE-338
+      - OWASP A02:2021
+  - id: go-rsa-weak-key
+    title: Go RSA key shorter than 2048 bits
+    title_zh: Go RSA 密钥短于 2048 位
+    severity: high
+    confidence: high
+    cwe: CWE-326
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\brsa\.GenerateKey\([^,;\n]{1,100},\s*(?:[1-9]\d{0,2}|1[0-9]\d\d|20[0-3]\d|204[0-7])\s*\)'
+    message: RSA keys below 2048 bits are within reach of factoring and are rejected by current standards.
+    message_zh: 低于 2048 位的 RSA 密钥可能被分解，已不符合当前标准。
+    remediation: Use at least 2048 bits (3072 for long-lived keys), or switch to ECDSA P-256 / Ed25519.
+    remediation_zh: 至少使用 2048 位（长期密钥用 3072 位），或改用 ECDSA P-256 / Ed25519。
+    references:
+      - CWE-326
+      - OWASP A02:2021
+  - id: go-rsa-pkcs1v15-encrypt
+    title: Go RSA PKCS#1 v1.5 encryption
+    title_zh: Go 使用 RSA PKCS#1 v1.5 加密
+    severity: low
+    confidence: medium
+    cwe: CWE-780
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\brsa\.(?:EncryptPKCS1v15|DecryptPKCS1v15(?:SessionKey)?)\('
+    message: PKCS#1 v1.5 encryption padding is exposed to padding-oracle attacks (Bleichenbacher) when decryption errors are observable.
+    message_zh: PKCS#1 v1.5 加密填充在解密错误可被观察时会受到填充预言攻击（Bleichenbacher）。
+    remediation: Use RSA-OAEP (rsa.EncryptOAEP / DecryptOAEP) or a hybrid scheme.
+    remediation_zh: 使用 RSA-OAEP（rsa.EncryptOAEP / DecryptOAEP）或混合加密方案。
+    references:
+      - CWE-780
+      - OWASP A02:2021
+  - id: go-hardcoded-crypto-key
+    title: Go hard-coded encryption or MAC key
+    title_zh: Go 硬编码加密或 MAC 密钥
+    severity: high
+    confidence: medium
+    cwe: CWE-321
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples|samples?|docs?)/'
+    pattern: '(?:\b(?:aes\.NewCipher|chacha20poly1305\.NewX?|blowfish\.NewCipher)\(\s*|\bhmac\.New\(\s*[\w.]+\s*,\s*|\b(?:\w{0,30}(?:secret|enc(?:ryption)?_?key|signing_?key|hmac_?key|aes_?key|cipher_?key|master_?key|crypto_?key|private_?key)|key)\s*(?::=|=)\s*)\[\]byte\(\s*"(?<secret>[^"\n]{8,200})"\s*\)'
+    notPattern: '"[^"\n]{0,200}(?:example|changeme|change_me|your|xxx|dummy|placeholder|fake|sample|replace|todo|test)[^"\n]{0,200}"|\bjwt'
+    redactEvidence: true
+    group: go-hardcoded-key
+    message: A literal key in source code is known to everyone who has the code or the binary, so it protects nothing.
+    message_zh: 源码中的字面量密钥对任何拿到代码或二进制的人都是已知的，起不到保护作用。
+    remediation: Load the key from a secret manager or the environment and rotate the committed value.
+    remediation_zh: 从密钥管理器或环境变量加载密钥，并轮换已提交的值。
+    references:
+      - CWE-321
+      - OWASP A02:2021
+  - id: go-bcrypt-low-cost
+    title: Go bcrypt cost below 10
+    title_zh: Go bcrypt 成本因子低于 10
+    severity: medium
+    confidence: high
+    cwe: CWE-916
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bbcrypt\.GenerateFromPassword\([^;\n]{1,200},\s*(?:[0-9]|bcrypt\.MinCost)\s*\)'
+    message: A bcrypt cost below 10 makes offline guessing of leaked hashes many times cheaper.
+    message_zh: bcrypt 成本因子低于 10 会使泄露哈希的离线猜测成本大幅降低。
+    remediation: Use bcrypt.DefaultCost (10) or higher, tuned to about 100 ms per hash.
+    remediation_zh: 使用 bcrypt.DefaultCost（10）或更高，按每次哈希约 100 毫秒调整。
+    references:
+      - CWE-916
+      - OWASP A02:2021
+
+  # ---------------------------------------------------------------- JWT
+  - id: go-jwt-no-alg-check
+    title: Go jwt.Parse key function without an algorithm check
+    title_zh: Go jwt.Parse 的密钥函数未检查算法
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    # Once calls are joined across lines the key function body is part of the
+    # unit, and a token.Method check or jwt.WithValidMethods discards the hit.
+    pattern: '\bjwt\.Parse(?:WithClaims)?\([^;]{0,300}?func\s*\(\s*\w+\s*\*jwt\.Token\s*\)'
+    notPattern: '\.Method\b|WithValidMethods|\.Alg\(\)|SigningMethod'
+    message: The key function returns a key without checking token.Method; with an HMAC secret derived from a public key, or an unexpected algorithm, a forged token may verify.
+    message_zh: 密钥函数未检查 token.Method 就返回密钥；若攻击者换用其他算法（例如用公钥作 HMAC 密钥），伪造的令牌可能通过校验。
+    remediation: Check token.Method against the expected type in the key function, or pass jwt.WithValidMethods([]string{"RS256"}).
+    remediation_zh: 在密钥函数中检查 token.Method 是否为预期类型，或传入 jwt.WithValidMethods([]string{"RS256"})。
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: go-jwt-parse-unverified
+    title: Go JWT parsed without signature verification
+    title_zh: Go 解析 JWT 时未校验签名
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-347
+    owasp: A07:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\.ParseUnverified\('
+    message: ParseUnverified does not check the signature; confirm its claims are never used for authentication or authorization.
+    message_zh: ParseUnverified 不校验签名；需确认其声明从不用于认证或授权。
+    remediation: Use jwt.Parse / ParseWithClaims with a key function for any decision based on the token.
+    remediation_zh: 凡是基于令牌做决定的地方都使用带密钥函数的 jwt.Parse / ParseWithClaims。
+    references:
+      - CWE-347
+      - OWASP A07:2021
+  - id: go-jwt-none-alg
+    title: Go JWT 'none' algorithm allowed
+    title_zh: Go JWT 允许 none 算法
+    severity: critical
+    confidence: high
+    cwe: CWE-347
+    owasp: A02:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    flags: ''
+    pattern: '\bjwt\.(?:SigningMethodNone|UnsafeAllowNoneSignatureType)\b'
+    notPattern: '[!=]=\s*jwt\.SigningMethodNone|jwt\.SigningMethodNone\s*[!=]='
+    message: Tokens signed with the 'none' algorithm carry no signature, so anyone can mint them.
+    message_zh: 使用 none 算法的令牌没有签名，任何人都能伪造。
+    remediation: Sign with HS256/RS256/EdDSA and reject 'none' (jwt.WithValidMethods).
+    remediation_zh: 使用 HS256/RS256/EdDSA 签名，并拒绝 none 算法（jwt.WithValidMethods）。
+    references:
+      - CWE-347
+      - OWASP A02:2021
+  - id: go-jwt-hardcoded-secret
+    title: Go JWT signed or verified with a literal secret
+    title_zh: Go JWT 使用字面量密钥签名或校验
+    severity: high
+    confidence: medium
+    cwe: CWE-798
+    owasp: A07:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}|(?:^|/)(?:examples?|_examples|samples?|docs?)/'
+    pattern: '(?:\.SignedString\(\s*\[\]byte\(\s*|\b\w{0,20}(?:jwt_?(?:secret|key|signing_?key)|token_?secret|signing_?(?:secret|key))\w{0,10}\s*(?::=|=)\s*(?:\[\]byte\(\s*)?|\*jwt\.Token\s*\)\s*\(\s*(?:interface\{\}|any)\s*,\s*error\s*\)\s*\{\s*return\s+\[\]byte\(\s*)"(?<secret>[^"\n]{6,200})"'
+    notPattern: '"[^"\n]{0,200}(?:example|changeme|change_me|your|xxx|dummy|placeholder|fake|sample|replace|todo)[^"\n]{0,200}"'
+    redactEvidence: true
+    group: go-hardcoded-key
+    message: The JWT secret is a literal in the source, so anyone with the code can forge tokens for any user.
+    message_zh: JWT 密钥是源码中的字面量，拿到代码的人可以为任何用户伪造令牌。
+    remediation: Load the signing key from a secret manager or the environment and rotate the committed value.
+    remediation_zh: 从密钥管理器或环境变量加载签名密钥，并轮换已提交的值。
+    references:
+      - CWE-798
+      - OWASP A07:2021
+  - id: go-jwt-deprecated-library
+    title: Go imports the unmaintained dgrijalva/jwt-go
+    title_zh: Go 导入了已停止维护的 dgrijalva/jwt-go
+    severity: medium
+    confidence: high
+    cwe: CWE-1104
+    owasp: A06:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '^\s*(?:import\s+)?(?:\w+\s+)?"github\.com/dgrijalva/jwt-go(?:/v\d+)?(?:/[\w/]+)?"'
+    message: github.com/dgrijalva/jwt-go is unmaintained and has an unfixed audience-check bypass (CVE-2020-26160).
+    message_zh: github.com/dgrijalva/jwt-go 已停止维护，存在未修复的 audience 校验绕过（CVE-2020-26160）。
+    remediation: Migrate to github.com/golang-jwt/jwt/v5.
+    remediation_zh: 迁移到 github.com/golang-jwt/jwt/v5。
+    references:
+      - CWE-1104
+      - CVE-2020-26160
+      - OWASP A06:2021
+
+  # ---------------------------------------------------------------- CORS / cookies
+  - id: go-cors-credentials-any-origin
+    title: Go CORS allows credentials from any origin
+    title_zh: Go CORS 允许任意来源携带凭据
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: 'AllowedOrigins\s*:\s*\[\]string\{\s*"\*"|AllowAllOrigins\s*:\s*true|AllowOriginFunc\s*:\s*func\([^)]{0,100}\)\s*bool\s*\{\s*return\s+true'
+    pattern: '\bAllowCredentials\s*:\s*true\b'
+    message: The CORS configuration accepts every origin and also allows credentials, so any web site can make authenticated requests and read the responses.
+    message_zh: CORS 配置接受所有来源且允许携带凭据，任何网站都能发起带身份的请求并读取响应。
+    remediation: List the trusted origins explicitly when credentials are allowed.
+    remediation_zh: 允许凭据时显式列出可信来源。
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: go-cors-origin-reflected
+    title: Go reflects the Origin header into Access-Control-Allow-Origin
+    title_zh: Go 将 Origin 头原样反射到 Access-Control-Allow-Origin
+    severity: high
+    confidence: medium
+    cwe: CWE-942
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '"Access-Control-Allow-Credentials"\s*,\s*"true"'
+    pattern: '"Access-Control-Allow-Origin"\s*,\s*(?:(?:r|req|request|c\.Request|ctx\.Request)\.Header\.Get\(\s*"Origin"\s*\)|(?:c|ctx)\.(?:GetHeader|Get)\(\s*"Origin"\s*\))'
+    message: Every origin is echoed back while credentials are allowed, which lets any web site read authenticated responses.
+    message_zh: 在允许凭据的同时原样回显每个来源，任何网站都能读取带身份的响应。
+    remediation: Compare the Origin header against an allowlist before echoing it.
+    remediation_zh: 回显前先将 Origin 头与白名单比对。
+    references:
+      - CWE-942
+      - OWASP A05:2021
+  - id: go-cookie-insecure
+    title: Go cookie without Secure or HttpOnly
+    title_zh: Go Cookie 未设置 Secure 或 HttpOnly
+    severity: medium
+    confidence: medium
+    cwe: CWE-614
+    owasp: A05:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '\bhttp\.Cookie\s*\{|\.SetCookie\('
+    pattern: '\b(?:Secure|HttpOnly)\s*:\s*false\b|\.SetCookie\([^;\n]{0,300}?,\s*(?:false\s*,\s*(?:true|false)|true\s*,\s*false)\s*\)'
+    message: Without Secure the cookie is also sent over plain HTTP; without HttpOnly scripts (and any XSS) can read it.
+    message_zh: 未设置 Secure 时 Cookie 也会通过明文 HTTP 发送；未设置 HttpOnly 时脚本（以及任何 XSS）都能读取它。
+    remediation: Set Secure and HttpOnly on session and authentication cookies.
+    remediation_zh: 会话和认证 Cookie 应设置 Secure 和 HttpOnly。
+    references:
+      - CWE-614
+      - CWE-1004
+      - OWASP A05:2021
+  - id: go-cookie-samesite-none
+    title: Go cookie with SameSite=None
+    title_zh: Go Cookie 设置 SameSite=None
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1275
+    owasp: A01:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bSameSite\s*:\s*http\.SameSiteNoneMode\b|\.SetSameSite\(\s*http\.SameSiteNoneMode\s*\)'
+    message: SameSite=None sends the cookie on cross-site requests; confirm this cookie must be cross-site and that state-changing requests have CSRF protection.
+    message_zh: SameSite=None 会在跨站请求中发送 Cookie；需确认该 Cookie 确需跨站，且修改状态的请求有 CSRF 防护。
+    remediation: Use SameSite=Lax or Strict unless the cookie is needed in a cross-site context.
+    remediation_zh: 除非确需跨站使用，否则设置 SameSite=Lax 或 Strict。
+    references:
+      - CWE-1275
+      - OWASP A01:2021
+
+  # ---------------------------------------------------------------- misc
+  - id: go-gob-decode-request
+    title: Go gob decoding of a request body
+    title_zh: Go 对请求体进行 gob 解码
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-502
+    owasp: A08:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    pattern: '\bgob\.NewDecoder\(\s*(?:(?:r|req|request|c\.Request|ctx\.Request)\.Body|http\.MaxBytesReader\([^;\n]{0,100}\.Body)'
+    message: gob decoding of client data can allocate very large values and fill interface fields with any registered type; confirm the body size is limited and the target type is simple.
+    message_zh: 对客户端数据做 gob 解码可能分配极大的值，并把接口字段填成任意已注册类型；需确认请求体大小受限且目标类型简单。
+    remediation: Prefer JSON or protobuf for client input; limit the body with http.MaxBytesReader.
+    remediation_zh: 客户端输入优先使用 JSON 或 protobuf；用 http.MaxBytesReader 限制请求体大小。
+    references:
+      - CWE-502
+      - OWASP A08:2021
+  - id: go-integer-narrowing
+    title: Go Atoi result narrowed to a smaller integer type
+    title_zh: Go 将 Atoi 结果转换为更小的整数类型
+    severity: low
+    confidence: low
+    kind: hotspot
+    cwe: CWE-190
+    owasp: A03:2021
+    languages: [go]
+    pathExclude: '{{GOTEST}}'
+    filePattern: '\bstrconv\.Atoi\('
+    fileAbsentPattern: 'math\.(?:Max|Min)(?:Int|Uint)(?:8|16|32)\b'
+    # The converted value has the usual name of an Atoi result.
+    pattern: '\b(?:int8|int16|int32|uint8|uint16|uint32)\(\s*(?:n|i|num|val|value|v|id|port|size|count|limit|offset|page|parsed|res|result|\w{1,30}(?:Int|Num|ID|Val))\s*\)'
+    message: strconv.Atoi returns a platform-sized int; converting it to a smaller type wraps silently on large input.
+    message_zh: strconv.Atoi 返回平台大小的 int；转换为更小的类型时大输入会静默回绕。
+    remediation: Parse with strconv.ParseInt(s, 10, 32) (or the target size), or check the bounds before converting.
+    remediation_zh: 使用 strconv.ParseInt(s, 10, 32)（或目标位宽）解析，或在转换前检查范围。
+    references:
+      - CWE-190
+      - OWASP A03:2021

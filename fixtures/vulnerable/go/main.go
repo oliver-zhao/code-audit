@@ -12,11 +12,11 @@ import (
 
 func handler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	name := r.URL.Query().Get("name")
-	db.Query("SELECT * FROM users WHERE name = '" + name + "'")
+	db.Query("SELECT * FROM users WHERE name = '" + r.URL.Query().Get("name") + "'")
 	exec.Command("sh", "-c", "ls "+name)
-	os.Open("/data/" + name)
+	os.Open("/data/" + r.URL.Query().Get("file"))
 	_ = md5.New()
-	_ = rand.Intn(100)
+	resetToken := rand.Intn(1000000); _ = resetToken
 	http.Get(name)
 	_ = &tls.Config{InsecureSkipVerify: true}
 }
