@@ -3,8 +3,34 @@
 # Opengrep 1.33.1 against fixtures/vulnerable and fixtures/clean.
 #
 # The request-data rules are taint rules (mode: taint) that share one source
-# list: net/http, gorilla/mux and gin accessors. Their ids do not contain
+# list (the x-go-request-sources anchor below). Their ids do not contain
 # "taint": that word is reserved for the Python taint rule set.
+# Shared request-data sources (YAML anchors, so every rule uses one list):
+# net/http (query, form, header, Go 1.22 PathValue and the Form/Header maps),
+# gorilla/mux, chi, httprouter, gin, echo and fiber.
+x-go-request-sources: &go-request-sources
+  - pattern: '($R : *http.Request).URL.Query()'
+  - pattern: '($R : *http.Request).FormValue(...)'
+  - pattern: '($R : *http.Request).PostFormValue(...)'
+  - pattern: '($R : *http.Request).PathValue(...)'
+  - pattern: '($R : *http.Request).Header'
+  - pattern: '($R : *http.Request).Form'
+  - pattern: '($R : *http.Request).PostForm'
+  - pattern: mux.Vars(...)
+  - pattern: chi.URLParam(...)
+  - pattern: '($P : httprouter.Params).ByName(...)'
+  - pattern: '($C : *gin.Context).Query(...)'
+  - pattern: '($C : *gin.Context).DefaultQuery(...)'
+  - pattern: '($C : *gin.Context).Param(...)'
+  - pattern: '($C : *gin.Context).PostForm(...)'
+  - pattern: '($C : *gin.Context).GetHeader(...)'
+  - pattern: '($C : echo.Context).QueryParam(...)'
+  - pattern: '($C : echo.Context).Param(...)'
+  - pattern: '($C : echo.Context).FormValue(...)'
+  - pattern: '($C : *fiber.Ctx).Query(...)'
+  - pattern: '($C : *fiber.Ctx).Params(...)'
+  - pattern: '($C : *fiber.Ctx).FormValue(...)'
+
 rules:
   - id: go-opengrep-exec-command
     languages: [go]
@@ -16,17 +42,7 @@ rules:
     # Taint from the HTTP request into exec.Command, so constant commands such
     # as exec.Command("ls", "-l") are not reported.
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: mux.Vars(...)
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).Param(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
-      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sources: *go-request-sources
     pattern-sanitizers:
       - pattern: strconv.Atoi(...)
       - pattern: strconv.ParseInt(...)
@@ -43,17 +59,7 @@ rules:
       cwe: "CWE-89"
       confidence: MEDIUM
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: mux.Vars(...)
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).Param(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
-      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sources: *go-request-sources
     pattern-sanitizers:
       - pattern: strconv.Atoi(...)
       - pattern: strconv.ParseInt(...)
@@ -79,9 +85,22 @@ rules:
               - pattern: $DB.Order($Q)
               - pattern: $DB.Group($Q)
               - pattern: $DB.Having($Q, ...)
-          # gin's c.Query(...) is a source, not a database call, and a
+              # pgx: Query/QueryRow/Exec(ctx, sql, args...). The leading
+              # argument must look like a context so that database/sql bind
+              # arguments are not taken for SQL text.
+              - patterns:
+                  - pattern-either:
+                      - pattern: $DB.Query($CTX, $Q, ...)
+                      - pattern: $DB.QueryRow($CTX, $Q, ...)
+                      - pattern: $DB.Exec($CTX, $Q, ...)
+                  - metavariable-regex:
+                      metavariable: $CTX
+                      regex: '(?i)^.*(?:ctx|context\(\))$'
+          # gin/fiber/echo c.Query(...) is a source, not a database call, and a
           # prepared statement's Exec/Query take only bind arguments.
           - pattern-not: '($C : *gin.Context).$METHOD(...)'
+          - pattern-not: '($C : *fiber.Ctx).$METHOD(...)'
+          - pattern-not: '($C : echo.Context).$METHOD(...)'
           - metavariable-regex:
               metavariable: $DB
               regex: '^(?![A-Za-z0-9_]*(?:[sS]tmt|STMT)$)'
@@ -95,20 +114,11 @@ rules:
       cwe: "CWE-22"
       confidence: MEDIUM
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: mux.Vars(...)
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).Param(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
-      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sources: *go-request-sources
     pattern-sanitizers:
       - pattern: filepath.Base(...)
       - pattern: path.Base(...)
+      - pattern: filepath.Clean("/" + $X)
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -122,6 +132,7 @@ rules:
               - pattern: ioutil.ReadFile($P)
               - pattern: http.ServeFile($W, $REQ, $P)
               - pattern: '($C : *gin.Context).File($P)'
+              - pattern: '($C : echo.Context).File($P)'
           - focus-metavariable: $P
 
   - id: go-opengrep-redirect-request
@@ -132,20 +143,14 @@ rules:
       cwe: "CWE-601"
       confidence: MEDIUM
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
-      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sources: *go-request-sources
     pattern-sinks:
       - patterns:
           - pattern-either:
               - pattern: http.Redirect($W, $REQ, $U, ...)
               - pattern: '($C : *gin.Context).Redirect($CODE, $U)'
+              - pattern: '($C : echo.Context).Redirect($CODE, $U)'
+              - pattern: '($C : *fiber.Ctx).Redirect($U, ...)'
           - focus-metavariable: $U
 
   - id: go-opengrep-ssrf-request
@@ -156,15 +161,7 @@ rules:
       cwe: "CWE-918"
       confidence: MEDIUM
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
-      - pattern: '($C : *gin.Context).GetHeader(...)'
+    pattern-sources: *go-request-sources
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -184,15 +181,7 @@ rules:
       cwe: "CWE-79"
       confidence: MEDIUM
     mode: taint
-    pattern-sources:
-      - pattern: '($R : *http.Request).URL.Query().Get(...)'
-      - pattern: '($R : *http.Request).FormValue(...)'
-      - pattern: '($R : *http.Request).PostFormValue(...)'
-      - pattern: '($R : *http.Request).Header.Get(...)'
-      - pattern: '($C : *gin.Context).Query(...)'
-      - pattern: '($C : *gin.Context).DefaultQuery(...)'
-      - pattern: '($C : *gin.Context).Param(...)'
-      - pattern: '($C : *gin.Context).PostForm(...)'
+    pattern-sources: *go-request-sources
     pattern-sanitizers:
       - pattern: html.EscapeString(...)
       - pattern: template.HTMLEscapeString(...)

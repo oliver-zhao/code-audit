@@ -919,6 +919,13 @@
       "kind": "hotspot"
     },
     {
+      "file": "go/cors.go",
+      "line": 7,
+      "ruleId": "go-cors-credentials-any-origin",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
       "file": "go/crypto.go",
       "line": 16,
       "ruleId": "go-weak-cipher",
@@ -975,6 +982,48 @@
       "kind": "finding"
     },
     {
+      "file": "go/fetch.go",
+      "line": 9,
+      "ruleId": "go-ssrf-request",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 11,
+      "ruleId": "go-ssrf-request",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 15,
+      "ruleId": "go-ssrf",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 16,
+      "ruleId": "go-ssrf",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 20,
+      "ruleId": "go-xss-response-write",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 21,
+      "ruleId": "go-xss-response-write",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
       "file": "go/files.go",
       "line": 14,
       "ruleId": "go-path-traversal",
@@ -1012,9 +1061,9 @@
     {
       "file": "go/files.go",
       "line": 42,
-      "ruleId": "go-file-permissions",
+      "ruleId": "go-file-permissions-api",
       "language": "go",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "go/files.go",
@@ -1043,6 +1092,62 @@
       "ruleId": "go-path-api",
       "language": "go",
       "kind": "hotspot"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 16,
+      "ruleId": "go-path-traversal",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 20,
+      "ruleId": "go-path-traversal",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 24,
+      "ruleId": "go-path-traversal",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 29,
+      "ruleId": "go-command-request",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 33,
+      "ruleId": "go-command-request",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 37,
+      "ruleId": "go-open-redirect",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 41,
+      "ruleId": "go-path-traversal",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 45,
+      "ruleId": "go-open-redirect",
+      "language": "go",
+      "kind": "finding"
     },
     {
       "file": "go/jwt.go",
@@ -1213,6 +1318,48 @@
       "kind": "hotspot"
     },
     {
+      "file": "go/salt.go",
+      "line": 7,
+      "ruleId": "go-weak-random",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 10,
+      "ruleId": "go-command-injection",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 11,
+      "ruleId": "go-exec-shell",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 12,
+      "ruleId": "go-exec-shell",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 13,
+      "ruleId": "go-exec-shell",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 14,
+      "ruleId": "go-command-request",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
       "file": "go/sqli.go",
       "line": 17,
       "ruleId": "go-sql-injection",
@@ -1297,6 +1444,41 @@
       "kind": "hotspot"
     },
     {
+      "file": "go/sqli_raw.go",
+      "line": 13,
+      "ruleId": "go-sql-injection",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 14,
+      "ruleId": "go-sql-injection",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 18,
+      "ruleId": "go-sql-injection",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 22,
+      "ruleId": "go-sql-injection",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 26,
+      "ruleId": "go-sql-string-building",
+      "language": "go",
+      "kind": "finding"
+    },
+    {
       "file": "go/texttmpl.go",
       "line": 9,
       "ruleId": "go-template-injection",
@@ -1311,6 +1493,20 @@
       "kind": "hotspot"
     },
     {
+      "file": "go/tmplfuncs.go",
+      "line": 10,
+      "ruleId": "go-template-injection",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
+      "file": "go/tmplfuncs.go",
+      "line": 11,
+      "ruleId": "go-text-template-http",
+      "language": "go",
+      "kind": "hotspot"
+    },
+    {
       "file": "go/web.go",
       "line": 12,
       "ruleId": "go-xss-template-request",
@@ -1320,9 +1516,9 @@
     {
       "file": "go/web.go",
       "line": 18,
-      "ruleId": "go-cors-credentials-any-origin",
+      "ruleId": "go-cors-wildcard-credentials",
       "language": "go",
-      "kind": "finding"
+      "kind": "hotspot"
     },
     {
       "file": "go/web.go",
@@ -1798,6 +1994,18 @@
       "confidence": "medium"
     },
     {
+      "file": "go/fetch.go",
+      "line": 9,
+      "ruleId": "go-opengrep-ssrf-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/fetch.go",
+      "line": 11,
+      "ruleId": "go-opengrep-ssrf-request",
+      "confidence": "medium"
+    },
+    {
       "file": "go/files.go",
       "line": 14,
       "ruleId": "go-opengrep-path-request",
@@ -1813,6 +2021,54 @@
       "file": "go/files.go",
       "line": 20,
       "ruleId": "go-opengrep-path-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 16,
+      "ruleId": "go-opengrep-path-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 20,
+      "ruleId": "go-opengrep-path-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 24,
+      "ruleId": "go-opengrep-path-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 29,
+      "ruleId": "go-opengrep-exec-command",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 33,
+      "ruleId": "go-opengrep-exec-command",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 37,
+      "ruleId": "go-opengrep-redirect-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 41,
+      "ruleId": "go-opengrep-path-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/frameworks.go",
+      "line": 45,
+      "ruleId": "go-opengrep-redirect-request",
       "confidence": "medium"
     },
     {
@@ -1849,6 +2105,12 @@
       "file": "go/net.go",
       "line": 28,
       "ruleId": "go-opengrep-redirect-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/shells.go",
+      "line": 14,
+      "ruleId": "go-opengrep-exec-command",
       "confidence": "medium"
     },
     {
@@ -1890,6 +2152,30 @@
     {
       "file": "go/sqli.go",
       "line": 29,
+      "ruleId": "go-opengrep-sql-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 13,
+      "ruleId": "go-opengrep-sql-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 14,
+      "ruleId": "go-opengrep-sql-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 18,
+      "ruleId": "go-opengrep-sql-request",
+      "confidence": "medium"
+    },
+    {
+      "file": "go/sqli_raw.go",
+      "line": 22,
       "ruleId": "go-opengrep-sql-request",
       "confidence": "medium"
     },

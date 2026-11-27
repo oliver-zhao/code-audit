@@ -42,8 +42,8 @@ function stmt(code: string, header: string[] = []): string[] {
 const IMPORT_MATH_RAND = ["package main", "", 'import "math/rand"', ""];
 
 describe("Go rule metadata", () => {
-  it("ships 48 go- rules with metadata in both languages", () => {
-    expect(goRules).toHaveLength(48);
+  it("ships 50 go- rules with metadata in both languages", () => {
+    expect(goRules).toHaveLength(50);
     for (const rule of goRules) {
       expect(rule.sourceFile.endsWith(path.join("sast", "go.yml"))).toBe(true);
       expect(rule.languages).toEqual(["go"]);
@@ -94,7 +94,9 @@ describe("Go fixtures", () => {
     expect(goHitsClean.filter((hit) => hit.rule.kind === "finding")).toEqual([]);
     for (const hit of goHitsClean) expect(hit.rule.confidence).toBe("low");
     // The one tolerated hotspot: ORDER BY with a column picked from constants.
-    expect(goHitsClean.map((hit) => `${hit.file.relPath}:${hit.rule.id}`)).toEqual([
+    // and a loopback-only pprof listener without timeouts.
+    expect(goHitsClean.map((hit) => `${hit.file.relPath}:${hit.rule.id}`).sort()).toEqual([
+      "go/pprof.go:go-http-server-no-timeout",
       "go/sqli.go:go-sql-api",
     ]);
   });
@@ -206,7 +208,7 @@ describe("Go command and file rules", () => {
   });
 
   it("separates world-writable modes from umask-reduced defaults", () => {
-    expect(stmt('os.WriteFile("a.txt", data, 0777)')).toEqual(["go-file-permissions"]);
+    expect(stmt('os.WriteFile("a.txt", data, 0777)')).toEqual(["go-file-permissions-api"]);
     expect(stmt('os.Chmod(path, 0o666)')).toEqual(["go-file-permissions"]);
     expect(stmt("os.MkdirAll(dir, 0o777)")).toEqual(["go-file-permissions-api"]);
     expect(stmt('os.WriteFile("a.txt", data, 0600)')).toEqual([]);
@@ -313,7 +315,7 @@ describe("Go web configuration rules", () => {
   it("needs both a wildcard origin and credentials in the file for CORS", () => {
     const base = ["package main", "var o = cors.Options{"];
     expect(goHits([...base, '\tAllowedOrigins: []string{"*"},', "\tAllowCredentials: true,", "}"])).toEqual([
-      "4:go-cors-credentials-any-origin",
+      "4:go-cors-wildcard-credentials",
     ]);
     expect(
       goHits([...base, '\tAllowedOrigins: []string{"https://a.example"},', "\tAllowCredentials: true,", "}"]),
@@ -344,6 +346,150 @@ describe("Go web configuration rules", () => {
     expect(goHits([...base, "io.Copy(dst, gz)"])).toEqual(["3:go-decompression-bomb"]);
     expect(goHits([...base, "io.Copy(dst, io.LimitReader(gz, 1<<20))"])).toEqual([]);
     expect(goHits(["package main", "io.Copy(dst, gz)"])).toEqual([]);
+  });
+});
+
+describe("Go review fixes", () => {
+  it("D1: finds request data in raw-string (backtick) SQL", () => {
+    expect(stmt('db.Query(fmt.Sprintf(`SELECT * FROM t WHERE a = \'%s\'`, r.FormValue("a")))')).toEqual([
+      "go-sql-injection",
+    ]);
+    expect(stmt('db.Exec(`DELETE FROM t WHERE id = ` + r.URL.Query().Get("id"))')).toEqual([
+      "go-sql-injection",
+    ]);
+    expect(stmt("db.Query(`SELECT * FROM t WHERE a = '` + a + `'`)")).toEqual(["go-sql-string-building"]);
+    expect(stmt('db.Query(`SELECT * FROM t WHERE a = $1`, r.FormValue("a"))')).toEqual([]);
+  });
+
+  it("D2: reports SSRF only for request data in the URL argument", () => {
+    expect(stmt('http.Post("https://api.example.invalid/x", "text/plain", strings.NewReader(r.FormValue("b")))')).toEqual([]);
+    expect(stmt('http.NewRequest("POST", "https://api.example.invalid/x", strings.NewReader(r.FormValue("b")))')).toEqual([]);
+    expect(stmt('http.PostForm("https://api.example.invalid/x", url.Values{"q": {r.FormValue("q")}})')).toEqual([]);
+    expect(stmt('item, _ := mc.Get(r.URL.Query().Get("key"))')).toEqual([]);
+    expect(stmt('item, _ := cacheClient.Get(r.URL.Query().Get("key"))')).toEqual([]);
+    expect(stmt('http.NewRequest("GET", r.FormValue("u"), nil)')).toEqual(["go-ssrf-request"]);
+    expect(stmt('httpClient.Get(r.FormValue("u"))')).toEqual(["go-ssrf-request"]);
+    expect(stmt('http.Get(fmt.Sprintf("http://%s/x", r.FormValue("h")))')).toEqual(["go-ssrf-request"]);
+    expect(stmt('http.Get("http://" + host + "/x")')).toEqual(["go-ssrf"]);
+    expect(stmt('http.Get(fmt.Sprintf("http://%s/x", host))')).toEqual(["go-ssrf"]);
+  });
+
+  it("D3: takes only the first argument of a file call for the path", () => {
+    expect(stmt('os.WriteFile("/var/notes/a.txt", []byte(r.FormValue("note")), 0600)')).toEqual([]);
+    expect(stmt('os.WriteFile(filepath.Join(dir, "a.txt"), []byte(r.FormValue("note")), 0600)')).toEqual([]);
+    expect(stmt('os.WriteFile(filepath.Join(dir, r.FormValue("n")), data, 0600)')).toEqual([
+      "go-path-traversal",
+    ]);
+    expect(stmt('os.Open(fmt.Sprintf("/srv/%s.txt", r.FormValue("n")))')).toEqual(["go-path-traversal"]);
+    expect(stmt('os.Open(filepath.Join(base, filepath.Clean("/"+r.FormValue("n"))))')).toEqual([]);
+  });
+
+  it("D4/D5: accepts r.Context() and c.Request.Context() as the context argument", () => {
+    expect(stmt('exec.CommandContext(r.Context(), "sh", "-c", "make "+target)')).toEqual([
+      "go-command-injection",
+    ]);
+    expect(stmt('exec.CommandContext(c.Request.Context(), "bash", "-c", script)')).toEqual(["go-exec-shell"]);
+    expect(stmt('exec.CommandContext(r.Context(), "git", "fetch", r.FormValue("remote"))')).toEqual([
+      "go-command-request",
+    ]);
+    expect(stmt('pool.Query(r.Context(), "SELECT * FROM t WHERE a = $1", r.FormValue("a"))')).toEqual([]);
+    expect(stmt('db.QueryContext(c.Request.Context(), "SELECT * FROM t WHERE a = $1", c.Query("a"))')).toEqual([]);
+    expect(stmt('db.QueryContext(c.Request.Context(), q)')).toEqual(["go-sql-api"]);
+  });
+
+  it("D6: needs a JWT secret name that ends at secret/key", () => {
+    for (const name of ["jwtKeyHeader", "signingKeyEnv", "jwtSecretPath", "signingKeyID", "AnonymousTokenSecret"]) {
+      expect(stmt(`${name} := "value-that-is-long"`)).toEqual([]);
+    }
+    expect(stmt('jwtSecret := "Hk3vQ9zP2mR7tX5w"')).toEqual(["go-jwt-hardcoded-secret"]);
+    expect(stmt('signingKey := []byte("Hk3vQ9zP2mR7tX5w")')).toEqual(["go-jwt-hardcoded-secret"]);
+  });
+
+  it("D7: ignores a defensive case jwt.SigningMethodNone", () => {
+    expect(stmt("case jwt.SigningMethodNone:")).toEqual([]);
+  });
+
+  it("D8: reports bcrypt costs 4 to 9 only", () => {
+    expect(stmt("h, _ := bcrypt.GenerateFromPassword(pw, 2)")).toEqual([]);
+    expect(stmt("h, _ := bcrypt.GenerateFromPassword(pw, 9)")).toEqual(["go-bcrypt-low-cost"]);
+    expect(stmt("h, _ := bcrypt.GenerateFromPassword(pw, bcrypt.MinCost)")).toEqual(["go-bcrypt-low-cost"]);
+  });
+
+  it("D9: exempts pprof on a loopback-only default mux", () => {
+    for (const addr of ['"localhost:6060"', '"127.0.0.1:6060"', '"[::1]:6060"']) {
+      const hits = goHits(["package main", 'import _ "net/http/pprof"', `func main() { http.ListenAndServe(${addr}, nil) }`]);
+      expect(hits).toEqual(["3:go-http-server-no-timeout"]);
+    }
+  });
+
+  it("D10: ignores escaped or sanitized request data in template conversions", () => {
+    expect(stmt('v := template.HTML(html.EscapeString(r.FormValue("bio")))')).toEqual(["go-template-unescaped"]);
+    expect(stmt('v := template.HTML(policy.Sanitize(r.FormValue("bio")))')).toEqual(["go-template-unescaped"]);
+  });
+
+  it("D11: separates secret names from counters and covers rand.Read(secret)", () => {
+    expect(stmt("n := tokenCount + rand.Intn(5)", IMPORT_MATH_RAND)).toEqual([]);
+    expect(stmt("retryTokens := rand.Intn(3)", IMPORT_MATH_RAND)).toEqual([]);
+    expect(stmt("tokenBucket := rand.Intn(3)", IMPORT_MATH_RAND)).toEqual([]);
+    expect(stmt("rand.Read(token)", IMPORT_MATH_RAND)).toEqual(["go-weak-random"]);
+    expect(stmt("rand.Read(salt[:])", IMPORT_MATH_RAND)).toEqual(["go-weak-random"]);
+    expect(stmt("rand.Read(buf)", IMPORT_MATH_RAND)).toEqual([]);
+  });
+
+  it("D12: an unrelated strings.HasPrefix does not hide Zip Slip", () => {
+    const file = [
+      "package main",
+      'import "archive/zip"',
+      "func x(dest string, f *zip.File) {",
+      "	target := filepath.Join(dest, f.Name)",
+      '	if strings.HasPrefix(line, "#") { return }',
+      "}",
+    ];
+    expect(goHits(file)).toEqual(["4:go-zip-slip"]);
+    const relChecked = [...file.slice(0, 4), "	rel, _ := filepath.Rel(dest, target)", "}"];
+    expect(goHits(relChecked)).toEqual([]);
+  });
+
+  it("D14: does not treat a hashed reset token as a password hash", () => {
+    expect(stmt("sum := sha256.Sum256([]byte(resetPasswordToken))")).toEqual([]);
+    expect(stmt("sum := sha256.Sum256([]byte(password))")).toEqual(["go-weak-password-hash"]);
+  });
+
+  it("extends request sources to chi, echo, fiber, httprouter, PathValue and the Form map", () => {
+    expect(stmt('os.ReadFile("/srv/" + chi.URLParam(r, "doc"))')).toEqual(["go-path-traversal"]);
+    expect(stmt('os.Remove("/srv/" + r.PathValue("name"))')).toEqual(["go-path-traversal"]);
+    expect(stmt('os.Open("/srv/" + ps.ByName("doc"))')).toEqual(["go-path-traversal"]);
+    expect(stmt('exec.Command("rm", "/srv/cache/"+vars["key"])')).toEqual(["go-command-request"]);
+    expect(stmt('return c.Redirect(c.Query("next"))')).toEqual(["go-open-redirect"]);
+    expect(stmt('http.Redirect(w, r, r.Form["next"][0], http.StatusFound)')).toEqual(["go-open-redirect"]);
+  });
+
+  it("covers more shells and template.New(..).Funcs(..).Parse", () => {
+    expect(stmt('exec.Command("bash", "-lc", line)')).toEqual(["go-exec-shell"]);
+    expect(stmt('exec.Command("/usr/bin/env", "bash", "-c", line)')).toEqual(["go-exec-shell"]);
+    expect(stmt('exec.Command(os.Getenv("SHELL"), "-c", line)')).toEqual(["go-exec-shell"]);
+    expect(stmt('exec.Command("bash", "-lc", "make all")')).toEqual([]);
+    const header = ["package main", 'import "text/template"'];
+    expect(
+      stmt('t, _ := template.New("p").Funcs(template.FuncMap{"u": strings.ToUpper}).Parse(r.FormValue("b"))', header),
+    ).toEqual(["go-template-injection"]);
+  });
+
+  it("reports reflected request data in the response body", () => {
+    expect(stmt('w.Write([]byte(r.URL.Query().Get("msg")))')).toEqual(["go-xss-response-write"]);
+    expect(stmt('fmt.Fprintf(w, "<p>%s</p>", r.FormValue("n"))')).toEqual(["go-xss-response-write"]);
+    expect(stmt('fmt.Fprintf(w, "count=%s", r.FormValue("n"))')).toEqual([]);
+    expect(stmt('w.Write([]byte(html.EscapeString(r.FormValue("n"))))')).toEqual([]);
+  });
+
+  it("splits CORS: AllowOriginFunc returning true is a finding, a wildcard a hotspot", () => {
+    const head = ["package main", "var o = cors.Options{"];
+    expect(goHits([...head, "	AllowOriginFunc: func(o string) bool { return true },", "	AllowCredentials: true,", "}"])).toEqual([
+      "4:go-cors-credentials-any-origin",
+    ]);
+    expect(goHits([...head, "	AllowAllOrigins: true,", "	AllowCredentials: true,", "}"])).toEqual([
+      "4:go-cors-wildcard-credentials",
+    ]);
   });
 });
 
