@@ -7464,21 +7464,7 @@
       "kind": "finding"
     },
     {
-      "file": "agents/review/ev10/skills/x/.audit/helper",
-      "line": 1,
-      "ruleId": "agent-bundled-binary-executable",
-      "language": "binary",
-      "kind": "finding"
-    },
-    {
       "file": "agents/review/ev10/skills/x/.code-audit/helper",
-      "line": 1,
-      "ruleId": "agent-bundled-binary-executable",
-      "language": "binary",
-      "kind": "finding"
-    },
-    {
-      "file": "agents/review/ev10/skills/x/.git/helper",
       "line": 1,
       "ruleId": "agent-bundled-binary-executable",
       "language": "binary",
@@ -7527,13 +7513,6 @@
       "kind": "finding"
     },
     {
-      "file": "agents/review/ev10/skills/x/dist/helper",
-      "line": 1,
-      "ruleId": "agent-bundled-binary-executable",
-      "language": "binary",
-      "kind": "finding"
-    },
-    {
       "file": "agents/review/ev10/skills/x/guide.pdf",
       "line": 1,
       "ruleId": "agent-bundled-binary-mismatched",
@@ -7565,13 +7544,6 @@
       "file": "agents/review/ev10/skills/x/mod.txt",
       "line": 1,
       "ruleId": "agent-bundled-binary-disguised",
-      "language": "binary",
-      "kind": "finding"
-    },
-    {
-      "file": "agents/review/ev10/skills/x/node_modules/.bin/helper",
-      "line": 1,
-      "ruleId": "agent-bundled-binary-executable",
       "language": "binary",
       "kind": "finding"
     },
@@ -7833,13 +7805,6 @@
       "ruleId": "prompt-injection-disable-safety",
       "language": "markdown",
       "kind": "finding"
-    },
-    {
-      "file": "agents/review/ev14/.claude/hooks/__pycache__/fmt.cpython-314.pyc",
-      "line": 1,
-      "ruleId": "agent-bundled-binary-pyc-cache",
-      "language": "binary",
-      "kind": "hotspot"
     },
     {
       "file": "agents/review/ev14/.cursor/rules/a.mdc",

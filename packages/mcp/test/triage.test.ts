@@ -123,7 +123,8 @@ describe("structured triage over MCP", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(status.phase).toBe("complete");
-    expect(status.truncated).toBeUndefined();
+    // The vulnerable sample is large: the status may be shrunk to fit the
+    // response cap, but the triage counts always survive (fitSummary).
     const triage = status.triage as { findings: { reviewed: number; unreviewed: number }; hotspots: { unreviewed: number } };
     expect(triage.findings.reviewed).toBe(0);
     expect(triage.findings.unreviewed).toBeGreaterThan(0);

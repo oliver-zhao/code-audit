@@ -636,8 +636,13 @@ describe("proof gaps and the review ledger", () => {
     });
     const md = renderRunReport(ctx.runId, "md", ctx.options).text;
     expect(md).not.toMatch(/@octocat/);
-    expect(md).not.toMatch(/https:\/\/evil\.example/);
-    expect(md).not.toMatch(/www\.evil\.example/);
+    // Only the reviewer's text: the fixtures' own evidence may quote URLs.
+    const reviewerLines = md.split("\n").filter((line) => line.includes("ask @"));
+    expect(reviewerLines.length).toBeGreaterThan(0);
+    for (const line of reviewerLines) {
+      expect(line).not.toMatch(/https:\/\/evil\.example/);
+      expect(line).not.toMatch(/www\.evil\.example/);
+    }
     expect(md).toContain("https\u200b://evil.example/auto");
     expect(neutralizeLinks("mail me@x.org at http://a.b")).toBe("mail me@\u200bx.org at http\u200b://a.b");
   });

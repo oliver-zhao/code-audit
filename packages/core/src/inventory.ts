@@ -431,6 +431,22 @@ function countLines(text: string): number {
   return countPhysicalLines(text);
 }
 
+/**
+ * A text file with a few stray NUL bytes (an evasion of the binary check),
+ * not a binary format: at most 64 NUL bytes and under 1% of the first 8 KiB,
+ * and no executable or archive header.
+ */
+function fewNulBytes(buffer: Buffer): boolean {
+  if (buffer.length >= 4 && looksExecutableHeader(buffer.subarray(0, 8))) return false;
+  const limit = Math.min(buffer.length, 8192);
+  let nul = 0;
+  for (let i = 0; i < limit; i += 1) if (buffer[i] === 0) nul += 1;
+  if (nul > 64 || (limit >= 1024 ? nul * 100 >= limit : nul > 4)) return false;
+  let total = 0;
+  for (let i = 0; i < buffer.length; i += 1) if (buffer[i] === 0 && ++total > 64) return false;
+  return true;
+}
+
 function looksBinary(buffer: Buffer): boolean {
   const limit = Math.min(buffer.length, 8192);
   for (let i = 0; i < limit; i += 1) {
@@ -951,7 +967,7 @@ export function inventory(
         skipped.push({ relPath: rel, reason: `cannot read file: ${err.code}` });
         continue;
       }
-      if (looksBinary(buffer) && detectLanguage(rel) !== "unknown") {
+      if (looksBinary(buffer) && detectLanguage(rel) !== "unknown" && fewNulBytes(buffer)) {
         // A file named as source or configuration with a NUL byte: an
         // interpreter still runs it (Node, bash and Python ignore or tolerate
         // a NUL in a comment), so skipping it as binary would let a single

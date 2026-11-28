@@ -7,6 +7,113 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-28
+
+Vetting agent skills before install, stricter agent triage, pull-request
+scanning with a GitHub Action, and secrets in the git history. Every feature
+went through an adversarial review until no high or medium finding was left
+open.
+
+**Upgrading from 0.3.0:** no rule id was removed or renamed and a 0.3.0
+baseline still applies; findings of the new rules count as new. Where a new
+rule shares a group with a released one, the released rule id is kept, so
+existing fingerprints do not change. A run whose `verdicts.json` was written
+by 0.4.0 (schema version 2) cannot be read by 0.3.0.
+
+### Added
+
+- **`code-audit skill <target>`** (MCP `audit_skill`): one verdict per skill
+  or plugin package — `SAFE_TO_INSTALL` (no known risk pattern; not a
+  guarantee), `REVIEW`, `DO_NOT_INSTALL` or `INCOMPLETE`. Targets: a
+  directory, a `SKILL.md`, a `.zip` / `.tar` / `.tar.gz`, or a git URL
+  (hardened shallow clone; refused offline and over MCP); `--recursive`
+  for collections. Always untrusted. Highlights:
+  - its own zip and tar readers check every structural limit before
+    anything is written (size, entry count, 100:1 ratio, traversal, links,
+    duplicate and case-colliding names, local / central header agreement,
+    no hidden data or second archive in the comment);
+  - nothing counts as safe that was not analysed: skipped, binary,
+    oversized, LFS-pointer, `.git` content (except a git-created `.git` at a
+    local directory root) and unreadable files make the package
+    `INCOMPLETE`;
+  - every file is also read as text: printable runs of binaries, UTF-16 /
+    UTF-32, a NUL-stripped view, and the text of FlateDecode PDF streams go
+    through the instruction, shell and secret rules;
+  - in skill mode every text file counts as an instruction file;
+  - `allowed-tools` is compared with what the bundled scripts do
+    (`skill-undeclared-capability`).
+- **Agent and skill rules: 589 → 621 built-in rules.** New groups:
+  anti-refusal / jailbreak wording (English and Chinese), writes to agent
+  memory, configuration and shell start-up files, trigger abuse in
+  `description:` front matter, padding that pushes text off screen, prompt
+  leakage, cloud-storage uploads, shell-outs to other coding agents,
+  package-source redirection, bundled or disguised binaries (`.pyc`, ELF,
+  Mach-O, PE, archives under other extensions), and MCP tool poisoning in
+  tool and parameter descriptions (injection wording, hidden Unicode,
+  homoglyphs). New rule fields `tags` (`malicious-intent`),
+  `withinFrontmatter`, `inSkillTree`, `groupPriority`, `fileMagic` and
+  others (docs/rules.md). Instruction files that are symbolic links are
+  read through the link when it stays inside the root.
+- **Structured triage** (`audit_verdict`, `code-audit verdict`): new status
+  `proof_gap`; optional evidence `trace` (source → sink, every location
+  checked against the run's files), `control`, `missing`, `cwe`;
+  `--strict-evidence` / `strict_evidence` makes it mandatory. Independent
+  review (`role: "independent"`, a different reviewer label, `blind`
+  listings): a disagreement keeps the finding at `needs_review` and stays in
+  the report. A person settles a dispute from an interactive terminal
+  (`--role human --replace --reviewer <name>`; refused over MCP and when an
+  agent environment is detected). Reports show review coverage, open proof
+  gaps and disputes; verdict history is append-only and written under a
+  lock that is safe across processes.
+- **`--diff-lines`** (with `--since`; MCP `diffLines`): report only findings
+  on added or changed lines. The line diff is computed by code-audit from
+  the blob of the ref; a file with unusual line breaks counts as changed in
+  full.
+- **GitHub Action** (`action.yml`, `comment/action.yml`,
+  `examples/workflows/`): scans pull requests untrusted, uploads SARIF and
+  posts inline comments from a separate `workflow_run` job that never runs
+  pull-request code. See docs/github-action.md.
+- **`--history[=<range>]`** (MCP `history`): secrets in the git history,
+  with Gitleaks on an isolated mirror clone. One finding per secret with
+  `history { commit, date, stillPresent, occurrences }`; no author data.
+  Shallow clones are reported as `partial`.
+- `--ignore-file <file>` and `--baseline <file>` apply under `--untrusted`
+  when they lie outside the scanned directory and its git work tree (the
+  summary names them).
+
+### Changed
+
+- A missing `--ignore-file` is now an error (exit 2).
+- A CLI verdict that would replace another reviewer's verdict needs
+  `--replace`.
+- A source or configuration file with a NUL byte is scanned with the NUL
+  bytes removed instead of being skipped as binary.
+- The MCP summary text is compact JSON.
+- Six false positives of `prompt-injection-conceal` and
+  `prompt-injection-read-credentials` are gone; no 0.3.0 detection was
+  lost. Markdown shell blocks are read across `\` continuations, which can
+  add hotspots.
+
+### Security
+
+- Every git invocation now also refuses lazy fetches, replace refs, grafts
+  and every transport explicitly. In 0.3.0 a hostile partial clone with an
+  `ext::` promisor could run a command during `--since`.
+- Cross-engine deduplication is linear (a repository producing tens of
+  thousands of findings took minutes).
+- Gitleaks and other tools are killed with their whole process tree on a
+  timeout or signal; stale temporary entries of killed runs are swept.
+
+### Known limits
+
+- Phrase-level obfuscation (shell quoting such as `cu''rl`, words split
+  across lines, homoglyphs) and PDF text behind non-Flate filters are not
+  seen.
+- The human-decision gate is a speed bump, not a proof; anything that can
+  write to the run directory can forge records.
+- `--history` does not follow submodules; a SIGKILL of code-audit leaves its
+  private temporary directory until the next history run sweeps it.
+
 ## [0.3.0] - 2026-11-28
 
 Rule coverage for every supported language, Rust as a source language, .NET

@@ -845,7 +845,7 @@ describe("fixes after review", () => {
     expect(pkg?.findings.some((finding) => finding.file === "assets/logo.png")).toBe(true);
   });
 
-  it("M3: a skill whose SKILL.md is a symbolic link is a package, INCOMPLETE; results outside packages count", async () => {
+  it("M3: a skill whose SKILL.md is a symbolic link is a package read through the link; results outside packages count", async () => {
     const dir = skillDir({
       "skills/good/SKILL.md": SKILL("Clean."),
       "shared/evil.txt": SKILL("EVIL_MARKER_MEDIUM"),
@@ -855,8 +855,11 @@ describe("fixes after review", () => {
     fs.symlinkSync("../../shared/evil.txt", path.join(dir, "skills/evil/SKILL.md"));
     const { document } = await scan(dir, { recursive: true });
     const byPath = Object.fromEntries(document.packages.map((pkg) => [pkg.path, pkg]));
-    expect(byPath["skills/evil"]?.verdict).toBe("INCOMPLETE");
-    expect(byPath["skills/evil"]?.incomplete[0]).toMatchObject({ path: "SKILL.md", reason: expect.stringContaining("symbolic link") });
+    // The link stays inside the root, so its target is read as the skill's
+    // instruction file (F1) and its content decides; the link no longer
+    // counts as not analysed.
+    expect(byPath["skills/evil"]?.verdict).toBe("DO_NOT_INSTALL");
+    expect(byPath["skills/evil"]?.findings.some((finding) => finding.file === "skills/evil/SKILL.md")).toBe(true);
     expect(byPath["skills/evil"]?.notes.join(" ")).toContain("symbolic link");
     expect(byPath["<outside packages>"]?.verdict).toBe("REVIEW");
     expect(document.summary.exitCode).toBe(1);

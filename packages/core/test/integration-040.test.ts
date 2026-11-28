@@ -37,6 +37,28 @@ describe("0.4.0 integration", () => {
     expect(result.coverage.stats.skippedFiles).toBe(1);
   });
 
+  it("lists binaries in normally skipped directories of a skill tree (files git cannot carry as fixtures)", async () => {
+    const elf = Buffer.concat([Buffer.from("7f454c46020101", "hex"), Buffer.alloc(32)]);
+    const root = dir("skipped-dirs", {
+      "skills/x/SKILL.md": "---\nname: x\ndescription: Formats tables.\n---\n",
+      "skills/x/dist/helper": elf,
+      "skills/x/node_modules/.bin/helper": elf,
+      "skills/x/.audit/helper": elf,
+      "skills/x/.git/helper": elf,
+    });
+    const result = await scanProject({ root, out: path.join(temp, "skipped-out"), offline: true, engines: ["builtin"] });
+    const hits = result.findings
+      .filter((finding) => finding.ruleId === "agent-bundled-binary-executable")
+      .map((finding) => finding.file)
+      .sort();
+    expect(hits).toEqual([
+      "skills/x/.audit/helper",
+      "skills/x/.git/helper",
+      "skills/x/dist/helper",
+      "skills/x/node_modules/.bin/helper",
+    ]);
+  });
+
   it("gives DO_NOT_INSTALL when a grouped finding carries malicious-intent from another rule of its group", async () => {
     const root = dir("grouped-skill", {
       "SKILL.md": [
