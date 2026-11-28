@@ -89,6 +89,12 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 - A source or configuration file with a NUL byte is scanned with the NUL
   bytes removed instead of being skipped as binary.
 - The MCP summary text is compact JSON.
+- zod 4 (4.6.7) and vitest 4: fixes GHSA-mrhx-c7xc-m3w5 (memory exhaustion when
+  validating oversized input, reachable through MCP arguments) and the
+  tinypool / vitest advisories of the development tools. Built-in validation
+  messages of rule, ignore and run files are worded differently; the MCP
+  tool schemas no longer say `additionalProperties: false` (unknown
+  arguments are still dropped).
 - Six false positives of `prompt-injection-conceal` and
   `prompt-injection-read-credentials` are gone; no 0.3.0 detection was
   lost. Markdown shell blocks are read across `\` continuations, which can
