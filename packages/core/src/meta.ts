@@ -69,6 +69,9 @@ export const RUN_OUTPUT_FILES: ReadonlySet<string> = new Set([
   "results.sarif",
   "verdicts.json",
   "agent-findings.json",
+  // Written by `code-audit skill`.
+  "skill.json",
+  "skill.md",
 ]);
 
 /** Files `--latest-link` copies into `<out>/latest/`. */

@@ -7,6 +7,9 @@ import {
   TOOL_VERSION,
   allowSensitiveRoot,
   appendFileNoFollow,
+  cleanupSkillTempDirs,
+  renderSkillText,
+  scanSkill,
   buildBaseline,
   countOptionsOf,
   defaultOpengrepRulesDir,
@@ -60,6 +63,9 @@ Usage:
                         [--include-placeholders] [--untrusted]
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
+                        [--allow-sensitive-root]
+  code-audit skill <target> [--recursive] [--format md,json,sarif] [--out <dir>]
+                        [--offline] [--engines ...] [--rules <dir>] [--json]
                         [--allow-sensitive-root]
   code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--root <dir>] [--json]
@@ -133,6 +139,21 @@ Scan options:
   --profile <name>       standard (default): every installed engine, OSV.dev lookups;
                          quick: built-in engines only, no network (same as
                          --no-external --offline; --engines still applies)
+
+Vetting a skill or plugin before install (code-audit skill):
+  <target>     a directory, a SKILL.md, a .zip/.tar/.tar.gz/.tgz archive (checked
+               before unpacking: no links, traversal or duplicate paths, size and
+               ratio limits) or an https:// / ssh:// / user@host:path git URL
+               (shallow clone, no hooks or submodules; refused with --offline)
+  --recursive  give a verdict for every directory below <target> that holds a
+               SKILL.md or a plugin manifest
+  --json       print the verdict document (skill.json) instead of text
+  Always audited as untrusted. Verdict per package: DO_NOT_INSTALL, REVIEW,
+  INCOMPLETE or SAFE_TO_INSTALL (no known risk patterns found; not a guarantee
+  of safety). Default engines: builtin plus installed opengrep and gitleaks.
+  An unpacked or cloned target is written to --out or ./.audit, never into the
+  temporary copy, which is removed afterwards. Exit code 0 only when every
+  package is SAFE_TO_INSTALL, 1 otherwise, 2 on errors.
 
 Auditing a repository you do not trust:
   --untrusted  ignore everything the audited repository could use to lower the
@@ -482,6 +503,111 @@ async function runScan(args: string[]): Promise<number> {
   // Active, severity >= --fail-on, confidence >= --min-confidence, and new
   // when a baseline is active: the number every report prints.
   return summary.exitCode.code;
+}
+
+function parseEngineList(value: string): EngineName[] {
+  const parsed = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parsed.length === 0) throw new CliError("--engines cannot be empty");
+  for (const engine of parsed) {
+    if (!ALL_ENGINES.includes(engine as EngineName)) {
+      throw new CliError(`--engines supports ${ALL_ENGINES.join("|")}, received ${engine}`);
+    }
+  }
+  return [...new Set(parsed)] as EngineName[];
+}
+
+async function runSkill(args: string[]): Promise<number> {
+  let target: string | undefined;
+  let recursive = false;
+  let formats: ReportFormat[] = [...ALL_FORMATS];
+  let out: string | undefined;
+  let offline = false;
+  let engines: EngineName[] | undefined;
+  let rulesDir: string | undefined;
+  let lang: "en" | "zh" = "en";
+  let asJson = false;
+  let allowSensitive = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--recursive") {
+      recursive = true;
+    } else if (arg === "--format") {
+      const value = takeValue(args, index + 1, arg);
+      index += 1;
+      const parsed = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (parsed.length === 0) throw new CliError("--format cannot be empty");
+      for (const format of parsed) {
+        if (!ALL_FORMATS.includes(format as ReportFormat)) {
+          throw new CliError(`unknown --format: ${format}`);
+        }
+      }
+      formats = [...new Set(parsed)] as ReportFormat[];
+    } else if (arg === "--out") {
+      out = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--offline") {
+      offline = true;
+    } else if (arg === "--engines") {
+      engines = parseEngineList(takeValue(args, index + 1, arg));
+      index += 1;
+    } else if (arg === "--no-external") {
+      engines = ["builtin"];
+    } else if (arg === "--rules") {
+      rulesDir = takeValue(args, index + 1, arg);
+      index += 1;
+    } else if (arg === "--lang") {
+      const value = takeValue(args, index + 1, arg);
+      index += 1;
+      if (value !== "zh" && value !== "en") throw new CliError("--lang supports en|zh");
+      lang = value;
+    } else if (arg === "--json") {
+      asJson = true;
+    } else if (arg === "--allow-sensitive-root") {
+      allowSensitive = true;
+    } else if (arg === "--untrusted") {
+      // Always on for skill scans; accepted for symmetry with scan.
+    } else if (arg.startsWith("-")) {
+      throw new CliError(`skill unknown argument: ${arg}`);
+    } else if (target === undefined) {
+      target = arg;
+    } else {
+      throw new CliError(`skill unexpected positional argument: ${arg}`);
+    }
+  }
+  if (target === undefined) throw new CliError("skill requires a target");
+  if (allowSensitive) allowSensitiveRoot(target);
+  // Ctrl-C during a scan of an unpacked or cloned copy: remove the copy.
+  const onSignal = (signal: NodeJS.Signals): void => {
+    cleanupSkillTempDirs();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  try {
+    const result = await scanSkill({
+      target,
+      recursive,
+      formats,
+      offline,
+      lang,
+      ...(out !== undefined ? { out } : {}),
+      ...(engines ? { engines } : {}),
+      ...(rulesDir ? { rulesDir } : {}),
+    });
+    process.stdout.write(
+      asJson ? `${JSON.stringify(result.document, null, 2)}\n` : renderSkillText(result.document),
+    );
+    return result.document.summary.exitCode;
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
 }
 
 async function runBaselineCommand(args: string[]): Promise<number> {
@@ -907,6 +1033,10 @@ async function main(): Promise<void> {
     }
     if (command === "scan") {
       process.exitCode = await runScan(argv.slice(1));
+      return;
+    }
+    if (command === "skill") {
+      process.exitCode = await runSkill(argv.slice(1));
       return;
     }
     if (command === "baseline") {

@@ -171,6 +171,13 @@ export interface ScanOptions {
    * (all but `.git`) and the tool's own adapter files.
    */
   untrusted?: boolean;
+  /**
+   * Findings and hotspots produced by a caller-specific check over the
+   * inventory (the skill-package capability check). They are merged with the
+   * built-in rule results and go through the same dedupe, path context,
+   * suppression and reporting. Called only when the builtin engine runs.
+   */
+  extraFindings?: (inventory: InventoryResult) => Finding[];
 }
 
 /** True when `file` is `root` or lies below it (both absolute). */
@@ -480,6 +487,12 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       const finding = findingOfHit(hit);
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);
+    }
+    if (builtinEnabled && options.extraFindings) {
+      for (const finding of options.extraFindings(inv)) {
+        if (finding.kind === "hotspot") ruleHotspots.push(finding);
+        else ruleFindings.push(finding);
+      }
     }
     // Candidates that an inline `code-audit:ignore` comment suppressed stay in
     // the results, marked as suppressed: the comment comes from the audited

@@ -23,4 +23,6 @@ export * from "./baseline.js";
 export * from "./git.js";
 export * from "./ci.js";
 export * from "./scan.js";
+export * from "./archive.js";
+export * from "./skill.js";
 export * from "./external/index.js";

@@ -10,6 +10,7 @@ Current for this version of the code.
 | [reports.md](reports.md) | Files of a run, the counting model, report layout, confidence adjustments. |
 | [rules.md](rules.md) | How built-in rules work, the rule file schema, adding a rule, the finding / hotspot policy. |
 | [mcp.md](mcp.md) | The MCP server: tools, arguments, result shapes. |
+| [skill-scan.md](skill-scan.md) | `code-audit skill`: vetting a skill or plugin before install, verdicts, archive and git handling. |
 | [security-model.md](security-model.md) | Threat model, guarantees and non-guarantees, repository-controlled mechanisms. |
 | [../CHANGELOG.md](../CHANGELOG.md) | Changes per release. |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, tests, rule contributions. |
