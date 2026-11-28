@@ -156,7 +156,7 @@ export const VERDICT_STATUSES = [
 ] as const;
 export type VerdictStatus = (typeof VERDICT_STATUSES)[number];
 
-export const VERDICT_ROLES = ["primary", "independent"] as const;
+export const VERDICT_ROLES = ["primary", "independent", "human"] as const;
 export type VerdictRole = (typeof VERDICT_ROLES)[number];
 
 export const INDEPENDENCE_KINDS = ["subagent", "same-session"] as const;
@@ -248,6 +248,8 @@ export interface CurrentVerdict extends VerdictRecord {
   dissent?: VerdictHistoryItem;
   /** A dissent that no qualifying independent agreement has answered yet. */
   disputeOpen: boolean;
+  /** Set when the decision is a person's (`--role human` on the CLI). */
+  decidedByPerson?: { reviewer: string; at: string };
 }
 
 export type CurrentVerdicts = Record<string, CurrentVerdict>;
@@ -798,9 +800,27 @@ export function initRunVerdicts(runDir: string, runId: string, settings: { stric
   } satisfies VerdictsDocument);
 }
 
-/** The label a verdict entry is known by. */
+/** The label a verdict entry is known by (stored and shown as given). */
 export function verdictLabel(entry: Pick<VerdictRecord, "reviewer" | "actor">): string {
   return (entry.reviewer || entry.actor || UNNAMED_REVIEWER).trim() || UNNAMED_REVIEWER;
+}
+
+/**
+ * The form in which reviewer labels are compared: NFKC, without zero-width,
+ * soft-hyphen and bidi control characters, trimmed and case-folded, so `P`,
+ * `p` and `p` followed by a zero-width space are one reviewer.
+ */
+export function normalizeReviewerLabel(label: string): string {
+  return label
+    .normalize("NFKC")
+    .replace(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/** Roles whose entry is a decision (the latest one is current). */
+function isDecisionRole(role: VerdictRole): boolean {
+  return role === "primary" || role === "human";
 }
 
 /**
@@ -832,22 +852,23 @@ function foldVerdicts(entries: readonly VerdictRecord[]): CurrentVerdict {
   let latestPrimary = -1;
   const primaryLabels = new Set<string>();
   entries.forEach((entry, index) => {
-    if ((entry.role ?? "primary") === "primary") {
+    if (isDecisionRole(entry.role ?? "primary")) {
       latestPrimary = index;
-      primaryLabels.add(verdictLabel(entry));
+      primaryLabels.add(normalizeReviewerLabel(verdictLabel(entry)));
     }
   });
   // A file without any primary entry (hand-made): its first entry decides.
   if (latestPrimary < 0) {
     latestPrimary = 0;
-    primaryLabels.add(verdictLabel(entries[0] as VerdictRecord));
+    primaryLabels.add(normalizeReviewerLabel(verdictLabel(entries[0] as VerdictRecord)));
   }
   const decision = entries[latestPrimary] as VerdictRecord;
   let primaryOfTime: VerdictRecord | undefined;
   let lastDissent = -1;
   const history: VerdictHistoryItem[] = entries.map((entry, index) => {
-    const role: VerdictRole = index === latestPrimary ? "primary" : (entry.role ?? "primary");
-    if (role === "primary") primaryOfTime = entry;
+    const stored: VerdictRole = entry.role ?? "primary";
+    const role: VerdictRole = index === latestPrimary && stored === "independent" ? "primary" : stored;
+    if (isDecisionRole(role)) primaryOfTime = entry;
     const disagreed =
       role === "independent" &&
       primaryOfTime !== undefined &&
@@ -871,17 +892,20 @@ function foldVerdicts(entries: readonly VerdictRecord[]): CurrentVerdict {
       item.role === "independent" &&
       index > latestPrimary &&
       index > lastDissent &&
-      !primaryLabels.has(item.reviewer) &&
+      !primaryLabels.has(normalizeReviewerLabel(item.reviewer)) &&
       !verdictsDisagree(decision.status, item.status)
     ) {
       independentReview ??= item;
     }
   });
-  const disputeOpen = lastDissent >= 0 && independentReview === undefined;
+  // A person's decision (CLI `--role human`) settles every dispute.
+  const byPerson = (decision.role ?? "primary") === "human";
+  const disputeOpen = !byPerson && lastDissent >= 0 && independentReview === undefined;
   const { role: _role, independence: _independence, replace: _replace, ...base } = decision;
   return {
     ...base,
-    role: "primary",
+    role: byPerson ? "human" : "primary",
+    ...(byPerson ? { decidedByPerson: { reviewer: verdictLabel(decision), at: decision.at } } : {}),
     status: disputeOpen ? "needs_review" : decision.status,
     primaryStatus: decision.status,
     history,
@@ -1244,6 +1268,9 @@ function withVerdict(run: LoadedRun, finding: Finding): Finding {
       disputed: verdict.disputed,
       ...(verdict.dissent ? { dissent: historyView(verdict.dissent) } : {}),
       disputeOpen: verdict.disputeOpen,
+      ...(verdict.decidedByPerson
+        ? { decidedByPerson: { reviewer: redactText(verdict.decidedByPerson.reviewer).slice(0, 200), at: verdict.decidedByPerson.at } }
+        : {}),
     },
   });
 }
@@ -1715,53 +1742,99 @@ function sleepSync(ms: number): void {
  */
 export function withRunLock<T>(runDir: string, fn: () => T): T {
   const lock = path.join(runDir, VERDICT_LOCK_FILE);
+  const token = `${process.pid}:${crypto.randomBytes(12).toString("hex")}`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  let fd: number | undefined;
-  for (;;) {
+  const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+  /** The token in the lock file, or undefined when it cannot be read as one. */
+  const holder = (): string | undefined => {
+    let fd: number | undefined;
     try {
-      fd = fs.openSync(
-        lock,
-        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0),
-        0o600,
-      );
+      fd = fs.openSync(lock, fs.constants.O_RDONLY | NOFOLLOW);
+      const buffer = Buffer.alloc(200);
+      const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, read).toString("utf8").trim();
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  };
+  /** A lock path that this tool never writes: refused at once, with what to do. */
+  const invalid = (what: string): never => {
+    throw new RunStoreError(
+      `the verdict lock ${lock} is ${what}, not a lock file this tool wrote; nothing was recorded. ` +
+        "Remove it (a person, not an agent: check first that it is not yours) and record the verdict again",
+      "RUN_LOCK_INVALID",
+    );
+  };
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(lock, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
+      fs.writeSync(fd, `${token}\n`);
+      fs.closeSync(fd);
       break;
     } catch (error) {
+      if (fd !== undefined) fs.closeSync(fd);
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new RunStoreError(
-          `cannot create the verdict lock ${lock}: ${(error as Error).message}`,
-          "RUN_STORE_WRITE",
-        );
+        throw new RunStoreError(`cannot create the verdict lock ${lock}: ${(error as Error).message}`, "RUN_STORE_WRITE");
       }
-      try {
-        const stat = fs.lstatSync(lock);
-        if (stat.isFile() && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          fs.unlinkSync(lock);
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() > deadline) {
-        throw new RunStoreError(
-          `another process is writing verdicts of this run (lock file ${lock}); call audit_verdict again in a moment. ` +
-            `A lock older than ${LOCK_STALE_MS / 1000} seconds is removed automatically`,
-          "RUN_LOCKED",
-        );
-      }
-      sleepSync(15 + Math.floor(Math.random() * 20));
     }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(lock);
+    } catch {
+      continue; // Released meanwhile.
+    }
+    if (stat.isSymbolicLink()) invalid("a symbolic link");
+    if (stat.isDirectory()) invalid("a directory");
+    if (!stat.isFile()) invalid("not a regular file");
+    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+      // Take over a lock left by a writer that died: write our own lock
+      // under a temporary name and rename it over the stale one (atomic),
+      // but only if the lock still holds the token we judged stale; then
+      // check that the lock now holds our token.
+      const stale = holder();
+      const temp = `${lock}.${token.replace(/[^A-Za-z0-9]/g, "")}.tmp`;
+      let tempFd: number | undefined;
+      try {
+        tempFd = fs.openSync(temp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
+        fs.writeSync(tempFd, `${token}\n`);
+        fs.closeSync(tempFd);
+        tempFd = undefined;
+        if (holder() === stale) fs.renameSync(temp, lock);
+      } catch {
+        // Another writer is doing the same; try again.
+      } finally {
+        if (tempFd !== undefined) fs.closeSync(tempFd);
+        try {
+          fs.unlinkSync(temp);
+        } catch {
+          // Renamed into place, or never created.
+        }
+      }
+      if (holder() === token) break;
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new RunStoreError(
+        `another process is writing verdicts of this run (lock file ${lock}, held by ${printable(holder() ?? "an unknown writer", 60)}); ` +
+          `call audit_verdict again in a moment. A lock left by a writer that died is taken over once it is ${LOCK_STALE_MS / 1000} seconds old`,
+        "RUN_LOCKED",
+      );
+    }
+    sleepSync(15 + Math.floor(Math.random() * 20));
   }
   try {
-    fs.writeSync(fd, `${process.pid}\n`);
-    fs.closeSync(fd);
-    fd = undefined;
     return fn();
   } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-    try {
-      fs.unlinkSync(lock);
-    } catch {
-      // Already gone.
+    // Only our own lock is removed.
+    if (holder() === token) {
+      try {
+        fs.unlinkSync(lock);
+      } catch {
+        // Already gone.
+      }
     }
   }
 }
@@ -1800,11 +1873,20 @@ function assertStorable(name: string, text: string): void {
  * The run directory is locked (`withRunLock`) from reading the verdicts to
  * writing them; a write the reader could not load is refused.
  */
+export interface RecordVerdictAccess {
+  /**
+   * The caller is a person at the command line. Only then is `role: "human"`
+   * accepted; the MCP server never sets it.
+   */
+  human?: boolean;
+}
+
 export function recordVerdict(
   ref: string,
   target: string,
   input: RecordVerdictInput,
   options: ResolveRunOptions = {},
+  access: RecordVerdictAccess = {},
 ): RecordVerdictResult {
   if (!VERDICT_STATUSES.includes(input.status)) {
     throw new RunStoreError(
@@ -1819,8 +1901,27 @@ export function recordVerdict(
       "INVALID_VERDICT",
     );
   }
+  if (role === "human" && access.human !== true) {
+    throw new RunStoreError(
+      'role "human" records a person\'s decision and is accepted only from the command line ' +
+        "(code-audit verdict <run> <finding> --role human --replace --reviewer <name> --status <s> --rationale <text>). " +
+        "An agent must not record it: tell the user the command and let them run it",
+      "HUMAN_DECISION_CLI_ONLY",
+    );
+  }
   const reviewerInput = input.reviewer?.trim() ? redactText(input.reviewer.trim()).slice(0, 200) : undefined;
   const actorInput = input.actor?.trim() ? redactText(input.actor.trim()).slice(0, 200) : undefined;
+  if (role === "human") {
+    if (!reviewerInput) {
+      throw new RunStoreError("a human decision needs --reviewer <your name>; it is shown as \"decided by a person (<name>)\"", "INVALID_VERDICT");
+    }
+    if (input.replace !== true) {
+      throw new RunStoreError(
+        "a human decision replaces the current verdict and closes any dispute: pass --replace to confirm",
+        "INVALID_VERDICT",
+      );
+    }
+  }
   if (role === "independent") {
     if (!reviewerInput) {
       throw new RunStoreError(
@@ -1835,7 +1936,8 @@ export function recordVerdict(
         "INVALID_VERDICT",
       );
     }
-  } else if (input.independence !== undefined) {
+  }
+  if (role !== "independent" && input.independence !== undefined) {
     throw new RunStoreError('independence belongs to role "independent" only: remove it, or set role "independent"', "INVALID_VERDICT");
   }
   const rawRationale = input.rationale?.trim();
@@ -1870,6 +1972,14 @@ export function recordVerdict(
         "VERDICT_LIMIT",
       );
     }
+    const labelKey = normalizeReviewerLabel(label);
+    if (previous?.decidedByPerson && role !== "human") {
+      throw new RunStoreError(
+        `${finding.id} was decided by a person (${printable(previous.decidedByPerson.reviewer, 80)}); ` +
+          "only another human decision from the command line can change it. Report your view to the user instead",
+        "HUMAN_DECISION_STANDS",
+      );
+    }
     if (role === "independent") {
       if (!previous) {
         throw new RunStoreError(
@@ -1879,22 +1989,25 @@ export function recordVerdict(
         );
       }
       const primaryLabels = new Set(
-        previous.history.filter((item) => item.role === "primary").map((item) => item.reviewer),
+        previous.history
+          .filter((item) => isDecisionRole(item.role))
+          .map((item) => normalizeReviewerLabel(item.reviewer)),
       );
-      if (primaryLabels.has(label)) {
+      if (primaryLabels.has(labelKey)) {
         throw new RunStoreError(
-          `reviewer ${printable(label, 80)} already recorded a primary verdict on ${finding.id}, so it cannot review it independently. ` +
+          `reviewer ${printable(label, 80)} already recorded a primary verdict on ${finding.id}, so it cannot review it independently ` +
+            "(labels are compared ignoring case, Unicode form and invisible characters). " +
             "An independent review comes from a reviewer that did not make the decision: a fresh sub-agent with its own label",
           "INDEPENDENT_SAME_REVIEWER",
         );
       }
-    } else if (previous && previous.history.some((item) => item.role === "independent")) {
-      const decidedBy = previous.history.filter((item) => item.role === "primary").at(-1)?.reviewer;
-      if (decidedBy !== undefined && decidedBy !== label && input.replace !== true) {
+    } else if (role === "primary" && previous) {
+      const decidedBy = previous.history.filter((item) => isDecisionRole(item.role)).at(-1)?.reviewer;
+      if (decidedBy !== undefined && normalizeReviewerLabel(decidedBy) !== labelKey && input.replace !== true) {
         throw new RunStoreError(
-          `${finding.id} has a primary verdict by ${printable(decidedBy, 80)} that was independently reviewed; ` +
-            `a primary verdict by ${printable(label, 80)} would replace it. If you are the independent reviewer, set role "independent" ` +
-            "(with independence). To replace the decision on purpose, call again with replace: true; the replacement is shown in the report",
+          `${finding.id} has a primary verdict by ${printable(decidedBy, 80)}; a primary verdict by ${printable(label, 80)} would replace it. ` +
+            'If you are reviewing that verdict, pass role "independent" (with independence and your own reviewer label). ' +
+            "To replace the decision on purpose, call again with replace: true; the replacement is shown in the report",
           "PRIMARY_REPLACE_REFUSED",
         );
       }
@@ -1916,7 +2029,7 @@ export function recordVerdict(
       ...(reviewerInput ? { reviewer: reviewerInput } : {}),
       role,
       ...(role === "independent" ? { independence: input.independence as Independence } : {}),
-      ...(role === "primary" && input.replace === true && previous ? { replace: true } : {}),
+      ...(role !== "independent" && input.replace === true && previous ? { replace: true } : {}),
       ...evidence,
     };
     const document: VerdictsDocument = {

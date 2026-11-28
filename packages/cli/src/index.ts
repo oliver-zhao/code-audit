@@ -27,6 +27,7 @@ import {
   type EngineName,
   type ReportFormat,
   type Severity,
+  initRunVerdicts,
 } from "@code-audit/core";
 import { runMcpServer } from "@code-audit/mcp";
 import fs from "node:fs";
@@ -61,6 +62,7 @@ Usage:
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
                         [--allow-sensitive-root]
+                        [--strict-evidence]
   code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--root <dir>] [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
@@ -71,9 +73,13 @@ Usage:
   code-audit search <run-id|run-dir> <pattern> [--glob <g>] [--regex]
                         [--max-results N] [--timeout-ms N] [--json]
   code-audit verdict <run-id|run-dir> <finding-id|fingerprint>
-                        --status confirmed|likely|needs_review|false_positive
+                        --status confirmed|likely|needs_review|false_positive|proof_gap
                         --rationale <text> [--evidence-line <text>]
                         [--actor <name>] [--reviewer <name>] [--json]
+                        [--role primary|independent|human]
+                        [--independence subagent|same-session] [--replace]
+                        [--trace <file:line:role[:note]>]... [--control <file:line[:note]>]
+                        [--missing <text>] [--cwe <CWE-n>]
   code-audit add-finding <run-id|run-dir> --rationale <text>
                         [--file <f> --start N [--end N] --title <t>
                          --severity <s> --cwe <cwe> [--confidence <c>]
@@ -130,6 +136,8 @@ Scan options:
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
                          ~/.aws, ~/.config, /etc, ...) or one below it; refused
                          without this flag
+  --strict-evidence      every verdict of this run needs structured evidence
+                         (trace, control or missing; see docs/mcp.md)
   --profile <name>       standard (default): every installed engine, OSV.dev lookups;
                          quick: built-in engines only, no network (same as
                          --no-external --offline; --engines still applies)
@@ -209,6 +217,7 @@ interface ScanArgs {
   includePlaceholders: boolean;
   untrusted: boolean;
   allowSensitiveRoot: boolean;
+  strictEvidence: boolean;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -236,6 +245,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let includePlaceholders = false;
   let untrusted = false;
   let allowSensitive = false;
+  let strictEvidence = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -341,6 +351,8 @@ function parseScanArgs(args: string[]): ScanArgs {
       untrusted = true;
     } else if (arg === "--allow-sensitive-root") {
       allowSensitive = true;
+    } else if (arg === "--strict-evidence") {
+      strictEvidence = true;
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -376,6 +388,7 @@ function parseScanArgs(args: string[]): ScanArgs {
     includePlaceholders,
     untrusted,
     allowSensitiveRoot: allowSensitive,
+    strictEvidence,
   };
 }
 
@@ -407,6 +420,8 @@ async function runScan(args: string[]): Promise<number> {
     includePlaceholders: parsed.includePlaceholders,
     untrusted: parsed.untrusted,
   });
+  // Every later verdict of this run needs structured evidence.
+  if (parsed.strictEvidence) initRunVerdicts(result.runDir, result.runId, { strictEvidence: true });
 
   const run = result.run as {
     baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };

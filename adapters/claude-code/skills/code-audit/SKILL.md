@@ -115,9 +115,10 @@ your tool list whose name ends with the bare name.
    `confirmed` or `false_positive`, get a second opinion that has not seen
    yours. If your host can start sub-agents, you **must** start a fresh one
    and give it only the run id, the finding id, its file and line, and these
-   tools - not your verdict, not your rationale. Tell it to list findings with
-   `audit_findings` `blind: true` (and `audit_read` with `blind: true`), to
-   try to refute the finding, and to record its own `audit_verdict` with
+   tools - not your verdict, not your rationale. Tell it to use only blind
+   calls (`audit_findings`, `audit_read` and `audit_status` with
+   `blind: true`), never `audit_report`, to try to refute the finding, and
+   to record its own `audit_verdict` with
    `role: "independent"`, `independence: "subagent"` and a `reviewer` label
    different from yours. Without sub-agents, switch explicitly to a
    devil's-advocate pass in this session: argue the opposite, re-read the
@@ -128,8 +129,11 @@ your tool list whose name ends with the bare name.
    so until another independent reviewer agrees with the decision; a new
    primary verdict does not clear it. Tell the user; never re-record verdicts
    to make a disagreement go away. A primary verdict that would replace
-   another reviewer's reviewed decision is refused unless you pass
-   `replace: true`; use it only when the user asks you to decide.
+   another reviewer's decision is refused unless you pass `replace: true`,
+   which does not settle a dispute. Only a person settles one: when the user
+   wants to, give them `code-audit verdict <run> <id> --role human --replace
+   --reviewer <their name> --status <s> --rationale "..."` and let them run
+   it; never record `role: "human"` yourself (MCP refuses it).
 
 6. **Add findings the static rules missed.** Before adding, check whether a
    finding or hotspot already covers that file and line: call `audit_findings`
@@ -222,7 +226,7 @@ with `--out <dir>`), pass the run directory and `--root <project>`, which
 | `audit_findings` | `code-audit findings <run> --kind finding --severity high --limit 20 --json` |
 | `audit_read` | `code-audit read <run> <file> --start N --end M --json` |
 | `audit_search` | `code-audit search <run> <pattern> [--glob <g>] [--regex] [--timeout-ms N] --json` |
-| `audit_verdict` | `code-audit verdict <run> <id-or-fingerprint> --status likely --rationale "..." [--evidence-line "<code>"]` |
+| `audit_verdict` | `code-audit verdict <run> <id-or-fingerprint> --status likely --rationale "..." [--evidence-line "<code>"] [--trace <file:line:role[:note]>] [--control <file:line:note>] [--missing "..."] [--role independent --independence subagent]` |
 | `audit_add_finding` | `code-audit add-finding <run> --file <f> --start N --title "..." --severity high --cwe CWE-89 --rationale "..."` |
 | `audit_add_finding` (promote) | `code-audit add-finding <run> --promote <hotspot-id> --rationale "..."` |
 | `audit_report` | `code-audit report <run> --format md` |

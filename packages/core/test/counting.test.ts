@@ -553,6 +553,44 @@ describe("report size and order", () => {
         },
       ],
     ];
+    // L-n5: every field at its maximum - 20 trace steps with 500-character
+    // notes and 200-character paths, 4000-character texts, an open dispute
+    // and a proof gap on every record.
+    const longTrace = Array.from({ length: 20 }, (_, index) => ({
+      file: `${"p".repeat(190)}/f${index}.py`,
+      line: index + 1,
+      role: index === 0 ? "source" : index === 19 ? "sink" : "propagation",
+      note: "n".repeat(500),
+    }));
+    const dissent = {
+      reviewer: "r".repeat(200),
+      role: "independent",
+      status: "false_positive",
+      at: "x",
+      rationale: "d".repeat(4000),
+      independence: "same-session",
+    };
+    for (const status of ["proof_gap", "needs_review"]) {
+      states.push([
+        `every field at its maximum (${status})`,
+        {
+          status,
+          review: {
+            status,
+            primaryStatus: "proof_gap",
+            rationale: "q".repeat(4000),
+            missing: "m".repeat(4000),
+            trace: longTrace,
+            conditions: { auth: "admin", userInteraction: true, note: "c".repeat(2000) },
+            evidenceLines: Array.from({ length: 20 }, () => "e".repeat(1000)),
+            disputed: true,
+            disputeOpen: true,
+            dissent,
+            history: Array.from({ length: 50 }, () => dissent),
+          },
+        },
+      ]);
+    }
     for (const [label, state] of states) {
       const { findings, hotspots } = large();
       // A confirmed verdict raises a low confidence to high and so moves a

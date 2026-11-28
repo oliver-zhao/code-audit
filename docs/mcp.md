@@ -67,8 +67,9 @@ document. A failed call has `isError: true` and the document
 `DISMISSAL_NEEDS_EVIDENCE`, the verdict codes `INVALID_VERDICT`,
 `INVALID_EVIDENCE`, `EVIDENCE_REQUIRED`, `EVIDENCE_LOCATION_INVALID`,
 `PRIMARY_VERDICT_REQUIRED`, `INDEPENDENT_SAME_REVIEWER`,
-`PRIMARY_REPLACE_REFUSED`, `VERDICT_LIMIT`, `VERDICT_STORE_FULL` and
-`RUN_LOCKED` (see [`audit_verdict`](#audit_verdict)), and `MCP_TOOL_ERROR`
+`PRIMARY_REPLACE_REFUSED`, `HUMAN_DECISION_CLI_ONLY`,
+`HUMAN_DECISION_STANDS`, `VERDICT_LIMIT`, `VERDICT_STORE_FULL`,
+`RUN_LOCKED`, `RUN_LOCK_INVALID` and `BLIND_FORMAT` (see [`audit_verdict`](#audit_verdict)), and `MCP_TOOL_ERROR`
 (anything without a specific code).
 
 Arguments are first checked against each tool's input schema by the MCP
@@ -162,7 +163,10 @@ With `strict_evidence: true` the result also has `"strict_evidence": true`.
 
 ## `audit_status`
 
-Arguments: `run_id`, `root`. Poll it after `audit_start` until `phase` is
+Arguments: `run_id`, `root`, `blind` (boolean; for an independent reviewer:
+leaves out the dismissal counts and `dismissedWarning`, `reviewed` /
+`unreviewed`, reviewer labels and `triage`, and adds `blind: true`). Poll it
+after `audit_start` until `phase` is
 `complete` or `failed`.
 
 While the scan runs: `runId`, `runDir`, `root`, `phase: "running"`,
@@ -379,7 +383,7 @@ it (see [independent review](#independent-review)).
 | `rationale` | string, required, not empty | Why: the source-to-sink reasoning and the lines checked. |
 | `evidenceLines` | list of strings | Lines of code that support the verdict (secrets in them are masked). Needed to dismiss a `high` or `critical` finding, see below. |
 | `reviewer` | string | Reviewer label, for example the model name. |
-| `role` | `primary` \| `independent` | Default `primary`. See [independent review](#independent-review). |
+| `role` | `primary` \| `independent` \| `human` | Default `primary`. See [independent review](#independent-review). `human` is refused over MCP (`HUMAN_DECISION_CLI_ONLY`); a person records it with the CLI. |
 | `independence` | `subagent` \| `same-session` | Required with `role: "independent"`: a fresh sub-agent that did not see the decision, or a devil's-advocate pass in the session that made it. Shown in the report. |
 | `replace` | boolean | A `primary` verdict that replaces another reviewer's decision on a finding that has an independent review needs `replace: true` (`PRIMARY_REPLACE_REFUSED` otherwise). Recorded and shown. |
 | `trace` | list of `{file, line, role, note?}`, at most 20 | Source-to-sink path; `role` is `source`, `propagation` or `sink`. |
@@ -492,7 +496,10 @@ needs:
 
 - an existing decision (`PRIMARY_VERDICT_REQUIRED` otherwise);
 - a `reviewer` label that differs from every primary label of the finding
-  (`INDEPENDENT_SAME_REVIEWER`);
+  (`INDEPENDENT_SAME_REVIEWER`). Labels are compared after NFKC
+  normalisation, with zero-width, soft-hyphen and bidi control characters
+  removed, trimmed and case-folded, so `P`, `p` and `p` followed by a
+  zero-width space are one reviewer; they are stored as given;
 - `independence`: `subagent` or `same-session`.
 
 An independent entry disagrees when its status contradicts the decision of
@@ -505,10 +512,24 @@ label agrees with the latest decision, after the last dissent; only that
 makes `independentlyReviewed` true. A new primary verdict, even by the same
 reviewer, does not resolve it: the earlier entries are kept and marked
 superseded in the history. An independent review alone can never dismiss a
-finding. A primary verdict by a different label on a finding that has an
-independent review is refused (`PRIMARY_REPLACE_REFUSED`) unless it passes
-`replace: true` - for a sub-agent that forgot `role`, the message says to
-set it.
+finding. A primary verdict (no `role`) by a different label than the current
+decision's is refused (`PRIMARY_REPLACE_REFUSED`) unless it passes
+`replace: true`, whether or not an independent review exists; the message
+tells a reviewer to pass `role: "independent"` instead. `replace` does not
+settle a dispute.
+
+**A person's decision.** Only a person settles a dispute, and only from the
+command line: `code-audit verdict <run> <finding> --role human --replace
+--reviewer <name> --status <status> --rationale <text>` (with `--control`,
+`--trace`, `--missing` or `--evidence-line` as the status and strict
+evidence require; a `high` or `critical` dismissal needs evidence as
+always). `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`:
+an agent never records it, it gives the user the command. A human decision
+becomes the current status, closes any dispute and is shown as "decided by a
+person (<name>)" next to the dissent history, which stays visible. After it,
+agent verdicts on the finding are refused (`HUMAN_DECISION_STANDS`); only
+another human decision changes it. The CLI is run by whoever has a shell, so
+this marks a decision made at a terminal, not proof that a person made it.
 
 Reports show every disputed verdict with the dissenting reviewer, status,
 independence and rationale, also once resolved ("Disputed verdicts" in
@@ -517,10 +538,26 @@ and say how an independent review was made. A finding keeps at most 50
 entries (`VERDICT_LIMIT`). A verdict that would make `verdicts.json` or a
 derived file larger than the run store can read (128 MiB) is refused with
 `VERDICT_STORE_FULL` and nothing is written. Writes of one run are
-serialised by a lock file (`verdicts.json.lock`, created exclusively): two
-processes, for example an agent and a sub-agent with its own server, both
-keep their verdicts; a writer that waits more than 15 seconds gets
-`RUN_LOCKED`, and a lock older than two minutes is removed.
+serialised by a lock file (`verdicts.json.lock`, created exclusively, holding
+a random owner token): two processes, for example an agent and a sub-agent
+with its own server, both keep their verdicts; a writer that waits more than
+15 seconds gets `RUN_LOCKED`. A lock older than two minutes, left by a writer
+that died, is taken over atomically: a new lock is written under a temporary
+name and renamed over it, and the owner token is checked after the rename. A
+lock path that is a symbolic link or a directory is not one this tool wrote:
+the call fails at once with `RUN_LOCK_INVALID`, naming the path to remove.
+A writer removes only a lock that holds its own token.
+
+**Limits.** These caps keep every run readable; they are not fair shares.
+One finding's 50 entries can all be used by one reviewer, so that no
+independent review can be recorded on it any more (the finding stays visible
+and open), and the run-wide cap of 128 MiB per file can be reached by about
+2,000 maximal entries, after which no verdict can be recorded on any finding
+of the run. Both fail safe: nothing is hidden and the run stays readable.
+"Independently reviewed" means that a second label recorded an agreeing
+verdict; one agent can invent labels, so real independence comes only from
+the host's sub-agent isolation, and blind mode only hides what a cooperating
+reviewer asks not to see.
 
 `verdicts.json` is written with `schemaVersion: 2`; files with
 `schemaVersion: 1` are read as before (their entries count as primary
@@ -593,6 +630,7 @@ Renders the report with the current verdicts.
 | Argument | Type | Meaning |
 |---|---|---|
 | `format` | `summary` \| `md` \| `json` \| `sarif` | Default `summary`. |
+| `blind` | boolean | Only with `summary` (other formats are refused with `BLIND_FORMAT`): the summary without dismissals, review progress, reviewer labels and `triage`. An independent reviewer should not call `audit_report` at all. |
 
 `summary` writes nothing and returns the review counts plus, in `text`, the
 same JSON document as `audit_status`. `md`, `json` and `sarif` write that

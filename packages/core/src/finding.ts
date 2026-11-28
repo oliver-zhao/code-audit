@@ -215,6 +215,8 @@ export const FindingSchema = z
         disputed: z.boolean().optional(),
         dissent: ReviewHistoryItemSchema.optional(),
         disputeOpen: z.boolean().optional(),
+        /** Set when a person decided (CLI `--role human`); it settles any dispute. */
+        decidedByPerson: z.object({ reviewer: z.string(), at: z.string() }).optional(),
       })
       .optional(),
   })

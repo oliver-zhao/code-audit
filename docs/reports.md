@@ -98,7 +98,9 @@ summary, MCP `audit_status` / `audit_report` and `run.summary` in
   (`report --format summary`, `status --json`, MCP) carries the same numbers
   as `triage`. Finding details end with the verdict's structured evidence on
   the same line (at most three trace steps, then "… N more"), whether and
-  how it was independently reviewed, and any dispute. Reviewer text is
+  how it was independently reviewed, and any dispute; a person's decision
+  (`code-audit verdict ... --role human --replace`) is shown as "decided by a
+  person (<name>)" next to the dissent history. Reviewer text is
   redacted and escaped, and `@mentions` and bare URLs in it are broken with a
   zero-width space so a report posted to GitHub neither pings nor links.
 

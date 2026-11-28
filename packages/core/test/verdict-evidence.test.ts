@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFinding, type Finding } from "../src/finding.js";
 import {
@@ -35,7 +35,7 @@ import {
   type RecordVerdictInput,
 } from "../src/runstore.js";
 import { scanProject } from "../src/scan.js";
-import { REPO_ROOT, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
+import { CLI, REPO_ROOT, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("verdict-evidence");
 const outside = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-f3-outside-"));
@@ -400,7 +400,7 @@ describe("independent review", () => {
     // A primary verdict by another label would replace a reviewed decision.
     error = ctx.refused(finding, { status: "confirmed", rationale: "x", reviewer: "forgot-role", trace: [SOURCE, SINK] });
     expect(error.code).toBe("PRIMARY_REPLACE_REFUSED");
-    expect(error.message).toMatch(/set role "independent"/);
+    expect(error.message).toMatch(/pass role "independent"/);
     expect(error.message).toContain("replace: true");
     const replaced = ctx.verdict(finding, { status: "confirmed", rationale: "re-decided", reviewer: "human", replace: true });
     expect(replaced.status).toBe("confirmed");
@@ -606,7 +606,7 @@ describe("proof gaps and the review ledger", () => {
     expect(md).toContain("### Review coverage");
     expect(md).toMatch(/> \*\*Review incomplete: \d+ of \d+ finding\(s\) and \d+ of \d+ hotspot\(s\) have no verdict/);
     expect(md).toMatch(/^- Findings: \d+ · with a verdict 1 · not reviewed \d+ — not reviewed, by rule: `/m);
-    expect(md).toMatch(/^- Hotspots: \d+ · with a verdict 0 · not reviewed \d+/m);
+    expect(md).toMatch(/; Hotspots: \d+ · with a verdict 0 · not reviewed \d+/);
     expect(md).not.toContain("No reportable issues found.");
     const summary = JSON.parse(renderRunReport(ctx.runId, "summary", ctx.options).text);
     expect(summary.triage.findings.reviewed).toBe(1);
@@ -719,5 +719,170 @@ describe("report wording", () => {
     expect(triage.hotspots.byRule).toEqual([{ ruleId: "py-eval-api", total: 1, reviewed: 0, unreviewed: 1 }]);
     const sarif = JSON.parse(renderSarif(context([], [record()])));
     expect(sarif.runs[0].properties.review.hotspotsUnreviewed).toBe(1);
+  });
+});
+
+describe("round 2: labels, replacing a decision, human decisions, the lock", () => {
+  let ctx: Ctx;
+  beforeAll(async () => {
+    ctx = await freshRun("round2");
+  });
+  const human = (finding: Finding, input: RecordVerdictInput) =>
+    recordVerdict(ctx.runId, finding.id, input, ctx.options, { human: true });
+
+  it("compares reviewer labels normalised and stores them as given (L-n2)", () => {
+    const finding = ctx.pick("medium")[0] as Finding;
+    ctx.verdict(finding, { status: "likely", rationale: "probably", reviewer: "p" });
+    for (const label of ["P", "p​", " p ", "ｐ", "p‮"]) {
+      const error = ctx.refused(finding, { status: "likely", rationale: "x", reviewer: label, ...SUB });
+      expect(error.code, JSON.stringify(label)).toBe("INDEPENDENT_SAME_REVIEWER");
+    }
+    // The same label in another spelling is the same primary reviewer: no replace needed.
+    expect(ctx.verdict(finding, { status: "confirmed", rationale: "traced", reviewer: "P" }).status).toBe("confirmed");
+    expect(ctx.entries().at(-1)?.reviewer).toBe("P");
+  });
+
+  it("refuses a primary verdict by another label unless replace is passed (L-n3)", () => {
+    const finding = ctx.pick("medium")[1] as Finding;
+    ctx.verdict(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    for (const reviewer of ["s", undefined]) {
+      const error = ctx.refused(finding, { status: "confirmed", rationale: "real", reviewer });
+      expect(error.code).toBe("PRIMARY_REPLACE_REFUSED");
+      expect(error.message).toContain('pass role "independent"');
+    }
+    expect(ctx.verdict(finding, { status: "confirmed", rationale: "real", reviewer: "s", replace: true }).status).toBe("confirmed");
+    expect(ctx.entries().at(-1)?.replace).toBe(true);
+  });
+
+  it("records a person's decision only through the human access, and it settles a dispute (M-n1)", () => {
+    const finding = ctx.pick("high")[0] as Finding;
+    ctx.verdict(finding, { status: "confirmed", rationale: "reachable", reviewer: "p", trace: [SOURCE, SINK] });
+    ctx.verdict(finding, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "sub", ...SUB });
+    expect(ctx.current(finding)?.status).toBe("needs_review");
+    // Not from an agent: the MCP server never passes the human access.
+    const agent = ctx.refused(finding, { status: "false_positive", rationale: SAFE, reviewer: "alice", role: "human", replace: true });
+    expect(agent.code).toBe("HUMAN_DECISION_CLI_ONLY");
+    expect(agent.message).toContain("--role human --replace");
+    const refused = (input: RecordVerdictInput): RunStoreError => {
+      try {
+        human(finding, input);
+      } catch (error) {
+        return error as RunStoreError;
+      }
+      throw new Error("not refused");
+    };
+    expect(refused({ status: "false_positive", rationale: SAFE, reviewer: "alice", role: "human" }).message).toMatch(/pass --replace/);
+    expect(refused({ status: "false_positive", rationale: SAFE, role: "human", replace: true }).message).toMatch(/needs --reviewer/);
+    // Evidence as today: a high dismissal needs it from a person too.
+    expect(refused({ status: "false_positive", rationale: "fp", reviewer: "alice", role: "human", replace: true }).code).toBe(
+      "DISMISSAL_NEEDS_EVIDENCE",
+    );
+    const decided = human(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "alice", role: "human", replace: true });
+    expect(decided.status).toBe("false_positive");
+    expect(decided.disagreement).toBeUndefined();
+    expect(decided.disputed).toBe(true);
+    const review = ctx.current(finding)?.review;
+    expect(review?.decidedByPerson?.reviewer).toBe("alice");
+    expect(review?.disputeOpen).toBe(false);
+    expect(review?.history?.map((item) => item.role)).toEqual(["primary", "independent", "human"]);
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toMatch(new RegExp(`\\| ${finding.id} \\|[^\\n]*\\(decided by a person \\(alice\\)\\)[^\\n]*was disputed: sub said false\\\\_positive`));
+    // Agents cannot overturn it; only another human decision can.
+    expect(ctx.refused(finding, { status: "confirmed", rationale: "x", reviewer: "p", replace: true, trace: [SOURCE, SINK] }).code).toBe(
+      "HUMAN_DECISION_STANDS",
+    );
+    expect(ctx.refused(finding, { status: "confirmed", rationale: "x", reviewer: "sub2", ...SUB }).code).toBe("HUMAN_DECISION_STANDS");
+    expect(human(finding, { status: "confirmed", rationale: "re-decided", reviewer: "bob", role: "human", replace: true }).status).toBe(
+      "confirmed",
+    );
+  });
+
+  it("refuses a planted lock at once and takes over a stale one (L-n1)", () => {
+    const finding = ctx.pick("low")[0] ?? (ctx.pick("medium")[2] as Finding);
+    const lock = path.join(ctx.runDir, "verdicts.json.lock");
+    fs.symlinkSync(path.join(outside, "elsewhere"), lock);
+    let started = Date.now();
+    let error = ctx.refused(finding, { status: "needs_review", rationale: "x" });
+    expect(error.code).toBe("RUN_LOCK_INVALID");
+    expect(error.message).toContain("a symbolic link");
+    expect(error.message).toContain(lock);
+    expect(Date.now() - started).toBeLessThan(2000);
+    fs.unlinkSync(lock);
+    fs.mkdirSync(lock);
+    started = Date.now();
+    error = ctx.refused(finding, { status: "needs_review", rationale: "x" });
+    expect(error.code).toBe("RUN_LOCK_INVALID");
+    expect(error.message).toContain("a directory");
+    expect(Date.now() - started).toBeLessThan(2000);
+    fs.rmdirSync(lock);
+    // A lock left by a writer that died three minutes ago.
+    fs.writeFileSync(lock, "99999:dead\n");
+    const old = new Date(Date.now() - 180_000);
+    fs.utimesSync(lock, old, old);
+    expect(ctx.verdict(finding, { status: "needs_review", rationale: "after a stale lock" }).status).toBe("needs_review");
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readdirSync(ctx.runDir).filter((name) => name.includes(".lock"))).toEqual([]);
+  });
+});
+
+describe("round 2: the CLI records structured, independent and human verdicts (L4, M-n1)", () => {
+  it("supports every F3 option and scan --strict-evidence", () => {
+    const project = path.join(temp, "cli");
+    fs.cpSync(VULNERABLE, project, { recursive: true });
+    const cli = (...args: string[]) =>
+      spawnSync(process.execPath, [CLI, ...args], { cwd: project, encoding: "utf8" });
+    const scan = cli("scan", ".", "--offline", "--engines", "builtin", "--strict-evidence");
+    expect([0, 1]).toContain(scan.status);
+    const runId = fs
+      .readdirSync(path.join(project, ".audit"))
+      .filter((name) => /^\d{8}T\d{6}Z-/.test(name))
+      .sort()
+      .at(-1) as string;
+    const runDir = path.join(project, ".audit", runId);
+    expect(JSON.parse(fs.readFileSync(path.join(runDir, "verdicts.json"), "utf8")).strictEvidence).toBe(true);
+    const run = loadRun(runId, { cwd: project });
+    const [first, second] = run.findings.filter((item) => item.severity === "high" || item.severity === "critical") as [Finding, Finding];
+    // Strict: likely without a sink is refused.
+    let result = cli("verdict", runId, first.id, "--status", "likely", "--rationale", "x");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/a likely verdict needs trace with at least one step of role "sink"/);
+    result = cli("verdict", runId, first.id, "--status", "confirmed", "--rationale", "x", "--trace", "python/app.py");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/--trace python\/app\.py: expected <file>:<line>:<role>\[:<note>\]/);
+    result = cli(
+      "verdict", runId, first.id, "--status", "confirmed", "--rationale", "request data reaches the call",
+      "--reviewer", "p", "--trace", "python/app.py:1:source:request: data", "--trace", "python/app.py:2:sink", "--cwe", "CWE-78",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    let entry = loadRun(runId, { cwd: project }).verdictsDocument.entries.at(-1);
+    expect(entry?.trace).toEqual([
+      { file: "python/app.py", line: 1, role: "source", note: "request: data" },
+      { file: "python/app.py", line: 2, role: "sink" },
+    ]);
+    expect(entry?.cwe).toBe("CWE-78");
+    result = cli(
+      "verdict", runId, first.id, "--status", "false_positive", "--rationale", `${SAFE} python/app.py:3`,
+      "--reviewer", "sub", "--role", "independent", "--independence", "subagent", "--control", "python/app.py:3:constant",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(loadRun(runId, { cwd: project }).verdicts[first.fingerprint]?.status).toBe("needs_review");
+    // Another agent label is refused without --replace; a person settles it.
+    result = cli("verdict", runId, first.id, "--status", "confirmed", "--rationale", "x", "--reviewer", "q", "--trace", "python/app.py:2:source", "--trace", "python/app.py:2:sink");
+    expect(result.stderr).toMatch(/PRIMARY_REPLACE_REFUSED|would replace it/);
+    result = cli(
+      "verdict", runId, first.id, "--status", "false_positive", "--rationale", SAFE, "--reviewer", "alice",
+      "--role", "human", "--replace", "--control", "python/app.py:3:constant",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const current = loadRun(runId, { cwd: project }).verdicts[first.fingerprint];
+    expect(current?.status).toBe("false_positive");
+    expect(current?.decidedByPerson?.reviewer).toBe("alice");
+    result = cli("verdict", runId, second.id, "--status", "proof_gap", "--rationale", "x", "--missing", "whether the route needs a session cookie");
+    expect(result.status, result.stderr).toBe(0);
+    entry = loadRun(runId, { cwd: project }).verdictsDocument.entries.at(-1);
+    expect(entry?.missing).toBe("whether the route needs a session cookie");
+    result = cli("verdict", runId, second.id, "--status", "proof_gap", "--rationale", "x", "--role", "boss");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/--role/);
   });
 });

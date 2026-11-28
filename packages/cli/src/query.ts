@@ -2,6 +2,8 @@ import {
   CONFIDENCES,
   SEVERITIES,
   VERDICT_STATUSES,
+  VERDICT_ROLES,
+  INDEPENDENCE_KINDS,
   addFinding,
   queryRunFindings,
   readSnippet,
@@ -17,6 +19,7 @@ import {
   type ReportOutputFormat,
   type ResolveRunOptions,
   type Severity,
+  type TraceStep,
 } from "@code-audit/core";
 
 class QueryError extends Error {}
@@ -332,12 +335,51 @@ function runSearchCommand(args: string[]): number {
   return 0;
 }
 
+/** `--trace file:line:role[:note]`: the file may hold colons, the role ends it. */
+function parseTraceFlag(value: string): TraceStep {
+  const match = /^(.+?):(\d+):(source|propagation|sink)(?::([\s\S]*))?$/.exec(value);
+  if (!match) {
+    throw new QueryError(
+      `--trace ${value}: expected <file>:<line>:<role>[:<note>] with role source, propagation or sink, for example src/db.py:40:sink:cursor.execute(sql)`,
+    );
+  }
+  return {
+    file: match[1] as string,
+    line: Number(match[2]),
+    role: match[3] as TraceStep["role"],
+    ...(match[4] ? { note: match[4] } : {}),
+  };
+}
+
+/** `--control file:line:note`. */
+function parseControlFlag(value: string): { file: string; line: number; note: string } {
+  const match = /^(.+?):(\d+)(?::([\s\S]*))?$/.exec(value);
+  if (!match) {
+    throw new QueryError(`--control ${value}: expected <file>:<line>:<note>, for example src/db.py:38:bound parameter`);
+  }
+  return { file: match[1] as string, line: Number(match[2]), note: match[3] ?? "" };
+}
+
 function runVerdictCommand(args: string[]): number {
   const parsed = parseRunCommand(
     args,
-    ["status", "rationale", "evidence-line", "actor", "reviewer"],
+    [
+      "status",
+      "rationale",
+      "evidence-line",
+      "actor",
+      "reviewer",
+      "role",
+      "independence",
+      "replace",
+      "trace",
+      "control",
+      "missing",
+      "cwe",
+    ],
     2,
     "verdict",
+    ["replace"],
   );
   const statusValue = single(parsed.flags, "status");
   if (!statusValue) throw new QueryError("verdict requires --status");
@@ -352,8 +394,21 @@ function runVerdictCommand(args: string[]): number {
       evidenceLines: parsed.flags.get("evidence-line"),
       actor: single(parsed.flags, "actor"),
       reviewer: single(parsed.flags, "reviewer"),
+      ...(single(parsed.flags, "role")
+        ? { role: assertChoice(single(parsed.flags, "role") as string, VERDICT_ROLES, "--role") }
+        : {}),
+      ...(single(parsed.flags, "independence")
+        ? { independence: assertChoice(single(parsed.flags, "independence") as string, INDEPENDENCE_KINDS, "--independence") }
+        : {}),
+      ...(parsed.flags.has("replace") ? { replace: true } : {}),
+      ...(parsed.flags.has("trace") ? { trace: (parsed.flags.get("trace") ?? []).map(parseTraceFlag) } : {}),
+      ...(single(parsed.flags, "control") ? { control: parseControlFlag(single(parsed.flags, "control") as string) } : {}),
+      ...(single(parsed.flags, "missing") ? { missing: single(parsed.flags, "missing") } : {}),
+      ...(single(parsed.flags, "cwe") ? { cwe: single(parsed.flags, "cwe") } : {}),
     },
     runOptions(parsed),
+    // A person at a shell: the only caller that may record role human.
+    { human: true },
   );
   printNotices(result.notices);
   if (parsed.json) {

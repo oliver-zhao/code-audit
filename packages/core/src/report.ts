@@ -141,6 +141,7 @@ const EN = {
   disputeResolved: "was disputed",
   disputeSaid: "said",
   disputeDecision: "decision",
+  decidedByPerson: "decided by a person ({label})",
   traceLabel: "Trace",
   controlLabel: "Control",
   missingLabel: "Missing",
@@ -401,6 +402,7 @@ const ZH: Labels = {
   disputeResolved: "曾有争议",
   disputeSaid: "认为",
   disputeDecision: "裁定",
+  decidedByPerson: "由人工裁定（{label}）",
   traceLabel: "调用链",
   controlLabel: "防护点",
   missingLabel: "缺少",
@@ -2404,9 +2406,16 @@ function reviewSummary(finding: Finding, l: Labels): string {
 
 /** "independently reviewed (subagent)" for a verdict that is. */
 function independentText(review: Finding["review"], l: Labels): string {
-  if (!review?.independentlyReviewed) return "";
+  const person = personText(review, l);
+  if (!review?.independentlyReviewed) return person ? ` (${person})` : "";
   const how = review.independentReview?.independence;
-  return ` (${l.independentlyReviewed}${how ? `: ${escapeMarkdown(how, 20)}` : ""})`;
+  return ` (${l.independentlyReviewed}${how ? `: ${escapeMarkdown(how, 20)}` : ""}${person ? `; ${person}` : ""})`;
+}
+
+/** "decided by a person (<label>)" for a human decision. */
+function personText(review: Finding["review"], l: Labels): string {
+  const person = review?.decidedByPerson;
+  return person ? fmt(l.decidedByPerson, { label: reviewText(reviewerLabel(person.reviewer), 60) }) : "";
 }
 
 /** The dissent of a disputed verdict: who said what, and whether it is still open. */
@@ -2417,7 +2426,8 @@ function disputeText(review: NonNullable<Finding["review"]>, l: Labels): string 
     `${review.disputeOpen ? l.disputeOpen : l.disputeResolved}: ${reviewText(reviewerLabel(dissent.reviewer), 60)} ` +
     `${l.disputeSaid} ${escapeMarkdown(dissent.status, 20)}` +
     (dissent.independence ? ` (${escapeMarkdown(dissent.independence, 20)})` : "") +
-    ` — ${reviewText(dissent.rationale, 160)}`
+    ` — ${reviewText(dissent.rationale, 160)}` +
+    (review.decidedByPerson ? ` — ${personText(review, l)}` : "")
   );
 }
 
@@ -2716,6 +2726,7 @@ export function renderMarkdown(input: ReportContext): string {
         ? ` — ${fmt(l.triageOpen, { open: triage.open, independent: triage.independentlyReviewed })}`
         : "";
     heading(3, `${l.triageHeading}${openText}`);
+    const kindParts: string[] = [];
     for (const [kind, counts] of [
       [l.triageFindings, triage.findings],
       [l.triageHotspots, triage.hotspots],
@@ -2724,13 +2735,13 @@ export function renderMarkdown(input: ReportContext): string {
       const shown = pending
         .slice(0, TRIAGE_RULE_ROWS)
         .map((row) => `\`${escapeMarkdown(row.ruleId, 120)}\` ${row.unreviewed}`);
-      lines.push(
-        `- ${fmt(l.triageLine, {
+      kindParts.push(
+        fmt(l.triageLine, {
           kind,
           total: counts.total,
           reviewed: counts.reviewed,
           unreviewed: counts.unreviewed,
-        })}` +
+        }) +
           (shown.length > 0
             ? ` — ${l.triageByRule}: ${shown.join(", ")}` +
               (pending.length > shown.length
@@ -2739,6 +2750,8 @@ export function renderMarkdown(input: ReportContext): string {
             : ""),
       );
     }
+    // Both kinds on one line: at most four lines whatever the review holds.
+    lines.push(`- ${kindParts.join("; ")}`);
     if (triage.proofGaps.length > 0) {
       const shown = triage.proofGaps.slice(0, PROOF_GAPS_SHOWN).map(
         (gap) =>

@@ -625,7 +625,53 @@ async function startAudit(base: ServerBase, args: Record<string, unknown>): Prom
   };
 }
 
+/**
+ * Keys a blind caller (an independent reviewer) must not see: anything that
+ * says what was decided or by whom - dismissal counts and warnings, review
+ * progress, reviewer labels and the triage ledger.
+ */
+const BLIND_HIDDEN_KEYS = new Set([
+  "falsePositive",
+  "falsePositives",
+  "false_positive",
+  "dismissed",
+  "dismissedWarning",
+  "dismissed_warning",
+  "triage",
+  "reviewers",
+  "reviewed",
+  "unreviewed",
+  "review",
+]);
+
+/** A copy of a status or summary without the keys a blind caller must not see. */
+export function blindView(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(blindView);
+  if (typeof value !== "object" || value === null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!BLIND_HIDDEN_KEYS.has(key)) out[key] = blindView(item);
+  }
+  return out;
+}
+
+class ToolError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "ToolError";
+  }
+}
+
 function statusTool(base: ServerBase, args: Record<string, unknown>): unknown {
+  const blind = args.blind === true;
+  const result = statusResult(base, args) as Record<string, unknown>;
+  return blind ? { ...(blindView(result) as Record<string, unknown>), blind: true } : result;
+}
+
+function statusResult(base: ServerBase, args: Record<string, unknown>): unknown {
   const runId = String(args.run_id ?? "");
   // A run this server started that has not written run.json yet (still
   // scanning, or failed): only its state is known.
@@ -783,6 +829,14 @@ function verdictTool(base: ServerBase, args: Record<string, unknown>): unknown {
     );
   }
   const role = args.role === undefined ? "primary" : String(args.role);
+  if (role === "human") {
+    throw new ToolError(
+      'role "human" is a person\'s decision and is accepted only from the command line: ' +
+        "code-audit verdict <run_id> <finding> --role human --replace --reviewer <name> --status <status> --rationale <text>. " +
+        "Do not record it yourself; give the user that command",
+      "HUMAN_DECISION_CLI_ONLY",
+    );
+  }
   if (!VERDICT_ROLES.includes(role as VerdictRole)) {
     throw new Error('role must be "primary" (your own decision, the default) or "independent" (a check of a verdict you did not see)');
   }
@@ -865,6 +919,13 @@ function reportTool(base: ServerBase, args: Record<string, unknown>): unknown {
   if (!allowed.includes(formatValue as ReportOutputFormat)) {
     throw new Error(`format must be one of ${allowed.join(", ")}`);
   }
+  const blind = args.blind === true;
+  if (blind && formatValue !== "summary") {
+    throw new ToolError(
+      "blind mode renders only format summary: md, json and sarif carry every verdict. An independent reviewer does not call audit_report",
+      "BLIND_FORMAT",
+    );
+  }
   const report = renderRunReport(
     runId,
     formatValue as ReportOutputFormat,
@@ -889,7 +950,20 @@ function reportTool(base: ServerBase, args: Record<string, unknown>): unknown {
       untrusted_content: false,
       text: JSON.stringify(inner),
     });
-    text = JSON.stringify(fitSummary(JSON.parse(report.text) as Record<string, unknown>, envelope, MAX_RESPONSE_BYTES - 300));
+    const parsed = JSON.parse(report.text) as Record<string, unknown>;
+    const inner = blind ? (blindView(parsed) as Record<string, unknown>) : parsed;
+    text = JSON.stringify(fitSummary(inner, envelope, MAX_RESPONSE_BYTES - 300));
+  }
+  if (blind) {
+    return {
+      run_id: report.runId,
+      run_dir: report.runDir,
+      format: report.format,
+      root: report.root ?? null,
+      blind: true,
+      untrusted_content: false,
+      text,
+    };
   }
   return {
     run_id: report.runId,
@@ -1052,9 +1126,15 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
     {
       title: "Get audit status",
       description:
-        "Return phase, progress, counts and review progress for a run. Poll after audit_start. `findings` counts active findings at confidence >= the run's --min-confidence; `lowConfidenceCandidates` and `hotspots` are separate; `summary` has the severity/category/dependency breakdown and the number that counts toward the exit code. `runDir` and `root` say which directory the numbers were read from. `dismissedWarning` is set when findings at severity >= fail-on were marked false positive: relay it to the user. `triage` counts findings and hotspots with and without a verdict (by rule) and lists open proof gaps. " +
+        "Return phase, progress, counts and review progress for a run. Poll after audit_start. `findings` counts active findings at confidence >= the run's --min-confidence; `lowConfidenceCandidates` and `hotspots` are separate; `summary` has the severity/category/dependency breakdown and the number that counts toward the exit code. `runDir` and `root` say which directory the numbers were read from. `dismissedWarning` is set when findings at severity >= fail-on were marked false positive: relay it to the user. `triage` counts findings and hotspots with and without a verdict (by rule) and lists open proof gaps. With blind: true (for an independent reviewer) the dismissal counts and warning, review progress, reviewer labels and triage are left out. " +
         RUN_ID_RULE,
-      inputSchema: runIdShape,
+      inputSchema: {
+        ...runIdShape,
+        blind: z
+          .boolean()
+          .optional()
+          .describe("For an independent reviewer: leave out everything a verdict decided (dismissals, review progress, reviewer labels, triage)."),
+      },
     },
     safeTool((args) => statusTool(base, args)),
   );
@@ -1172,7 +1252,7 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
           .enum(VERDICT_ROLES)
           .optional()
           .describe(
-            "primary (default): your decision. independent: you are checking a verdict you did not see, given only the finding id and its location; try to refute it. An independent verdict needs your own reviewer label (not the primary's) and independence.",
+            "primary (default): your decision. independent: you are checking a verdict you did not see, given only the finding id and its location; try to refute it. An independent verdict needs your own reviewer label (not the primary's) and independence. human is refused over MCP (HUMAN_DECISION_CLI_ONLY): a person records it with the CLI.",
           ),
         independence: z
           .enum(INDEPENDENCE_KINDS)
@@ -1282,6 +1362,10 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
           .enum(["md", "json", "sarif", "summary"])
           .optional()
           .describe("summary returns review counts and the counting summary (same numbers as audit_status and the report cover); md/json/sarif write files."),
+        blind: z
+          .boolean()
+          .optional()
+          .describe("Only with format summary: the summary without dismissals, review progress, reviewer labels and triage. An independent reviewer should not call audit_report at all."),
       },
     },
     safeTool((args) => reportTool(base, args)),

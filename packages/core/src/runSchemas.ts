@@ -240,7 +240,7 @@ export const VerdictRecordSchema = z.object({
   actor: z.string().optional(),
   reviewer: z.string().optional(),
   /** Role of the reviewer who wrote this entry; absent (v1) means primary. */
-  role: z.enum(["primary", "independent"]).optional(),
+  role: z.enum(["primary", "independent", "human"]).optional(),
   /** For role independent: how independent the review was. */
   independence: z.enum(["subagent", "same-session"]).optional(),
   /** A primary verdict that knowingly replaced another reviewer's reviewed decision. */

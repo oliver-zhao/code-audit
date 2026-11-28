@@ -393,4 +393,55 @@ describe("structured triage over MCP", () => {
     expect(String(parsed.dismissedWarning)).toMatch(/^WARNING: /);
     expect(report.truncated).toBeUndefined();
   });
+
+  it("refuses a human decision and serves blind status and summary (M-n1, L-n4)", async () => {
+    const started = await call("audit_start", { root: project, offline: true, engines: ["builtin"] });
+    const runId = String(started.run_id);
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const state = await call("audit_status", { run_id: runId });
+      if (state.phase !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const findings = await allItems(runId, "finding");
+    const high = findings.find((item) => item.severity === "high" || item.severity === "critical") as Item;
+    await call("audit_verdict", {
+      run_id: runId,
+      finding: high.id,
+      status: "false_positive",
+      rationale: `The value is a constant assigned at ${high.file}:${high.start_line} and never user controlled.`,
+      reviewer: "secret-label-p",
+      evidenceLines: ["x = 1"],
+    });
+    const humanError = await callError("audit_verdict", {
+      run_id: runId,
+      finding: high.id,
+      status: "confirmed",
+      rationale: "a person decided",
+      reviewer: "alice",
+      role: "human",
+      replace: true,
+    });
+    expect(humanError.code).toBe("HUMAN_DECISION_CLI_ONLY");
+    expect(humanError.message).toContain("code-audit verdict");
+
+    const open = await call("audit_status", { run_id: runId });
+    expect(String(open.dismissedWarning)).toContain("secret-label-p");
+    const blind = await call("audit_status", { run_id: runId, blind: true });
+    expect(blind.blind).toBe(true);
+    expect(blind.phase).toBe("complete");
+    const text = JSON.stringify(blind);
+    for (const hidden of ["\"dismissedWarning\"", "\"falsePositive\"", "\"triage\"", "secret-label-p", "\"reviewed\"", "\"unreviewed\""]) {
+      expect(text, hidden).not.toContain(hidden);
+    }
+    const summary = await call("audit_report", { run_id: runId, format: "summary", blind: true });
+    expect(summary.blind).toBe(true);
+    const summaryText = String(summary.text);
+    expect(JSON.parse(summaryText).phase).toBe("complete");
+    for (const hidden of ["\"dismissedWarning\"", "\"falsePositive\"", "\"falsePositives\"", "\"triage\"", "secret-label-p"]) {
+      expect(summaryText, hidden).not.toContain(hidden);
+    }
+    expect(JSON.stringify(summary)).not.toContain("false_positive");
+    const md = await callError("audit_report", { run_id: runId, format: "md", blind: true });
+    expect(md.code).toBe("BLIND_FORMAT");
+  });
 });
