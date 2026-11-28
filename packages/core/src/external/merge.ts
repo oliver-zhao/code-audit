@@ -99,6 +99,58 @@ function collapsibleWithinEngine(a: Finding, b: Finding, engines: string[]): boo
   );
 }
 
+/** True when `existing` (kept earlier) absorbs `finding` (see `crossEngineDedupe`). */
+function mergeable(existing: Finding, finding: Finding): boolean {
+  if (existing.file !== finding.file) return false;
+  if (!sameCwe(existing, finding)) return false;
+  if (!rangesOverlap(existing, finding)) return false;
+  const existingEngines = enginesOf(existing);
+  const findingEngines = enginesOf(finding);
+  return !(
+    existingEngines.every((engine) => findingEngines.includes(engine)) &&
+    !collapsibleWithinEngine(existing, finding, findingEngines)
+  );
+}
+
+/**
+ * The definition of `crossEngineDedupe`, comparing every pair: kept for the
+ * tests that check the indexed version gives the same result. Quadratic; do
+ * not use on scan results.
+ */
+export function crossEngineDedupeReference(findings: Finding[]): Finding[] {
+  const kept: Finding[] = [];
+  for (const finding of findings) {
+    let merged = false;
+    for (let index = 0; index < kept.length; index += 1) {
+      const existing = kept[index];
+      if (!existing || !mergeable(existing, finding)) continue;
+      kept[index] = mergePair(existing, finding);
+      merged = true;
+      break;
+    }
+    if (!merged) kept.push(finding);
+  }
+  return kept;
+}
+
+/** Lines per bucket of the line index. */
+const LINE_BUCKET = 64;
+/** A range over more buckets than this is kept in the group's list of wide entries. */
+const MAX_BUCKETS_PER_RANGE = 32;
+
+interface DedupeGroup {
+  /** Bucket number -> indexes into `kept` whose range touched the bucket. */
+  buckets: Map<number, number[]>;
+  /** Indexes into `kept` whose range spans too many buckets to register. */
+  wide: number[];
+}
+
+function bucketsOf(finding: Finding): { first: number; last: number } {
+  const start = Math.max(0, Math.floor(finding.startLine));
+  const end = Math.max(start, Math.floor(finding.endLine));
+  return { first: Math.floor(start / LINE_BUCKET), last: Math.floor(end / LINE_BUCKET) };
+}
+
 /**
  * Cross-engine dedupe for SAST and secrets findings.
  *
@@ -109,30 +161,68 @@ function collapsibleWithinEngine(a: Finding, b: Finding, engines: string[]): boo
  * highest severity and confidence, lists every engine in `provenance.engines`
  * and, when more than one rule contributed, every rule id in
  * `provenance.rules`.
+ *
+ * Findings are processed in order and each one merges into the first kept
+ * finding it matches (`crossEngineDedupeReference` is that definition). To
+ * stay linear on large results, kept findings are indexed by file and CWE,
+ * then by line bucket, so a finding is only compared with kept findings
+ * whose ranges can overlap it; the candidates are tried in kept order, so
+ * the result is identical. A merge can change a kept finding's range (the
+ * merged finding takes the primary's location), so the new range is
+ * registered too; stale registrations are harmless because every candidate
+ * is checked against its current range.
  */
 export function crossEngineDedupe(findings: Finding[]): Finding[] {
   const kept: Finding[] = [];
-  for (const finding of findings) {
-    let merged = false;
-    for (let index = 0; index < kept.length; index += 1) {
-      const existing = kept[index];
-      if (!existing) continue;
-      if (existing.file !== finding.file) continue;
-      if (!sameCwe(existing, finding)) continue;
-      if (!rangesOverlap(existing, finding)) continue;
-      const existingEngines = enginesOf(existing);
-      const findingEngines = enginesOf(finding);
-      if (
-        existingEngines.every((engine) => findingEngines.includes(engine)) &&
-        !collapsibleWithinEngine(existing, finding, findingEngines)
-      ) {
-        continue;
-      }
-      kept[index] = mergePair(existing, finding);
-      merged = true;
-      break;
+  const groups = new Map<string, DedupeGroup>();
+  const register = (group: DedupeGroup, index: number): void => {
+    const { first, last } = bucketsOf(kept[index] as Finding);
+    if (last - first + 1 > MAX_BUCKETS_PER_RANGE) {
+      group.wide.push(index);
+      return;
     }
-    if (!merged) kept.push(finding);
+    for (let bucket = first; bucket <= last; bucket += 1) {
+      const list = group.buckets.get(bucket);
+      if (list) {
+        if (list[list.length - 1] !== index) list.push(index);
+      } else group.buckets.set(bucket, [index]);
+    }
+  };
+  for (const finding of findings) {
+    // Without a CWE a finding never merges and nothing merges into it.
+    if (!finding.cwe) {
+      kept.push(finding);
+      continue;
+    }
+    const key = `${finding.file}\u0000${finding.cwe.toUpperCase()}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { buckets: new Map(), wide: [] };
+      groups.set(key, group);
+    }
+    const candidates = new Set<number>(group.wide);
+    const { first, last } = bucketsOf(finding);
+    if (last - first + 1 > MAX_BUCKETS_PER_RANGE) {
+      for (const list of group.buckets.values()) for (const index of list) candidates.add(index);
+    } else {
+      for (let bucket = first; bucket <= last; bucket += 1) {
+        for (const index of group.buckets.get(bucket) ?? []) candidates.add(index);
+      }
+    }
+    let target = -1;
+    for (const index of [...candidates].sort((a, b) => a - b)) {
+      if (mergeable(kept[index] as Finding, finding)) {
+        target = index;
+        break;
+      }
+    }
+    if (target >= 0) {
+      kept[target] = mergePair(kept[target] as Finding, finding);
+      register(group, target);
+    } else {
+      kept.push(finding);
+      register(group, kept.length - 1);
+    }
   }
   return kept;
 }
