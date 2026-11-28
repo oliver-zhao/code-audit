@@ -907,7 +907,7 @@ function filesBelow(root: string, relDir: string, limit: number): { files: strin
   const walk = (rel: string, depth: number): void => {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(path.join(root, ...rel.split("/")), { withFileTypes: true });
+      entries = fs.readdirSync(fromRoot(root, rel), { withFileTypes: true });
     } catch {
       return;
     }
@@ -948,6 +948,11 @@ interface TextPassState {
   notAnalysed: Array<{ path: string; reason: string }>;
   /** Notes about content the pass could not decode but that does not make the result incomplete. */
   notes: Array<{ path: string; note: string }>;
+}
+
+/** Absolute path of a root-relative POSIX path (no spread over its segments). */
+function fromRoot(root: string, rel: string): string {
+  return path.join(root, rel.split("/").join(path.sep));
 }
 
 function syntheticFile(relPath: string, absPath: string, language: InventoryFile["language"], size: number): InventoryFile {
@@ -1005,7 +1010,9 @@ function textPass(
     const sources: TextSource[] = [];
     let pdfBudget = PDF_INFLATE_BUDGET;
     for (const rel of [...candidates].sort()) {
-      const abs = path.join(root, ...rel.split("/"));
+      const sourcesBefore = sources.length;
+      try {
+      const abs = fromRoot(root, rel);
       let buffer: Buffer | undefined;
       try {
         const stat = fs.lstatSync(abs);
@@ -1060,13 +1067,15 @@ function textPass(
           const lines: number[] = [];
           for (const part of pdf.parts) {
             const partLines = part.text.split("\n");
-            texts.push(...partLines);
-            for (let i = 0; i < partLines.length; i += 1) lines.push(part.line);
+            for (const partLine of partLines) {
+              texts.push(partLine);
+              lines.push(part.line);
+            }
           }
           sources.push({ rel, text: texts.join("\n"), lines, full: false, secrets: true, label: "text of a compressed PDF stream" });
         }
         if (pdf.problems.length > 0) {
-          state.notAnalysed.push({ path: rel, reason: `PDF content not analysed: ${pdf.problems.join("; ")} (inflate limits: 1 MiB and ${ARCHIVE_MAX_RATIO}:1 per stream, ${PDF_INFLATE_BUDGET / 1024 / 1024} MiB per scan)` });
+          state.notAnalysed.push({ path: rel, reason: `PDF content not analysed: ${pdf.problems.join("; ")} (limits: 1 MiB and ${ARCHIVE_MAX_RATIO}:1 per stream, ${PDF_INFLATE_BUDGET / 1024 / 1024} MiB inflated per scan, 4 MiB of text per PDF)` });
           continue;
         }
         if (pdf.undecoded.length > 0) {
@@ -1074,6 +1083,12 @@ function textPass(
         }
       }
       state.passed.add(rel);
+      } catch (error) {
+        // A failure on one file never fails the run: that file is not analysed.
+        sources.length = sourcesBefore;
+        state.passed.delete(rel);
+        state.notAnalysed.push({ path: rel, reason: `text pass failed on this file: ${printable(error instanceof Error ? error.message : String(error), 200)} (not analysed)` });
+      }
     }
 
     // Synthetic files: the text of each source as Markdown and as shell
@@ -1139,19 +1154,43 @@ function textPass(
         }),
       );
     };
-    for (const hit of scanRules(textFiles, ruleSet, { inlineIgnore: false }).hits) {
+    // A pass that throws is retried file by file; a file that still fails is
+    // not analysed, and the run goes on.
+    const failed = new Set<string>();
+    const guarded = <T>(files: InventoryFile[], run: (batch: InventoryFile[]) => T[], originalRel: (file: InventoryFile) => string): T[] => {
+      try {
+        return run(files);
+      } catch {
+        const results: T[] = [];
+        for (const file of files) {
+          try {
+            for (const item of run([file])) results.push(item);
+          } catch (error) {
+            const rel = originalRel(file);
+            if (!failed.has(rel)) {
+              failed.add(rel);
+              state.passed.delete(rel);
+              state.notAnalysed.push({ path: rel, reason: `rule matching failed on this file: ${printable(error instanceof Error ? error.message : String(error), 200)} (not analysed)` });
+            }
+          }
+        }
+        return results;
+      }
+    };
+    const relOf = (file: InventoryFile): string => (originalOf.get(file.relPath) ?? originalOf.get(`full:${file.relPath}`))?.rel ?? file.relPath;
+    for (const hit of guarded(textFiles, (batch) => scanRules(batch, ruleSet, { inlineIgnore: false }).hits, relOf)) {
       const source = originalOf.get(hit.file.relPath) as TextSource;
       add(hit, source, lineOf(source, hit.line));
     }
-    for (const hit of scanRules(fullFiles, ruleSet, { inlineIgnore: false }).hits) {
+    for (const hit of guarded(fullFiles, (batch) => scanRules(batch, ruleSet, { inlineIgnore: false }).hits, relOf)) {
       const source = originalOf.get(`full:${hit.file.relPath}`) as TextSource;
       add(hit, source, lineOf(source, hit.line));
     }
-    for (const hit of scanRules(instructionFiles, instructionOnly, { inlineIgnore: false }).hits) {
+    for (const hit of guarded(instructionFiles, (batch) => scanRules(batch, instructionOnly, { inlineIgnore: false }).hits, relOf)) {
       const source = originalOf.get(hit.file.relPath) as TextSource;
       add(hit, source, hit.line);
     }
-    for (const secret of scanSecrets(secretFiles).findings) {
+    for (const secret of guarded(secretFiles, (batch) => scanSecrets(batch).findings, relOf)) {
       const source = originalOf.get(secret.file) as TextSource;
       const line = lineOf(source, secret.startLine);
       const key = `${secret.ruleId}\u0000${source.rel}\u0000${line}`;
@@ -1201,7 +1240,9 @@ function listRuleFiles(dir: string, depth = 0): string[] {
   const files: string[] = [];
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...listRuleFiles(full, depth + 1));
+    if (entry.isDirectory()) {
+      for (const file of listRuleFiles(full, depth + 1)) files.push(file);
+    }
     else if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) files.push(full);
   }
   return files;
@@ -1385,7 +1426,7 @@ function cleanName(value: string): string {
 }
 
 function describePackage(root: string, rel: string, kind: PackageDir["kind"]): { pkg: PackageDir; allowed: string[] | null } {
-  const dir = rel === "" ? root : path.join(root, ...rel.split("/"));
+  const dir = rel === "" ? root : fromRoot(root, rel);
   const notes: string[] = [];
   let name: string | undefined;
   let allowed: string[] | null = null;
@@ -1484,6 +1525,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   const contentNotAnalysed: Array<{ path: string; reason: string }> = [];
   const invalidUtf8: string[] = [];
   const withNul: string[] = [];
+  const hookFailures: string[] = [];
   const instructionRules = instructionRuleIds(options.rulesDir ?? defaultRulesDir());
   // Instruction matching covers the whole target: in a recursive scan a file
   // outside every package (`../../shared.md`) feeds the outside group.
@@ -1506,7 +1548,20 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     ...(options.pathEnv ? { pathEnv: options.pathEnv } : {}),
     ...(options.http ? { http: options.http } : {}),
     ...(options.now ? { now: options.now } : {}),
-    extraFindings: (inv, existing) => [...capability(inv), ...strings(inv, existing)],
+    extraFindings: (inv, existing) => {
+      const results: Finding[] = [];
+      for (const [name, run] of [
+        ["capability check", () => capability(inv)],
+        ["text pass", () => strings(inv, existing)],
+      ] as const) {
+        try {
+          for (const finding of run()) results.push(finding);
+        } catch (error) {
+          hookFailures.push(`the skill ${name} failed: ${printable(error instanceof Error ? error.message : String(error), 200)}`);
+        }
+      }
+      return results;
+    },
     transformRules: () => skillRules,
   });
   } finally {
@@ -1532,6 +1587,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       globalIncomplete.push({ reason: `requested engine ${engine.name} is not installed` });
     }
   }
+  for (const failure of hookFailures) globalIncomplete.push({ reason: `${failure} (not analysed)` });
   if (discovery?.truncated) {
     globalIncomplete.push({ reason: `package discovery stopped after ${DISCOVERY_MAX_ENTRIES} directory entries` });
   }
@@ -1567,14 +1623,19 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       // not part of what gets installed. A `.git` in an archive, a nested
       // one, or a `.git` file or link is still reported.
       if (dir === ".git" && localDirectoryTarget && isRealDirectory(path.join(root, ".git"))) {
-        const problems = gitDirProblems(path.join(root, ".git"));
+        let problems: Array<{ path: string; reason: string }>;
+        try {
+          problems = gitDirProblems(path.join(root, ".git"));
+        } catch (error) {
+          problems = [{ path: ".git", reason: `git metadata could not be checked: ${printable(error instanceof Error ? error.message : String(error), 200)}` }];
+        }
         if (problems.length === 0) {
           rootGitNote = "git metadata at .git/ not analysed: not part of an installed skill";
           continue;
         }
         // Not what git creates for a checkout: every unusual entry with its
         // reason, then every file as before.
-        fileIncomplete.push(...problems);
+        for (const entry of problems) fileIncomplete.push(entry);
       }
       const below = filesBelow(root, dir, 200);
       for (const file of below.files) fileIncomplete.push({ path: file, reason: `inside ${dir}/, which is never scanned (not analysed)` });
@@ -1585,7 +1646,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       // Analysed only once the text pass ran on it (its own reason is listed
       // when it could not); executables and nested archives stay listed.
       if (!textState.passed.has(skip.path)) continue;
-      const reason = classifySkippedBinary(skip.path, readHead(path.join(root, ...skip.path.split("/"))));
+      const reason = classifySkippedBinary(skip.path, readHead(fromRoot(root, skip.path)));
       if (reason) fileIncomplete.push({ path: skip.path, reason });
       continue;
     }

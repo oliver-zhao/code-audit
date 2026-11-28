@@ -551,7 +551,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       : [];
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
-    warnings.push(...outputWarnings);
+    for (const warning of outputWarnings) warnings.push(warning);
     if (ruleScan.suppressed.length > 0) {
       warnings.push(
         `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore comments in the audited repository; they are listed under suppressed findings (use --no-inline-ignore to report them as active)`,

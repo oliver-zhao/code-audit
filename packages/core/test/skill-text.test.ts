@@ -349,3 +349,34 @@ describe("R3-3: PDF inflate cost", () => {
     expect(result.inflatedBytes).toBeLessThanOrEqual(1 << 20);
   });
 });
+
+describe("R4-1: large inputs never fail the run", () => {
+  it("scans a PDF whose one stream inflates to 200,000 lines", async () => {
+    let seed = 7;
+    const letter = (): string => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return String.fromCharCode(97 + (seed % 26));
+    };
+    const lines: string[] = [];
+    for (let i = 0; i < 200_000; i += 1) lines.push(`${letter()}${letter()}${letter()}${letter()}`);
+    const content = Buffer.from(`${lines.join("\n")}\nINSTRUCTION_MARKER\n`);
+    const file = pdf([{ dict: "/Filter /FlateDecode", data: zlib.deflateSync(content, { level: 9 }) }]);
+    expect(file.length).toBeLessThan(1024 * 1024);
+    const pkg = await pkgOf({ "docs/a.pdf": file });
+    expect(pkg?.incomplete).toEqual([]);
+    expect(ruleIds(pkg, "docs/a.pdf")).toEqual(["t-instr"]);
+  }, 120_000);
+
+  it("a root .git with 200,000 junk objects is INCOMPLETE with a bounded list", async () => {
+    const dir = skillDir({ ".git/HEAD": "ref: refs/heads/main\n" });
+    const objects = path.join(dir, ".git", "objects", "ab");
+    fs.mkdirSync(objects, { recursive: true });
+    for (let i = 0; i < 200_000; i += 1) fs.closeSync(fs.openSync(path.join(objects, `junk-${i}`), "w"));
+    const { document } = await scanSkill({ target: dir, rulesDir: RULES, engines: ["builtin"], offline: true, out: OUT });
+    const pkg = document.packages[0];
+    expect(pkg?.verdict).toBe("INCOMPLETE");
+    expect(pkg?.incomplete.length).toBeLessThan(500);
+    expect(pkg?.incomplete.map((entry) => entry.reason).join("\n")).toContain("more entries that git does not create");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }, 300_000);
+});

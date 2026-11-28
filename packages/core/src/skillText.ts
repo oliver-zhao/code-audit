@@ -155,8 +155,12 @@ export function isPlainRemoteUrl(url: string): boolean {
  */
 export function gitDirProblems(gitDir: string): Array<{ path: string; reason: string }> {
   const problems: Array<{ path: string; reason: string }> = [];
+  // At most 200 entries are listed; a .git with 200,000 planted files is
+  // reported, not enumerated.
+  let more = 0;
   const add = (rel: string, reason: string): void => {
-    problems.push({ path: `.git/${rel}`, reason });
+    if (problems.length < 200) problems.push({ path: `.git/${rel}`, reason });
+    else more += 1;
   };
   let entries: fs.Dirent[];
   try {
@@ -242,6 +246,7 @@ export function gitDirProblems(gitDir: string): Array<{ path: string; reason: st
   } catch {
     // no config file: nothing to check
   }
+  if (more > 0) problems.push({ path: ".git", reason: `${more} more entries that git does not create (not listed)` });
   return problems;
 }
 
@@ -655,10 +660,14 @@ export function pdfTextOperators(content: string): string[] {
  */
 export function pdfStreamText(
   buffer: Buffer,
-  limits: { maxStreamBytes: number; maxRatio: number; budget: number },
+  limits: { maxStreamBytes: number; maxRatio: number; budget: number; maxText?: number },
   inflate: (data: Buffer, maxOutputLength: number) => Buffer,
 ): PdfText {
   const result: PdfText = { parts: [], undecoded: [], problems: [], inflatedBytes: 0 };
+  // Text kept from all streams of the file: what the rules match is bounded,
+  // whatever the inflate budget allows.
+  const maxText = limits.maxText ?? 4 * 1024 * 1024;
+  let textChars = 0;
   const problem = (text: string): void => {
     if (!result.problems.includes(text)) result.problems.push(text);
   };
@@ -762,9 +771,15 @@ export function pdfStreamText(
       decoded = undone;
     }
     if (!decoded) continue;
-    result.parts.push({ text: extractPrintableText(decoded).text, line });
-    const operators = pdfTextOperators(decoded.toString("latin1"));
-    if (operators.length > 0) result.parts.push({ text: operators.join("\n"), line });
+    const printable = extractPrintableText(decoded).text;
+    const operators = pdfTextOperators(decoded.toString("latin1")).join("\n");
+    textChars += printable.length + operators.length;
+    if (textChars > maxText) {
+      problem(`text of the compressed streams over ${Math.round(maxText / 1024 / 1024)} MiB`);
+      break;
+    }
+    result.parts.push({ text: printable, line });
+    if (operators.length > 0) result.parts.push({ text: operators, line });
   }
   return result;
 }

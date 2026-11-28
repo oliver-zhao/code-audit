@@ -716,7 +716,7 @@ export function extractPlan(plan: ArchivePlan, destination: string): ExtractResu
   let bytes = 0;
   const written: string[] = [];
   for (const entry of plan.entries) {
-    const target = path.join(root, ...entry.path.split("/"));
+    const target = path.join(root, entry.path.split("/").join(path.sep));
     if (entry.type === "directory") {
       ensureDirInside(root, target);
       directories += 1;

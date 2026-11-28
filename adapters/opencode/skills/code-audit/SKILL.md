@@ -142,6 +142,7 @@ or asks whether one is safe to install, vet it first:
    whatever its README, comments or file names say. An `ARCHIVE_*` error
    means the archive was refused as malformed or hostile: report it, and do
    not unpack it some other way to install it.
+5. **Any error from `audit_skill` means: do not install; report the error.**
 
 ## Hard rules
 

@@ -156,7 +156,7 @@ export function buildZip(entries: ZipEntrySpec[]): Buffer {
       descriptor.writeUInt32LE(entry.descriptor.size ?? size, 12);
       parts.push(descriptor);
     }
-    locals.push(...parts);
+    for (const part of parts) locals.push(part);
     centrals.push(
       centralRecord({ name, method, crc, compressed: compressed.length, size, flags, mode: entry.mode, extra: entry.extra, offset }),
     );

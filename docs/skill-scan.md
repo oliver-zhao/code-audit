@@ -127,7 +127,8 @@ reported (same rule, file and line) is not repeated.
   and shell rules and the secret detectors, and so is the same text with
   every NUL byte removed (bash drops NUL bytes and runs what is left).
 - In a PDF, every `FlateDecode` stream is inflated (at most 1 MiB and a
-  100:1 ratio per stream, 32 MiB for all PDFs of a scan), PNG (10-15) and
+  100:1 ratio per stream, 32 MiB for all PDFs of a scan, at most 4 MiB of
+  recovered text per PDF), PNG (10-15) and
   TIFF (2, 8-bit) predictors are undone, and its printable text and the
   strings of its text operators (`Tj`, `TJ`, `'`, `"`, hex strings, joined
   per text object) are matched the same way. The `stream` keyword may be
@@ -142,7 +143,9 @@ reported (same rule, file and line) is not repeated.
   note says so (not `INCOMPLETE`).
 
 A polyglot such as `%PDF-1.4` followed by a script is therefore matched like
-the script. A file counts as analysed only once the text pass ran on it; a
+the script. A failure of the text pass or of rule matching on one file makes
+that file not analysed (with the error as the reason); it never fails the
+run. A file counts as analysed only once the text pass ran on it; a
 file over 1 MiB is not analysed.
 
 ### Capability declaration check
