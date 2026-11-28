@@ -20,7 +20,7 @@ Current for this version of the code.
 
 ## Results and known limits
 
-What changed in release 0.3.0, and its known limits, is in
+What changed in release 0.4.0, and its known limits, is in
 [../CHANGELOG.md](../CHANGELOG.md) and the "Limits" section of the
 [README](../README.md#limits). The two reports below come from earlier
 development stages (before 0.3.0). They record measured results on public

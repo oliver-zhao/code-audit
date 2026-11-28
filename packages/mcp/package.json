@@ -1,6 +1,6 @@
 {
   "name": "@code-audit/mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "code-audit MCP server (stdio): audit_* tools for agent hosts",
   "keywords": [
     "security",

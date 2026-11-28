@@ -33,7 +33,7 @@ and which no tool call can change:
    and DSH start a project's MCP servers in the project directory.
 
 The base is printed to stderr at start-up
-(`[code-audit] v0.3.0 ready on stdio; base directory: /work/project (working directory)`).
+(`[code-audit] v0.4.0 ready on stdio; base directory: /work/project (working directory)`).
 
 - The `root` of `audit_start` and the `root` argument of every other tool
   must be the base directory or a directory inside it, compared as canonical
@@ -669,7 +669,7 @@ and fingerprint.
     "endLine": 26,
     "evidence": "return os.system(cmd)",
     "source": "hotspot promotion",
-    "provenance": { "engine": "agent", "rule": "py-os-system-api", "version": "0.3.0" },
+    "provenance": { "engine": "agent", "rule": "py-os-system-api", "version": "0.4.0" },
     "fingerprint": "29ea87036c0598180b22ea0dd95ece92618779997c8c493ab777cd4dbb119efd"
   },
   "promoted": true,
@@ -789,4 +789,4 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
   | code-audit-mcp
 ```
 
-prints one line with `"serverInfo":{"name":"code-audit","version":"0.3.0"}`.
+prints one line with `"serverInfo":{"name":"code-audit","version":"0.4.0"}`.

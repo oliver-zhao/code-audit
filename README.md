@@ -130,7 +130,7 @@ code-audit doctor
 ```
 
 ```text
-code-audit doctor (0.3.0)
+code-audit doctor (0.4.0)
 Node.js: 24.22.1 OK
 Rules: 589 built-in: 381 finding, 208 hotspot (<checkout>/rules)
 Opengrep rules: 47 (<checkout>/rules/opengrep)
@@ -705,7 +705,7 @@ The scan prints the reason, for example
   are honoured by those tools; the scan only warns.
 
 What changed in this release, with its known limits, is in
-[CHANGELOG.md](CHANGELOG.md) (0.3.0). Measured results on public
+[CHANGELOG.md](CHANGELOG.md) (0.4.0). Measured results on public
 repositories and the known limits found then are recorded in the reports of
 earlier development stages, [docs/M4_REPORT.md](docs/M4_REPORT.md) and
 [docs/PY1_REPORT.md](docs/PY1_REPORT.md); their numbers predate 0.3.0.

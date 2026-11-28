@@ -79,7 +79,7 @@ code-audit doctor
 ```
 
 ```text
-code-audit doctor (0.3.0)
+code-audit doctor (0.4.0)
 Node.js: 24.22.1 OK
 Rules: 589 built-in: 381 finding, 208 hotspot (<checkout>/rules)
 Opengrep rules: 47 (<checkout>/rules/opengrep)
@@ -289,7 +289,7 @@ code-audit scan fixtures/clean      --offline --no-external --out /tmp/ca-clean 
 - Semgrep 作为 Opengrep 的替代被支持，但从未在测试中实际运行过。
 - Windows 没有测试过。
 
-本版本的变化和已知局限见 [CHANGELOG.md](CHANGELOG.md)（0.3.0）。在公开项目上的实测结果和当时发现的已知局限记录在早期开发阶段的报告 [docs/M4_REPORT.md](docs/M4_REPORT.md) 和 [docs/PY1_REPORT.md](docs/PY1_REPORT.md) 里，其中的数字早于 0.3.0。
+本版本的变化和已知局限见 [CHANGELOG.md](CHANGELOG.md)（0.4.0）。在公开项目上的实测结果和当时发现的已知局限记录在早期开发阶段的报告 [docs/M4_REPORT.md](docs/M4_REPORT.md) 和 [docs/PY1_REPORT.md](docs/PY1_REPORT.md) 里，其中的数字早于 0.3.0。
 
 ## 许可证
 

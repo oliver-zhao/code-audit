@@ -244,7 +244,7 @@ the scan, `read` / `search` on such a run cannot show source lines.
 ```json
 {
   "schemaVersion": 1,
-  "tool": { "name": "code-audit", "version": "0.3.0" },
+  "tool": { "name": "code-audit", "version": "0.4.0" },
   "target": { "input": "./downloads/pdf-helper.zip", "kind": "archive" },
   "recursive": false,
   "runId": "...",

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Version of the tool. Must equal `version` in every package.json (tested). */
-export const TOOL_VERSION = "0.3.0";
+export const TOOL_VERSION = "0.4.0";
 export const TOOL_NAME = "code-audit";
 
 /** Directory of the `@code-audit/core` package (the parent of `dist/`). */
