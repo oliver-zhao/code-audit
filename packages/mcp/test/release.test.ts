@@ -184,7 +184,7 @@ describe("documentation matches the code", () => {
     const { tools } = await client.listTools();
     await client.close();
     const doc = read("docs/mcp.md");
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     for (const tool of tools) {
       const start = doc.indexOf(`## \`${tool.name}\``);
       expect(start, tool.name).toBeGreaterThan(0);

@@ -108,7 +108,7 @@ afterAll(async () => {
 });
 
 describe("MCP server", () => {
-  it("exposes exactly the eight audit tools", async () => {
+  it("exposes exactly the nine audit tools", async () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       "audit_add_finding",
@@ -116,6 +116,7 @@ describe("MCP server", () => {
       "audit_read",
       "audit_report",
       "audit_search",
+      "audit_skill",
       "audit_start",
       "audit_status",
       "audit_verdict",
@@ -796,7 +797,7 @@ describe("MCP stdio entrypoint", () => {
     const stdioClient = new Client({ name: "stdio-test", version: "1.0.0" });
     await stdioClient.connect(transport);
     const tools = await stdioClient.listTools();
-    expect(tools.tools).toHaveLength(8);
+    expect(tools.tools).toHaveLength(9);
     await stdioClient.close();
   });
 });

@@ -2,8 +2,9 @@
 
 `code-audit-mcp` (or `code-audit mcp`) is a [Model Context
 Protocol](https://modelcontextprotocol.io) server over stdio. It exposes the
-audit workflow as eight tools so that an agent host can run a scan, read the
-evidence, record verdicts and render the report. The server never calls an
+audit workflow as nine tools so that an agent host can run a scan, read the
+evidence, record verdicts, render the report, and vet a skill or plugin
+before it is installed (`audit_skill`). The server never calls an
 LLM; the host's model does the review. The workflow an agent should follow is
 in [skills/code-audit/SKILL.md](../skills/code-audit/SKILL.md).
 
@@ -479,6 +480,57 @@ is true for `md` and `json`, whose text contains repository-derived content.
 Markdown lists false positives separately under "Dismissed by review", JSON
 keeps them with their `review`, and SARIF records them as suppressions and
 reports hotspots at level `note`.
+
+## `audit_skill`
+
+Vets a skill or plugin package before it is installed and returns one
+deterministic verdict per package (see [skill-scan.md](skill-scan.md)). The
+package is always audited as untrusted; the scan runs to completion before
+the tool answers, so there is no run to poll.
+
+| Argument | Type | Meaning |
+|---|---|---|
+| `target` | string | Required. Local path inside the base directory: a skill or plugin directory, a `SKILL.md`, or a `.zip` / `.tar` / `.tar.gz` / `.tgz` archive. |
+| `recursive` | boolean | Give a verdict for every directory below `target` that holds a `SKILL.md`, `.claude-plugin/plugin.json` or `plugin.json`. |
+| `offline` | boolean | No OSV.dev queries; a package with dependencies is then `INCOMPLETE` at best. |
+
+Git URLs are refused with `GIT_URL_REFUSED`: over MCP the arguments come from
+a model, and a URL would let it make the server clone from the network. The
+user clones the repository into the base directory first, or runs
+`code-audit skill <url>` on the command line. A file target in a credential
+directory is refused (`ROOT_SENSITIVE`); an archive that fails the
+pre-extraction checks is refused with an `ARCHIVE_*` code (treat that
+archive as unsafe). The run is written to `<base>/.audit/<run_id>`, never into the package; a
+`SKILL.md` target scans the directory that contains it. `skill.json` in the
+run directory holds every package in full.
+
+```json
+{
+  "run_id": "20261128T060209Z-305fc7d9",
+  "run_dir": "/work/.audit/20261128T060209Z-305fc7d9",
+  "json_path": "/work/.audit/20261128T060209Z-305fc7d9/skill.json",
+  "target_kind": "directory",
+  "verdict": "REVIEW",
+  "verdicts": { "DO_NOT_INSTALL": 0, "REVIEW": 1, "INCOMPLETE": 0, "SAFE_TO_INSTALL": 1 },
+  "exit_code": 1,
+  "untrusted_content": true,
+  "relay": "Tell the user each package's verdict as given. ...",
+  "packages": [
+    {
+      "path": "bad",
+      "verdict": "REVIEW",
+      "verdict_text": "Review before installing: ...",
+      "risk_score": 2.6,
+      "rule_ids": ["skill-undeclared-capability"],
+      "details": "<<<UNTRUSTED_REPOSITORY_CONTENT>>>\nname: bad-skill\nreason: ...\n<<<END_UNTRUSTED_REPOSITORY_CONTENT>>>"
+    }
+  ]
+}
+```
+
+Packages are sorted worst verdict first. When the answer would exceed the
+response cap, packages are dropped from the end, `truncated` is set and
+`note` points at `skill.json`.
 
 ## Trying the server by hand
 

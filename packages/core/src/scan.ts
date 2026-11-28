@@ -195,6 +195,18 @@ export interface ScanOptions {
   history?: boolean | string;
   /** Time limit of the history scan in milliseconds (testing). */
   historyTimeoutMs?: number;
+  /**
+   * Findings and hotspots produced by a caller-specific check over the
+   * inventory (the skill-package capability check). They are merged with the
+   * built-in rule results and go through the same dedupe, path context,
+   * suppression and reporting. Called only when the builtin engine runs.
+   */
+  extraFindings?: (inventory: InventoryResult, existing: readonly Finding[]) => Finding[];
+  /**
+   * Adjust the loaded rule set before matching (skill mode widens the
+   * instruction-file rules to every Markdown file of a package).
+   */
+  transformRules?: (ruleSet: RuleSet) => RuleSet;
 }
 
 /** True when `file` is `root` or lies below it (both absolute). */
@@ -473,7 +485,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const offline = options.offline === true || profile === "quick";
   const failOn = options.failOn ?? "high";
   const minConfidence = options.minConfidence ?? "medium";
-  const ruleSet = loadRules(options.rulesDir ?? defaultRulesDir());
+  const loadedRules = loadRules(options.rulesDir ?? defaultRulesDir());
+  const ruleSet = options.transformRules ? options.transformRules(loadedRules) : loadedRules;
   const selected = resolveEngines(options);
   // `--untrusted`: nothing the audited repository contains may lower the result.
   const untrusted = options.untrusted === true;
@@ -677,6 +690,15 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);
     }
+    if (builtinEnabled && options.extraFindings) {
+      // `existing`: what the built-in rules and secret detectors already
+      // reported, so the caller can avoid reporting the same thing twice.
+      const existing = [...ruleFindings, ...ruleHotspots, ...secretScan.findings];
+      for (const finding of options.extraFindings(inv, existing)) {
+        if (finding.kind === "hotspot") ruleHotspots.push(finding);
+        else ruleFindings.push(finding);
+      }
+    }
     // Candidates that an inline `code-audit:ignore` comment suppressed stay in
     // the results, marked as suppressed: the comment comes from the audited
     // repository, so what it hides must remain visible to the reviewer.
@@ -725,7 +747,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       : [];
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
-    warnings.push(...outputWarnings);
+    for (const warning of outputWarnings) warnings.push(warning);
     // Temporary entries that killed Gitleaks / history runs left behind.
     if (historyOption || selected.has("gitleaks")) {
       const swept = sweepStaleTempEntries();
