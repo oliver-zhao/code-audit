@@ -155,7 +155,9 @@ function locationLines(run: {
       ? "not established (the run directory is not at <root>/.audit/<run-id>; pass --root <dir> to confirm it)"
       : run.rootSource === "confirmed"
         ? `${run.root} (confirmed with --root)`
-        : `${run.root} (the directory that contains this run)`;
+        : run.rootSource === "recorded-inside"
+          ? `${run.root} (the audited directory, inside the one that contains this run)`
+          : `${run.root} (the directory that contains this run)`;
   return [`Directory: ${run.runDir}`, `Root: ${root}`];
 }
 

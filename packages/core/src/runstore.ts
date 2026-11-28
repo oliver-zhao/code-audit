@@ -26,6 +26,7 @@ import { countPathContexts } from "./pathContext.js";
 import {
   PathJailError,
   allowSensitiveRoot,
+  isInsideCanonical,
   resolveInside,
   toPosixRelative,
   validateAuditRoot,
@@ -261,7 +262,13 @@ export type RunRootSource =
   /** The run directory is `<root>/.audit/<run-id>`: the root is where it sits. */
   | "location"
   /** The user named the root on this command line (`--root`, MCP `root`). */
-  | "confirmed";
+  | "confirmed"
+  /**
+   * run.json names a directory inside the one that contains the run: an
+   * audit of part of a project (`code-audit skill <dir>` writes its run to
+   * `<cwd>/.audit`). Taking it cannot leave the directory the location shows.
+   */
+  | "recorded-inside";
 
 export interface LoadedRun {
   /** Canonical path of the run directory. */
@@ -1129,6 +1136,14 @@ function recordedRootOf(run: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+function isDirectorySafe(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function canonicalIfAbsolute(target: string | undefined): string | undefined {
   if (target === undefined || !path.isAbsolute(target)) return undefined;
   try {
@@ -1179,6 +1194,12 @@ function establishRoot(
     );
   }
   if (derived !== undefined) {
+    // The run's finding paths are relative to the root it recorded. A
+    // recorded root inside the derived one is used, so that reading files,
+    // checking evidence and adding findings agree with those paths.
+    if (recordedReal !== undefined && recordedReal !== derived && isInsideCanonical(derived, recordedReal) && isDirectorySafe(recordedReal)) {
+      return { root: recordedReal, rootSource: "recorded-inside", recordedRoot };
+    }
     if (recordedRoot !== undefined && recordedReal !== derived) {
       notices.push(
         `run.json records the audit root ${shownRecorded}; the root in use is ${derived}, the directory that contains this run`,
@@ -1755,7 +1776,7 @@ function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): S
       try {
         stat = fs.statSync(resolved);
       } catch {
-        problems.push(`${shown}: the file no longer exists`);
+        problems.push(`${shown}: no such file under the audit root ${printable(root, 200)} (paths are relative to it)`);
         continue;
       }
       if (!stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES) {
@@ -2464,13 +2485,25 @@ export const MAX_SEARCH_FILES = 20_000;
 export const DEFAULT_SEARCH_TIMEOUT_MS = 2000;
 export const MAX_SEARCH_TIMEOUT_MS = 60_000;
 
+/** True when this Node.js accepts inline modifier groups such as `(?i:...)` (V8 12.5+, Node 23+). */
+function supportsModifierGroups(): boolean {
+  try {
+    return new RegExp("(?i:a)").test("A");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The hint for a pattern written for another regex dialect: an inline flag
  * group such as `(?i)` (PCRE, Python, Go) or a possessive quantifier.
  */
-function regexSyntaxHint(pattern: string): string {
+export function regexSyntaxHint(pattern: string, modifierGroups = supportsModifierGroups()): string {
   if (/\(\?(?:[a-zA-Z]+|[a-zA-Z]*-[a-zA-Z]+)[:)]/.test(pattern)) {
-    return ". The pattern is a JavaScript regular expression, which has no inline flag groups such as (?i). The search is case-sensitive and has no case-insensitive option: drop the flag group and spell both cases where they matter, e.g. [Yy]aml or (?:cursor|Cursor).";
+    const scoped = modifierGroups
+      ? " This Node.js accepts a scoped group instead: write (?i:yaml|cursor) for a case-insensitive part."
+      : " Spell both cases where they matter, e.g. [Yy]aml or (?:cursor|Cursor).";
+    return `. The pattern is a JavaScript regular expression, which has no flag group for the whole pattern such as (?i). The search is case-sensitive and has no case-insensitive option.${scoped}`;
   }
   if (/[*+?}][+]/.test(pattern)) {
     return ". The pattern is a JavaScript regular expression, which has no possessive quantifiers (*+, ++).";

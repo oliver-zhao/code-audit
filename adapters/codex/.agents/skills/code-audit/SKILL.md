@@ -1,6 +1,6 @@
 ---
 name: code-audit
-description: Review a repository with the deterministic code-audit scan. Use when the user asks for a security audit, vulnerability review, dependency check, or asks to triage/verify findings in a local project. Starts a scan, reads evidence, records verdicts, adds agent findings, and renders a report.
+description: Review a repository with the deterministic code-audit scan, or vet a skill or plugin before install. Use when the user asks for a security audit, vulnerability review, dependency check, asks to triage/verify findings in a local project, or asks whether a skill, plugin or MCP package is safe to install (audit_skill). Starts a scan, reads evidence, records verdicts, adds agent findings, and renders a report.
 ---
 
 # Code Audit
@@ -117,8 +117,9 @@ your tool list whose name ends with the bare name.
    and give it only the run id, the finding id, its file and line, and these
    tools - not your verdict, not your rationale. Tell it to use only blind
    calls (`audit_findings`, `audit_read` and `audit_status` with
-   `blind: true`), never `audit_report`, to try to refute the finding, and
-   to record its own `audit_verdict` with
+   `blind: true`), never `audit_report`, never to open files under `.audit/`
+   with its own file, shell or search tools (they hold your verdicts), to try
+   to refute the finding, and to record its own `audit_verdict` with
    `role: "independent"`, `independence: "subagent"` and a `reviewer` label
    different from yours. Without sub-agents, switch explicitly to a
    devil's-advocate pass in this session: argue the opposite, re-read the

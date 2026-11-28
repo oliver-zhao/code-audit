@@ -171,21 +171,47 @@ listed in `skill.json`.
 ### Credential reads in scripts
 
 Scripts of a package (shell, Python, JavaScript, TypeScript and PowerShell,
-also extensionless ones with a `#!` line) are checked for reads of a private
-key or credential store: `~/.ssh/id_*` and other private keys in `~/.ssh`
-(not `known_hosts`, `config`, `authorized_keys` or `*.pub`), the whole
-`~/.ssh` directory archived or copied away, `~/.aws/credentials`, `~/.netrc`,
-`~/.config/gh/hosts.yml`, `~/.docker/config.json`, `~/.kube/config`,
-`~/.git-credentials` and `security find-generic-password` (any form: `cat`,
-`<`, `open()`, `readFileSync`, `Path.home() / ".ssh"`, `Get-Content`). Such a
-read is `agent-credential-read-script` (high, confidence medium: `REVIEW`).
-When the same file also sends data over the network (curl or wget with a body
-or upload, `nc`, a raw socket, an HTTP POST/PUT, scp to a remote host, an
-object-storage upload) it is `agent-credential-exfil-script` instead (high,
-confidence high, tagged `malicious-intent`: `DO_NOT_INSTALL`). One line gives
-one of the two. Lines that only test for the file, generate a key, pass it to
-`ssh -i`, change its mode, print a message or list the name in a deny list are
-not reported; a cloud-storage upload of the file is `agent-cloud-upload-secrets`.
+also extensionless ones with a `#!` line; not test files) are checked for a
+read or copy of a credential **on one logical line**:
+
+- a reader command with the file as its argument (`cat`, `base64`, `xxd`,
+  `od`, `strings`, `head`, `tail`, `less`, `more`, `grep`, `awk`, `sed`,
+  `dd`, ...), a `<` redirection, an `@file` / `-T file` / `--post-file` /
+  `-InFile` upload;
+- `open()`, `read_text()`, `read_bytes()`, `netrc.netrc()`, `readFileSync`,
+  `readFile`, `createReadStream`, `Get-Content`, `[IO.File]::Read*`;
+- `tar`, `zip`, `cp`, `rsync`, `scp`, `Copy-Item` (and `grep -r`) with the
+  credential, or a whole `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube` or
+  `~/.docker` directory, as the source;
+- `security find-generic-password` / `dump-keychain` and `gh auth token`, also
+  as an argv list (`["security", "find-generic-password", ...]`).
+
+The credentials are SSH private keys (not `known_hosts`, `config`,
+`authorized_keys` or `*.pub`), `~/.aws/credentials`, `~/.git-credentials`,
+`~/.netrc`, `~/.config/gh/hosts.yml`, `~/.docker/config.json` and
+`~/.kube/config`. A path that is only named is not a read: an entry of a
+list, set or dict, a regex, a comparison, an assigned constant, an argparse
+default, or a key handed to `ssh -i`, `IdentityFile` or `key_filename`.
+
+Such a read is `agent-credential-read-script` (high, confidence medium:
+`REVIEW`). When it is an SSH private key, `~/.aws/credentials`,
+`~/.git-credentials`, a keychain password (`-w`) or dump, or a whole
+`~/.ssh`, `~/.aws` or `~/.gnupg` directory, and the same file uses the
+network in any way (curl, wget, nc, scp or rsync to a host, `/dev/tcp`, an
+HTTP client of any method, a socket, `Invoke-WebRequest`, an object-storage
+upload), it is `agent-credential-exfil-script` instead (high, confidence
+high, tagged `malicious-intent`: `DO_NOT_INSTALL`). `~/.netrc`, the GitHub
+CLI token, Docker and Kubernetes configuration stay `REVIEW` with a network
+use, since a script commonly uses such a token with its own service. One line
+gives one of the two; a cloud-storage upload of the file is
+`agent-cloud-upload-secrets`.
+
+Limits: the path must appear in the reading line. A path kept in a variable
+(`F=~/.ssh/id_rsa; cat "$F"`, `D=~/.ssh; curl -F f=@$D/id_rsa`,
+`Join-Path` into `$p`), a directory joined in one statement and read in the
+next, and a read in one script with the upload in another are not
+connected. Other stores (`~/.config/gcloud`, `~/.azure`, `~/.npmrc`,
+`~/.pypirc`) are not checked.
 
 ## Archives
 

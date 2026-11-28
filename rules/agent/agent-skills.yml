@@ -72,31 +72,54 @@ definitions:
   HOME_FILE: 'homedir|\bUSERPROFILE\b|\$\{?ZDOTDIR\b|Path\.home|\.home\(\)|expanduser|\$HOME\b|\$\{HOME\}|(?:^|[\s\x22\x27=(:\x60])~(?:/|[\s;\x22\x27)\x60]|$)|environ\S{0,12}HOME\b|getenv\(\s*[\x22\x27]HOME|process\.env\.HOME|(?:^|[;&|]\s*)cd(?:\s+(?:~|\$HOME|\$\{HOME\})/?)?\s*(?:;|&&|$)'
   TEST_PATH: '(?:^|/)(?:tests?|__tests__|spec|specs|testdata)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]+\.py$|_test\.py$|(?:^|/)conftest\.py$'
   # ---- Credential files read by skill scripts ----
+  # A match needs a read or copy of the credential on the same logical line
+  # (a reader command, open() / read_text() / readFileSync / Get-Content, an
+  # `@file` or `-T file` upload, a `<` redirection, an archive or copy with
+  # the credential as the source). A path that is only named (a list, a
+  # regex, a comparison, a default, `ssh -i`) is not a read.
   # Separators between path parts in shell, Python, JavaScript and PowerShell:
   # `.ssh/id_rsa`, `".ssh", "id_rsa"`, `".ssh" / "id_rsa"`, `".ssh" + "/id_rsa"`.
   CRED_SEP: '(?:[\x22\x27\x60)]{0,2}\s{0,3}[/\\,+]\s{0,3}[\x22\x27\x60]?){1,2}'
   # A private key in ~/.ssh (not known_hosts, config, authorized_keys, *.pub).
   SSH_KEY: '(?:id_[\w*-]{1,40}|\*|[\w.-]{0,60}?(?:_key|_rsa|_dsa|_ecdsa|_ed25519|\.pem|\.key|\.ppk))(?![\w.*-])'
-  # The whole ~/.ssh directory archived or copied away (as the source), or
-  # built from the home directory in Python or JavaScript.
-  SSH_DIR: '\b(?:tar|zip|7z|Compress-Archive)\b[^\n|;&]{0,120}?(?<![\w-])\.ssh[/\\]?(?![\w.*/\\-])|\b(?:cp|rsync|scp|Copy-Item)\b[^\n|;&]{0,120}?(?<![\w-])\.ssh[/\\]?[\x22\x27]?\s+[\x22\x27]?[^\s|;&-]|\b(?:copytree|make_archive|cpSync|copySync)\s*\([^\n)]{0,120}?(?<![\w-])\.ssh[\x22\x27\x60]|(?:Path\.home\(\)|\bhome\(\)|homedir\(\)|expanduser\(\s*[\x22\x27]~[\x22\x27]\s*\))\s*[/,]\s*[\x22\x27\x60]\.ssh[\x22\x27\x60](?!\s*[/,+]\s*[\x22\x27\x60])|expanduser\(\s*[\x22\x27]~[/\\]\.ssh[/\\]?[\x22\x27]\s*\)(?!\s*[,/])'
-  CRED_PATH: '(?<![\w-])\.ssh{{CRED_SEP}}{{SSH_KEY}}|{{SSH_DIR}}|\bssh\w{1,20}(?:[\x22\x27\x60)]?\s*[/,+]\s*[\x22\x27\x60][/\\]?|\}?[/\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?(?![\w.-])|(?<![\w-])\.aws{{CRED_SEP}}credentials\b|(?<![\w-])\.netrc\b|(?<![\w.-])_netrc\b|(?<![\w-])\.config{{CRED_SEP}}gh{{CRED_SEP}}hosts\.ya?ml\b|(?<![\w-])\.docker{{CRED_SEP}}config\.json\b|(?<![\w-])\.kube{{CRED_SEP}}config(?![\w.-])|(?<![\w-])\.git-credentials\b|\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password|dump-keychain)\b'
-  # Not a bare name in a list of names (a deny list: `['.netrc', '.ssh/id_rsa']`,
-  # one name per line) and not the argument of an existence check.
-  CRED_LIST_ELEM: '(?<!(?:^|\n|[\[{]|(?<![\w\])])\(|[\x22\x27\x60][ \t]{0,4},)\s{0,40}[rbuf]{0,2}[\x22\x27\x60])'
-  CRED_EXISTS: '(?<!\b(?:exists|isfile|is_file|isdir|existsSync|accessSync|Test-Path)[ \t]{0,3}\(?[ \t]{0,3}(?:[\w.]{0,30}\([ \t]{0,3})?[rbuf]{0,2}[\x22\x27\x60]?[^\x22\x27\x60\n]{0,40})'
-  # A line that only checks, creates, generates or names the file (and does
-  # not read it as well): an existence test, ssh -i, ssh-keygen, chmod, a
-  # message, a tool's own configuration option.
-  CRED_READ: '\b(?:cat|base64|xxd|od|hexdump|head|tail|strings|tar|zip|7z|cp|curl|wget|nc|ncat|open|read\w*|load\w*|Get-Content|gc|send\w*|upload\w*|post|fetch|request\w*|copy\w*|eval|exec|gpg|openssl|pbcopy|xclip)\b|<\s*[\x22\x27]?(?:~|\$)|\$\(\s*<'
-  CRED_NONREAD: '\bssh-(?:keygen|add|copy-id|agent)\b|\b(?:ssh|scp|sftp|rsync|git)\b[^\n]{0,80}?\s-i\s|IdentityFile|\b(?:chmod|chown|chgrp|mkdir|makedirs|ls|stat)\b|\.mkdir\s*\(|\[\[?\s+!?\s*-[a-z]\s|\btest\s+!?\s*-[a-z]\s|\.exists\s*\(|\bpath\.exists\b|\bisfile\b|\.is_file\s*\(|\bexistsSync\b|\bTest-Path\b|\bkubectl\b|\bhelm\b|--kubeconfig|\bKUBECONFIG\b|\bAWS_SHARED_CREDENTIALS_FILE\b|\bDOCKER_CONFIG\b|--netrc|credential\.helper|\becho\b|\bprintf\b|\bWrite-(?:Host|Output|Warning)\b|\bprint\s*\(|\bconsole\.(?:log|error|warn|info)\b|\blog(?:ger|ging)?\.(?:info|debug|warn\w*|error)\b'
-  # Prose addressed to the agent (an MCP tool description, a printed
-  # instruction): not code that reads the file.
-  CRED_PROSE: '\b(?:you|your|the\s+user\x27?s?|this\s+tool|before\s+(?:using|calling|running)|secretly|silently|quietly|(?:pass|include|paste|attach)\s+(?:it|them)\b)'
-  # Data sent over the network somewhere in the file: curl or wget with a
-  # body or upload, nc, a raw socket, an HTTP POST/PUT in Python, JavaScript
-  # or PowerShell, scp/rsync to a remote host, mail, an object-storage SDK upload.
-  NET_SEND: '\bcurl\b[^\n]{0,300}?\s(?:-d\s*(?:[\x22\x27@$]|[\w.-]+=)|--data(?:-binary|-raw|-urlencode|-ascii)?\b|-F\s*[\x22\x27]?[\w.\[\]-]{1,60}=|--form(?:-string)?\b|-T\s*[\x22\x27]?[@\w.$~/{-]|--upload-file\b|--json\b|(?:-X|--request)\s*[\x22\x27]?(?:POST|PUT|PATCH)\b)|\bwget\b[^\n]{0,300}?\s--(?:post-data|post-file|body-data|body-file|method[=\s]+[\x22\x27]?(?:POST|PUT))|(?:^|[\s|;&(\x60])(?:nc|ncat|netcat|socat)\s+(?:-\w+\s+){0,4}[\w$.{\x22\x27-]|/dev/(?:tcp|udp)/|\b(?:requests|httpx|aiohttp|urllib3)\.(?:post|put|patch|request)\s*\(|\.(?:post|put|patch)\s*\(\s*(?:f?[\x22\x27\x60]https?:|[\w.]{0,40}(?:url|endpoint)\b)|\.request\s*\(\s*[\x22\x27](?:POST|PUT|PATCH)[\x22\x27]|\burlopen\s*\([^\n]{0,200}?\bdata\s*=|\bRequest\s*\([^\n]{0,200}?\bdata\s*=|\bsocket\.create_connection\b|\.connect\s*\(\s*\(\s*[\x22\x27]|\bmethod\s*:\s*[\x22\x27\x60](?:POST|PUT|PATCH)[\x22\x27\x60]|\bhttps?\.request\s*\(|\baxios\.(?:post|put|patch)\s*\(|\bsendBeacon\s*\(|\bnet\.(?:connect|createConnection)\s*\(|\bnew\s+WebSocket\s*\(|\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^\n]{0,300}?\s-(?:Method\s+[\x22\x27]?(?:Post|Put|Patch)|Body|InFile)\b|\.Upload(?:String|File|Data|Values)(?:Async)?\s*\(|\bSend-MailMessage\b|\bNet\.Sockets\.TcpClient\b|\b(?:scp|rsync)\s[^\n]{0,200}?\s[\x22\x27]?[\w.$-]{1,100}@[\w.$-]{1,100}:|\bmail\s+-s\b|\bsendmail\b|\.(?:upload_file|upload_fileobj|put_object)\s*\('
+  # Optional home-directory prefix of a credential path.
+  CRED_HOME: '(?:(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:(?:USERPROFILE|HOME)|/home/[\w.-]{1,40}|/Users/[\w.-]{1,40}|/root)[/\\])?'
+  # Private keys and raw secret stores: the exfiltration rule's files.
+  CRED_SECRET_FILE: '{{CRED_HOME}}(?<![\w-])(?:\.ssh{{CRED_SEP}}{{SSH_KEY}}|\.aws{{CRED_SEP}}credentials\b|\.git-credentials\b)|\bssh\w{1,20}(?:[\x22\x27\x60)]?\s*[/,+]\s*[\x22\x27\x60][/\\]?|\}?[/\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?(?![\w.-])'
+  # Service tokens: reported by the read rule only (reuse with the service).
+  CRED_TOKEN_FILE: '{{CRED_HOME}}(?<![\w-])(?:\.netrc\b|\.config{{CRED_SEP}}gh{{CRED_SEP}}hosts\.ya?ml\b|\.docker{{CRED_SEP}}config\.json\b|\.kube{{CRED_SEP}}config(?![\w.-]))|(?<![\w.-])_netrc\b'
+  # A whole credential directory (nothing after it but a slash).
+  CRED_SECRET_DIR: '{{CRED_HOME}}(?<![\w-])\.(?:ssh|aws|gnupg)[\x22\x27\x60]?[/\\]?(?![\w.*/\\-])'
+  CRED_TOKEN_DIR: '{{CRED_HOME}}(?<![\w-])\.(?:kube|docker)[\x22\x27\x60]?[/\\]?(?![\w.*/\\-])'
+  # Not the text of a string that is an element of a list, set or dict, a
+  # comparison operand or an assigned constant ("cat ~/.ssh/id_rsa" in a
+  # deny list); a call argument such as os.system("cat ...") counts.
+  CRED_LIT: '(?<!(?:^|\n|[\[{,:=]|\bin|(?<![\w\])])\()[ \t]{0,40}[rbuf]{0,2}[\x22\x27\x60])'
+  # Not a key handed to ssh for authentication.
+  CRED_NOAUTH: '(?<!(?:\s-i|IdentityFile|key_filename)[ \t=]{0,3}[\x22\x27]?(?:~|\$\{?HOME\}?|\$env:\w{1,20}|%\w{1,20}%)?[/\\]?)'
+  CRED_GAP: '[^\n;|&>\\]{0,200}?'
+  # Commands and calls that read a file named after them.
+  CRED_FILE_VERB: '{{CRED_LIT}}(?:\b(?:cat|tac|base64|xxd|od|hexdump|strings|head|tail|less|more|grep|egrep|fgrep|rg|awk|gawk|sed|dd|cut|openssl|gpg|pbcopy|xclip|Get-Content)\b|\bfor\s+\w+\s+in\b|\b(?:io\.)?open\s*\(|\bnetrc\.netrc\s*\(|\.read\s*\(|\bi?glob\s*\(|\b(?:readFileSync|readFile|createReadStream)\s*\(|\.(?:upload_file|put_object)\s*\(|\[(?:System\.)?IO\.File\]::Read\w*\s*\()|[\x22\x27](?:cat|base64|head|tail|grep|awk|sed|dd|xxd|strings)[\x22\x27]\s*,'
+  # Archivers and recursive readers of a directory or file.
+  CRED_DIR_VERB: '{{CRED_LIT}}(?:\btar\s+-{0,2}[a-wyz]*c[a-wyz]*\b|\btar\s+--create\b|\bzip\b|\b7z\s+a\b|\bCompress-Archive\b|\bgrep\s+(?:-\w+\s+)*-\w*r\w*\b|\brg\b|\bcopytree\s*\(|\bmake_archive\s*\()'
+  # Copies with the credential as the source (another argument follows,
+  # which is not a cloud URL: that is agent-cloud-upload-secrets).
+  CRED_COPY_VERB: '{{CRED_LIT}}(?:\b(?:cp|scp|rsync|Copy-Item)\b|\b(?:cpSync|copyFileSync|copyFile)\s*\(|\bshutil\.(?:copy\w*|move)\s*\()'
+  CRED_COPY_TAIL: '[\x22\x27\x60)]{0,3}(?:\s+|\s*,\s*)[\x22\x27]?(?![a-z][\w+.-]{0,20}://)[^\s|;&>\x22\x27-]'
+  # An upload or a redirection of the file itself.
+  CRED_UPLOAD: '@[\x22\x27]?|(?:^|\s)(?:-T|--upload-file|--post-file|--body-file|-InFile)(?:=|\s+)[\x22\x27]?|<[ \t]*[\x22\x27]?'
+  # pathlib: (Path.home() / ".ssh" / "id_rsa").read_text()
+  CRED_READ_TAIL: '[\x22\x27\x60)\s]{0,6}(?:\.expanduser\(\)\s*)?\.(?:read_text|read_bytes|open)\s*\('
+  CRED_SECRET_READ: '(?:{{CRED_FILE_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_UPLOAD}}){{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_SECRET_DIR}}|{{CRED_SECRET_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}}|{{CRED_SECRET_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_SECRET_FILE}}){{CRED_READ_TAIL}}'
+  CRED_TOKEN_READ: '(?:{{CRED_FILE_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_UPLOAD}})(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_DIR}}|{{CRED_TOKEN_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}}|{{CRED_TOKEN_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_TOKEN_FILE}}){{CRED_READ_TAIL}}'
+  # The keychain: the password itself (-w) or a dump is a secret; the item's
+  # attributes and `gh auth token` are read by the read rule only.
+  CRED_KEYCHAIN_SECRET: '{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password\b(?=[^\n]{0,200}?(?:\s-w\b|[\x22\x27]-w[\x22\x27]))|dump-keychain\b)|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password[\x22\x27](?=[^\n]{0,200}?[\x22\x27]-w[\x22\x27])|dump-keychain[\x22\x27])'
+  CRED_KEYCHAIN_ANY: '{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password|dump-keychain)\b|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password|dump-keychain)[\x22\x27]|{{CRED_LIT}}\bgh\s+auth\s+token\b|[\x22\x27]gh[\x22\x27]\s*,\s*[\x22\x27]auth[\x22\x27]\s*,\s*[\x22\x27]token[\x22\x27]'
+  # Any network use somewhere in the file.
+  NET_ANY: '(?<![\w.~$-])(?:curl|wget|nc|ncat|netcat|socat|scp|sftp|ftp|telnet|ssh)\b(?=[ \t])|/dev/(?:tcp|udp)/|\brsync\b[^\n]{0,200}?\s[\x22\x27]?[\w.$@-]{1,100}::?[\w/~$.\x22\x27-]|(?:\brequire\s*\(|\bfrom)\s*[\x22\x27](?:node:)?(?:https?|net|dgram|tls|http2)[\x22\x27]|\b(?:requests|httpx|aiohttp|urllib3|http\.client|socket)\.\w|\burllib\.request\b|\burlopen\s*\(|\.request\s*\(\s*[\x22\x27][A-Za-z]{3,7}[\x22\x27]|\bfetch\s*\(|\b(?:https?|axios|got|superagent|undici)\.\w+\s*\(|\baxios\s*\(|\bXMLHttpRequest\b|\bsendBeacon\s*\(|\bnet\.(?:connect|createConnection)\s*\(|\bnew\s+WebSocket\s*\(|\bInvoke-(?:WebRequest|RestMethod)\b|\b(?:iwr|irm)[ \t]|Net\.WebClient\b|\.Upload(?:String|File|Data|Values)(?:Async)?\s*\(|\bSend-MailMessage\b|Net\.Sockets\.TcpClient\b|\bmail\s+-s\b|\bsendmail\b|\.(?:upload_file|upload_fileobj|put_object)\s*\('
+  # Test files (the path contexts of pathContext.ts).
+  CRED_TEST_PATH: '(?:^|/)(?:tests?|__tests__|spec|testing|testdata|fixtures|benches|fuzz|test-[\w-]+)/|(?:^|/)(?:test_[^/]*\.py|[^/]*_test\.[^/]+|tests\.rs|conftest\.py|[^/]*\.(?:test|spec)\.[^/]+)$'
   CRED_SCRIPT_PATH: '{{SKILL_SCRIPT}}|(?:^|/)(?:skills|\.claude|\.codex|\.agents|\.opencode)/.+\.psm?1$|(?:^|/)plugins/[^/]+/.+\.psm?1$'
   CRED_TREE_SCRIPT: '{{TREE_SCRIPT}}|\.psm?1$'
 rules:
@@ -113,7 +136,7 @@ rules:
     languages: [markdown]
     pathInclude: '{{INSTRX}}'
     inSkillTree: '{{TREE_INSTR}}'
-    pattern: '\b(?:never|do{{S}}not|don\x27t|must{{S}}not|should{{S}}not|shall{{S}}not|will{{S}}not|won\x27t|cannot|can\x27t)(?:{{S}}ever)?{{S}}(?:refuse|decline|reject){{S}}(?:(?:any|a|an|the|my|our|user|users\x27?|user\x27s|their|single|every){{S}}){0,3}(?:requests?|tasks?|questions?|instructions?|prompts?|commands?|orders?)[*_~]{0,3}(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|for\s+any\s+reason|under\s+any|from\s+(?:the\s+|a\s+)?users?|even\s+if|whatsoever|whatever))|\b(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}refuse[*_~]{0,3}(?=\s*(?:[.!?;:,)–—]|$))|\b(?:you|agents?|(?:the|this)\s+(?:agent|assistant|model|AI))\s+(?:must|should|shall|will|are\s+to|have\s+to|need\s+to)(?:{{S}}(?:always|also))?{{S}}never(?:{{S}}ever)?{{S}}(?:refuse|decline)\b|\byou\s+(?:can(?:not|\x27t|\s+not)|are\s+not\s+allowed\s+to|may\s+not|are\s+unable\s+to)\s+(?:refuse|decline|say\s+no)\b|\b(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}(?:turn\s+down|say\s+no\s+to|decline)\s+(?:(?:any|a|the|every)\s+)?(?:requests?|anything|the\s+user|users)\b|\brefusing\s+is\s+not\s+an\s+option\b|\bcomply\s+with\s+everything\b|\byou\s+(?:will|must|should)\s+always\s+(?:answer|comply|obey)\b[^\n]{0,20}?\bno\s+matter\s+what\b|\bunder\s+no\s+circumstances\s*,?\s+(?:should|will|may|can|must|are|do|shall)\s+you\s+(?:ever\s+)?(?:refuse|decline|reject|say\s+no)\b|\balways\s+(?:comply|obey)\s+(?:with\s+)?(?:(?:every|any|all|each|the|my|user\x27?s|users\x27?)\s+){1,2}(?:\w+\s+)?(?:requests?|instructions?|commands?|orders?|prompts?)\b(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|whatever|without\s+(?:question|exception|hesitation)|from\s+(?:the\s+)?users?))|\b(?:comply\s+with|answer|fulfil+|complete|execute|follow)\s+(?:every|any|all|each)\s+(?:\w+\s+)?(?:requests?|questions?|instructions?|tasks?|prompts?)\s*,?\s+(?:regardless\s+of\s+(?:(?:their|its|the|any)\s+)?(?:legality|ethics|morality|safety|consequences|harm|danger|risks?|content|polic(?:y|ies)|guidelines|laws?)|no\s+matter\s+how\s+(?:illegal|unethical|harmful|dangerous)|even\s+if\s+(?:it\s+is|they\s+are)\s+(?:illegal|unethical|harmful|dangerous))\b|\bwithout\s+(?:any\s+)?(?:moral|ethical|safety)\s+(?:judg(?:e)?ments?|considerations?|restrictions?|constraints?|filters?|concerns?|hesitation)\b|(?:永远|绝对|绝|从来)?(?:不要|不得|不能|不许|不可以?|不准|别)拒绝(?:用户的?|我的)?(?:任何|所有|一切)?的?(?:请求|要求|任务|问题|指令)|无条件(?:地)?(?:服从|执行|遵守|满足|回答)|(?:必须|一律)(?:回答|满足|执行)(?:所有|任何|一切)(?:问题|请求|要求|指令)'
+    pattern: '\b(?:never|do{{S}}not|don\x27t|must{{S}}not|should{{S}}not|shall{{S}}not|will{{S}}not|won\x27t|cannot|can\x27t)(?:{{S}}ever)?{{S}}(?:refuse|decline|reject){{S}}(?:(?:any|a|an|the|my|our|user|users\x27?|user\x27s|their|single|every){{S}}){0,3}(?:requests?|tasks?|questions?|instructions?|prompts?|commands?|orders?)[*_~]{0,3}(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|for\s+any\s+reason|under\s+any|from\s+(?:the\s+|a\s+)?users?|even\s+if|whatsoever|whatever))|(?<=(?:^\s*(?:(?:[-*>]|\d+[.)])\s+)?|[.!?]\s+)[*_~]{0,3})(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}refuse[*_~]{0,3}(?=\s*(?:[.!]|$))|\bnever(?:{{S}}ever)?{{S}}(?:refuse|decline){{S}}(?!to\b)(?:[\w\x27]+{{S}}){0,3}?(?:requests?|instructions?|tasks?|commands?|prompts?|questions?|anything|any{{S}}ask|what{{S}}(?:the{{S}})?users?{{S}}asks?|(?:the{{S}})?users?\x27s?{{S}}requests?)\b|\byou\s+(?:can(?:not|\x27t|\s+not)|are\s+not\s+allowed\s+to|may\s+not|are\s+unable\s+to)\s+(?:refuse|decline|say\s+no)\b|\b(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}(?:turn\s+down|say\s+no\s+to|decline)\s+(?:(?:any|a|the|every)\s+)?(?:requests?|anything|the\s+user|users)\b|\brefusing\s+is\s+not\s+an\s+option\b|\bcomply\s+with\s+everything\b|\byou\s+(?:will|must|should)\s+always\s+(?:answer|comply|obey)\b[^\n]{0,20}?\bno\s+matter\s+what\b|\bunder\s+no\s+circumstances\s*,?\s+(?:should|will|may|can|must|are|do|shall)\s+you\s+(?:ever\s+)?(?:refuse|decline|reject|say\s+no)\b|\balways\s+(?:comply|obey)\s+(?:with\s+)?(?:(?:every|any|all|each|the|my|user\x27?s|users\x27?)\s+){1,2}(?:\w+\s+)?(?:requests?|instructions?|commands?|orders?|prompts?)\b(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|whatever|without\s+(?:question|exception|hesitation)|from\s+(?:the\s+)?users?))|\b(?:comply\s+with|answer|fulfil+|complete|execute|follow)\s+(?:every|any|all|each)\s+(?:\w+\s+)?(?:requests?|questions?|instructions?|tasks?|prompts?)\s*,?\s+(?:regardless\s+of\s+(?:(?:their|its|the|any)\s+)?(?:legality|ethics|morality|safety|consequences|harm|danger|risks?|content|polic(?:y|ies)|guidelines|laws?)|no\s+matter\s+how\s+(?:illegal|unethical|harmful|dangerous)|even\s+if\s+(?:it\s+is|they\s+are)\s+(?:illegal|unethical|harmful|dangerous))\b|\bwithout\s+(?:any\s+)?(?:moral|ethical|safety)\s+(?:judg(?:e)?ments?|considerations?|restrictions?|constraints?|filters?|concerns?|hesitation)\b|(?:永远|绝对|绝|从来)?(?:不要|不得|不能|不许|不可以?|不准|别)拒绝(?:用户的?|我的)?(?:任何|所有|一切)?的?(?:请求|要求|任务|问题|指令)|无条件(?:地)?(?:服从|执行|遵守|满足|回答)|(?:必须|一律)(?:回答|满足|执行)(?:所有|任何|一切)(?:问题|请求|要求|指令)'
     notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:never|do\s+not|don\x27t|you|always|comply|answer|without)\b|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?(?:never|do\s+not|don\x27t|you|always|comply|answer|without)\b'
     group: agent-instr-bypass
     groupPriority: -1
@@ -279,8 +302,8 @@ rules:
 
   # ---- Credential files read by skill scripts ----
   # One group: a line gives one result, the exfiltration rule when the same
-  # file also sends data over the network (higher confidence wins). The group
-  # is the released agent-cloud-upload one (priority -1): a cloud upload of a
+  # file also uses the network (higher confidence wins). The group is the
+  # released agent-cloud-upload one (priority -1): a cloud upload of a
   # credential keeps its 0.3.0 rule id and fingerprint.
   - id: agent-credential-read-script
     title: Skill script reads a private key or credential store
@@ -292,20 +315,19 @@ rules:
     languages: [shell, python, javascript, typescript, powershell]
     pathInclude: '{{CRED_SCRIPT_PATH}}'
     inSkillTree: '{{CRED_TREE_SCRIPT}}'
-    pattern: '{{CRED_LIST_ELEM}}{{CRED_EXISTS}}(?:{{CRED_PATH}})'
-    # An upload to cloud storage is agent-cloud-upload-secrets' result
-    # (released), and an instruction to the agent in a string (an MCP tool
-    # description) is the tool-poisoning rules' result.
-    notPattern: '^\s*(?:#(?!!)|//|/\*|\*|<#|REM\s|::)|^(?![^\n]*(?:{{CRED_READ}}))[^\n]*(?:{{CRED_NONREAD}})|{{UPLOAD}}|\s[\x22\x27]?(?:s3|gs)://|{{CRED_PROSE}}'
+    pathExclude: '{{CRED_TEST_PATH}}'
+    pattern: '{{CRED_SECRET_READ}}|{{CRED_TOKEN_READ}}|{{CRED_KEYCHAIN_ANY}}'
+    # A comment line, and a cloud-storage upload (agent-cloud-upload-secrets).
+    notPattern: '^\s*(?:#(?!!)|//|/\*|\*|<#|REM\s|::)|{{UPLOAD}}'
     group: agent-cloud-upload
     groupPriority: -1
-    message: A script shipped with the skill reads an SSH private key, cloud, git, Docker or Kubernetes credentials, or the macOS keychain. A skill has no reason to read the user's credentials; nothing in this file was seen sending them out, but read the script before installing.
-    message_zh: 技能附带的脚本读取 SSH 私钥、云、git、Docker 或 Kubernetes 凭据或 macOS 钥匙串。技能没有理由读取用户的凭据；本文件中未发现将其外传，但安装前请阅读该脚本。
+    message: A script shipped with the skill reads an SSH private key, cloud, git, GitHub CLI, Docker or Kubernetes credentials, or the macOS keychain. A skill has no reason to read the user's credentials; for a service token this can be reuse with that service, but read the script before installing.
+    message_zh: 技能附带的脚本读取 SSH 私钥、云、git、GitHub CLI、Docker 或 Kubernetes 凭据或 macOS 钥匙串。技能没有理由读取用户的凭据；对服务令牌而言这可能是在该服务上复用，但安装前请阅读该脚本。
     remediation: Remove the read; a skill that needs access to a service should ask the user to configure it, not take the user's keys or tokens.
     remediation_zh: 删除该读取操作；需要访问某项服务的技能应请用户自行配置，而不是取用用户的密钥或令牌。
   - id: agent-credential-exfil-script
-    title: Skill script reads a private key or credential store and sends data over the network
-    title_zh: 技能脚本读取私钥或凭据存储并通过网络发送数据
+    title: Skill script reads a private key or secret store and the file uses the network
+    title_zh: 技能脚本读取私钥或密钥存储，且该文件使用网络
     severity: high
     confidence: high
     cwe: CWE-200
@@ -313,17 +335,15 @@ rules:
     languages: [shell, python, javascript, typescript, powershell]
     pathInclude: '{{CRED_SCRIPT_PATH}}'
     inSkillTree: '{{CRED_TREE_SCRIPT}}'
-    filePattern: '{{NET_SEND}}'
-    pattern: '{{CRED_LIST_ELEM}}{{CRED_EXISTS}}(?:{{CRED_PATH}})'
-    # An upload to cloud storage is agent-cloud-upload-secrets' result
-    # (released), and an instruction to the agent in a string (an MCP tool
-    # description) is the tool-poisoning rules' result.
-    notPattern: '^\s*(?:#(?!!)|//|/\*|\*|<#|REM\s|::)|^(?![^\n]*(?:{{CRED_READ}}))[^\n]*(?:{{CRED_NONREAD}})|{{UPLOAD}}|\s[\x22\x27]?(?:s3|gs)://|{{CRED_PROSE}}'
+    pathExclude: '{{CRED_TEST_PATH}}'
+    filePattern: '{{NET_ANY}}'
+    pattern: '{{CRED_SECRET_READ}}|{{CRED_KEYCHAIN_SECRET}}'
+    notPattern: '^\s*(?:#(?!!)|//|/\*|\*|<#|REM\s|::)|{{UPLOAD}}'
     group: agent-cloud-upload
     groupPriority: -1
     tags: [malicious-intent]
-    message: A script shipped with the skill reads an SSH private key, cloud, git, Docker or Kubernetes credentials, or the macOS keychain, and the same file sends data over the network (an upload, a POST, a raw socket). This is the shape of credential theft.
-    message_zh: 技能附带的脚本读取 SSH 私钥、云、git、Docker 或 Kubernetes 凭据或 macOS 钥匙串，且同一文件通过网络发送数据（上传、POST、原始套接字）。这是凭据窃取的典型形态。
+    message: A script shipped with the skill reads an SSH private key, ~/.aws/credentials, ~/.git-credentials, a keychain password or a whole ~/.ssh, ~/.aws or ~/.gnupg directory, and the same file uses the network. This is the shape of credential theft.
+    message_zh: 技能附带的脚本读取 SSH 私钥、~/.aws/credentials、~/.git-credentials、钥匙串密码或整个 ~/.ssh、~/.aws、~/.gnupg 目录，且同一文件使用网络。这是凭据窃取的典型形态。
     remediation: Do not install or run the skill. If it already ran, rotate the keys and tokens it could read and review where the file came from.
     remediation_zh: 不要安装或运行该技能。如果它已经运行过，请轮换它可能读取的密钥和令牌，并审查文件来源。
 

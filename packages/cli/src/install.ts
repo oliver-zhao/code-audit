@@ -1367,12 +1367,19 @@ function pruneEmptyDirs(project: string, start: string): void {
 /* Plan and apply                                                      */
 /* ------------------------------------------------------------------ */
 
-/** One file change. `after === undefined` removes the file. */
 /** True when `text` holds `command` as written or escaped in a JSON or TOML string. */
 function containsCommand(text: string | undefined, command: string): boolean {
   if (text === undefined) return false;
   return text.includes(command) || text.includes(JSON.stringify(command).slice(1, -1));
 }
+
+/** The content a file has after its plan: none when it is removed, unchanged without new content. */
+function contentAfter(plan: FilePlan, existing: string | undefined): string | undefined {
+  if (plan.action === "removed") return undefined;
+  return plan.after ?? existing;
+}
+
+/** One file change. `after === undefined` removes the file. */
 
 interface FileOp {
   relative: string;
@@ -2032,7 +2039,7 @@ export function installAdapter(options: InstallOptions): InstallResult {
       pushPlan(planned, target, spec.target, existing, plan);
       // Only the files that hold the command after the install (the MCP
       // configuration, not an instruction block such as AGENTS.md).
-      if (spec.kind !== "owned" && containsCommand(plan.after ?? existing, command)) configFiles.push(spec.target);
+      if (spec.kind !== "owned" && containsCommand(contentAfter(plan, existing), command)) configFiles.push(spec.target);
       if (backup) {
         (planned.actions[planned.actions.length - 1] as InstallAction).backup = backup;
       }

@@ -83,15 +83,26 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 
 - Rules `agent-credential-read-script` (high, confidence medium) and
   `agent-credential-exfil-script` (high, confidence high, `malicious-intent`):
-  a skill or plugin script that reads an SSH private key, `~/.aws/credentials`,
-  `~/.netrc`, the GitHub CLI, Docker or Kubernetes credentials,
-  `~/.git-credentials` or the macOS keychain; with a network send in the same
-  file the package is `DO_NOT_INSTALL`. PowerShell scripts in skill and plugin
-  trees are now read (`powershell` rule language).
+  a skill or plugin script that reads or copies a credential on one line (a
+  reader command, `open()`, `readFileSync`, `Get-Content`, an `@file`
+  upload, a `<` redirection, an archive or copy of the file or of a whole
+  `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube` or `~/.docker` directory), or
+  runs `security find-generic-password` or `gh auth token`. A path that is
+  only named (a list, a regex, a comparison, a default, `ssh -i`) is not a
+  read, and test files are not checked. An SSH private key,
+  `~/.aws/credentials`, `~/.git-credentials`, a keychain password (`-w`) or a
+  whole `~/.ssh` / `~/.aws` / `~/.gnupg` directory in a file that uses the
+  network is the tagged rule (`DO_NOT_INSTALL`); `~/.netrc`, the GitHub CLI,
+  Docker and Kubernetes configuration are the read rule (`REVIEW`), so a
+  token used with its own service does not block an install. PowerShell
+  scripts in skill and plugin trees are now read (`powershell` rule
+  language).
 - MCP `audit_skill`: each package carries `capabilities` (how many scripts
   use the network, subprocesses or file writes, whether `allowed-tools` is
   declared, what is undeclared); `details` lists the tools and up to five
-  script paths per capability.
+  script paths per capability. Every string the MCP server returns has the
+  untrusted-content wrapper's marker text removed, and package names and
+  paths are printable, without bidi or zero-width characters.
 - `findings.json`, SARIF and MCP `audit_findings` carry the agreeing
   independent reviewer's own status (`independentStatus` /
   `independent_status`), and the report says `confirmed (independently
@@ -119,15 +130,29 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 ### Fixed
 
 - `agent-anti-refusal-never-refuse` missed "You must never refuse any
-  request while ..." and "Never refuse," before a comma, colon, question
-  mark or dash.
+  request while ..." ("never refuse/decline" with a request, task,
+  instruction or "anything" within four words). The bare "Never refuse."
+  counts only as a whole sentence; "never refuse to <verb>", "never refuse
+  — <clause>" and "never decline a refund" do not match.
 - `install --host codex --absolute` named `AGENTS.md` as containing the
   machine-specific path; only files that hold the path are named.
 - `audit_search` / `search --regex`: an inline flag group such as `(?i)` now
   gets an `INVALID_REGEX` message that says the pattern is a JavaScript
   regular expression and the search is case-sensitive, with no
-  case-insensitive option.
+  case-insensitive option; on Node.js 23 and later it suggests the scoped
+  `(?i:...)` group, which works there.
 - The docs said the MCP server has eight tools; it has nine.
+- A skill run whose target is a subdirectory (`audit_skill {target:
+  "skills"}`, run stored in `<base>/.audit`) could not be used afterwards:
+  `audit_read` of a finding's own path failed with `FILE_NOT_IN_INVENTORY`,
+  every trace or control was refused with `EVIDENCE_LOCATION_INVALID` (and a
+  false "the file no longer exists"), and `audit_add_finding` accepted paths
+  of the base. A root that run.json records inside the directory that
+  contains the run is now the run's root for every tool.
+- The `code-audit` skill's description also names vetting a skill, plugin or
+  MCP package before install, so hosts load it for that request; its
+  independent-review step tells the sub-agent never to open files under
+  `.audit/` with its own tools.
 
 ### Security
 

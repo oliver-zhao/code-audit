@@ -342,7 +342,7 @@ expression.
 |---|---|---|
 | `pattern` | string, 1–256 characters, required | Text to find. Literal unless `regex` is true; a literal is never compiled as a regular expression. |
 | `glob` | string | Restrict to paths, for example `src/**/*.ts`. |
-| `regex` | boolean | Interpret `pattern` as a JavaScript regular expression. It has no inline flag groups: `(?i)` is refused with `INVALID_REGEX` and a hint. Literal and regex searches are case-sensitive and there is no case-insensitive option; spell both cases where they matter (`[Yy]aml`). |
+| `regex` | boolean | Interpret `pattern` as a JavaScript regular expression. It has no flag group for the whole pattern: `(?i)` is refused with `INVALID_REGEX` and a hint. Literal and regex searches are case-sensitive and there is no case-insensitive option; on Node.js 23 and later a scoped group such as `(?i:yaml)` works, elsewhere spell both cases (`[Yy]aml`). |
 | `maxResults` | integer 1–200 | Default 50. |
 
 ```json
@@ -612,7 +612,11 @@ of the run. Both fail safe: nothing is hidden and the run stays readable.
 "Independently reviewed" means that a second label recorded an agreeing
 verdict; one agent can invent labels, so real independence comes only from
 the host's sub-agent isolation, and blind mode only hides what a cooperating
-reviewer asks not to see. Labels are normalised (NFKC, invisible characters,
+reviewer asks not to see. Blind mode covers the MCP tools only: it cannot
+stop a sub-agent from opening `.audit/<run>/verdicts.json` or the reports
+with the host's own file, shell or search tools (seen on OpenCode and DSH).
+The skill tells the sub-agent never to open files under `.audit/`, but
+independence still relies on the host isolating the sub-agent. Labels are normalised (NFKC, invisible characters,
 case) but look-alike letters from other scripts are not: a Cyrillic `р` and a
 Latin `p` are different reviewers. The report therefore names the
 independent reviewer ("independently reviewed by <label>"). A label written
