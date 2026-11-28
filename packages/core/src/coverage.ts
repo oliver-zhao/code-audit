@@ -54,6 +54,12 @@ export interface CoverageReport {
     lowering: boolean;
     files: Record<"test" | "docs" | "example" | "vendored" | "generated", number>;
   };
+  /**
+   * Skill or plugin trees whose list of binary files is incomplete (entry
+   * budget, depth or list cap reached): "" is the audit root. A verdict on
+   * such a package must not say it was fully scanned. See inventory.ts.
+   */
+  binaryListIncomplete?: string[];
   /** Present when --since limited the report to changed files. */
   scope?: {
     since: string | null;

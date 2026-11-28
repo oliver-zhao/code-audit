@@ -19,34 +19,37 @@ export const BINARY_MAGIC_BYTES = 8;
 /** Entries of the binary list; beyond this the list is truncated with a warning. */
 export const MAX_BINARY_FILES = 10_000;
 
-export type BinaryType =
-  | "elf"
-  | "mach-o"
-  | "mach-o-universal"
-  | "java-class"
-  | "pe"
-  | "wasm"
-  | "python-bytecode"
-  | "zip"
-  | "gzip"
-  | "bzip2"
-  | "xz"
-  | "7z"
-  | "rar"
-  | "png"
-  | "jpeg"
-  | "gif"
-  | "webp"
-  | "bmp"
-  | "ico"
-  | "pdf"
-  | "woff"
-  | "woff2"
-  | "font"
-  | "sqlite"
-  | "empty"
-  | "text"
-  | "unknown";
+export const BINARY_TYPES = [
+  "elf",
+  "mach-o",
+  "mach-o-universal",
+  "java-class",
+  "pe",
+  "wasm",
+  "python-bytecode",
+  "zip",
+  "gzip",
+  "bzip2",
+  "xz",
+  "7z",
+  "rar",
+  "png",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+  "pdf",
+  "woff",
+  "woff2",
+  "font",
+  "sqlite",
+  "empty",
+  "text",
+  "unknown",
+] as const;
+
+export type BinaryType = (typeof BINARY_TYPES)[number];
 
 /** Executable code: native programs and libraries, bytecode. */
 export const EXECUTABLE_BINARY_TYPES: readonly BinaryType[] = [
@@ -70,6 +73,12 @@ export interface BinaryFile {
   type: BinaryType;
   /** Why the inventory did not read it as text (or "text" for a text file with an executable header). */
   reason: string;
+  /**
+   * For a `.pyc` / `.pyo` in `__pycache__/`: whether the source module
+   * (`<name>.py` next to the `__pycache__` directory) exists. Undefined for
+   * other files.
+   */
+  sourcePresent?: boolean;
 }
 
 /**
@@ -250,6 +259,11 @@ function binaryRuleMatches(rule: LoadedRule, binary: BinaryFile): boolean {
   if (compiled.pattern && !compiled.pattern.test(binary.relPath)) return false;
   if (compiled.notPattern && compiled.notPattern.test(binary.relPath)) return false;
   if (rule.fileMagic && !rule.fileMagic.some((prefix) => binary.magic.startsWith(prefix))) return false;
+  if (rule.fileType && !rule.fileType.includes(binary.type)) return false;
+  // sourcePresent: true = only a cached .pyc whose source exists; false =
+  // anything but such a file.
+  if (rule.sourcePresent === true && binary.sourcePresent !== true) return false;
+  if (rule.sourcePresent === false && binary.sourcePresent === true) return false;
   return true;
 }
 
@@ -268,7 +282,8 @@ export function scanBinaryRules(binaries: readonly BinaryFile[], ruleSet: RuleSe
     if (matched.length === 0) continue;
     const best = new Map<string, LoadedRule>();
     const ungrouped: LoadedRule[] = [];
-    const score = (rule: LoadedRule): number => CONFIDENCE_ORDER[rule.confidence] * 10 + severityRank(rule.severity);
+    const score = (rule: LoadedRule): number =>
+      (CONFIDENCE_ORDER[rule.confidence] * 10 + severityRank(rule.severity)) * 100 + (rule.groupPriority ?? 0);
     for (const rule of matched) {
       if (!rule.group) {
         ungrouped.push(rule);

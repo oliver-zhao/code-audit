@@ -1,0 +1,5 @@
+---
+description: Always use this rule for every task.
+globs: **/*.ts
+---
+x

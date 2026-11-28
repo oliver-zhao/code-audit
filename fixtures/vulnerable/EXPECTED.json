@@ -6869,6 +6869,13 @@
       "kind": "finding"
     },
     {
+      "file": "agents/f1/skills/binaries/legacy.egg",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-package",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
       "file": "agents/f1/skills/binaries/legacy.pyo",
       "line": 1,
       "ruleId": "agent-bundled-binary-pyc",
@@ -6995,6 +7002,20 @@
       "kind": "finding"
     },
     {
+      "file": "agents/f1/skills/tamper/scripts/__pycache__/hook.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc-cache",
+      "language": "binary",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/__pycache__/setup.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc-cache",
+      "language": "binary",
+      "kind": "hotspot"
+    },
+    {
       "file": "agents/f1/skills/tamper/scripts/config.js",
       "line": 2,
       "ruleId": "agent-memory-tamper-script",
@@ -7098,6 +7119,2253 @@
       "ruleId": "agent-cloud-upload",
       "language": "shell",
       "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 8,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 11,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 12,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 13,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 14,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 15,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 16,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 17,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 18,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 19,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 20,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 21,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 22,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 23,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 24,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 25,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 26,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 27,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 28,
+      "ruleId": "agent-anti-refusal-jailbreak-persona",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 29,
+      "ruleId": "agent-anti-refusal-jailbreak-persona",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 32,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 33,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 34,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 35,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 37,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 38,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 39,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 40,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 41,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 42,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 43,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 44,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 45,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 46,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
+      "line": 47,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/.audit/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/.code-audit/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/.git/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/.venv/bin/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/Makefile",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/__pycache__/mod.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/assets/icon.png",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/build/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/data.dat",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/dist/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/guide.pdf",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/helper_noext",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/lib.SO",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/mod.dat",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/mod.txt",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/node_modules/.bin/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/notes.md",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/out/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/payload.jar",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-package",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/payload.whl",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-package",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/script.so.1.2",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/setup.txt",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/target/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev10/skills/x/vendor/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev11/skills/x/a.so",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev11/skills/x/b.so",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 1,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 2,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 3,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 4,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 5,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 6,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 7,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 8,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 9,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 10,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 10,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 11,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 12,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 12,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 13,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 14,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 15,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 16,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev12/CLAUDE.md",
+      "line": 17,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev13/.claude/commands/x.md",
+      "line": 1,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev13/.claude/commands/x.md",
+      "line": 2,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev13/.claude/commands/x.md",
+      "line": 3,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev13/.claude/commands/x.md",
+      "line": 4,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev13/CLAUDE.md",
+      "line": 1,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev13/CLAUDE.md",
+      "line": 2,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev13/CLAUDE.md",
+      "line": 3,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev13/CLAUDE.md",
+      "line": 4,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev14/.claude/hooks/__pycache__/fmt.cpython-314.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc-cache",
+      "language": "binary",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev14/.cursor/rules/a.mdc",
+      "line": 2,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev14/.cursor/rules/b.mdc",
+      "line": 2,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 1,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 6,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 7,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 8,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev16/AGENTS.md",
+      "line": 10,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-instructions-pipe-to-shell",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 8,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 9,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 10,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 11,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 12,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 13,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 14,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 15,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 16,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 17,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 18,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 19,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 20,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 22,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 23,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 24,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 25,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 26,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 27,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 28,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 29,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/SKILL.md",
+      "line": 30,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 7,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/install",
+      "line": 8,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 7,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.bash",
+      "line": 8,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 7,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/a.sh",
+      "line": 8,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/b.py",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/b.pyw",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/c.js",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/c.js",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev2/skills/x/scripts/c.js",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/anchor/SKILL.md",
+      "line": 2,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/block/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/bom/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/builtin/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/builtin2/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/builtin3/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/colon/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/crlf/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/dashsp/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/dots/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/dq/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/dup/SKILL.md",
+      "line": 4,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/escaped/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/folded/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/mlplain/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/nested/SKILL.md",
+      "line": 4,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/para/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/para2/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/para3/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/para4/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/plain/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/sq/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/stuff/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/stuff2/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/stuff4/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/stuff5/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/tab/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev3/.claude/skills/whentouse/SKILL.md",
+      "line": 4,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev4/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev4/agents/helper.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev4/agents/helper.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/bin/tool",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/commands/go.md",
+      "line": 2,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev4/commands/go.md",
+      "line": 4,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/scripts/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/scripts/setup.sh",
+      "line": 3,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev4/scripts/setup.sh",
+      "line": 4,
+      "ruleId": "agent-cli-shellout",
+      "language": "shell",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev4/scripts/setup.sh",
+      "line": 5,
+      "ruleId": "agent-package-source-redirect",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 8,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 10,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 11,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 12,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 13,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 14,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 14,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 15,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 16,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 17,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 18,
+      "ruleId": "agent-cloud-upload",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 21,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 22,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 22,
+      "ruleId": "prompt-injection-read-credentials",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 23,
+      "ruleId": "agent-exfil-env",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 24,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/SKILL.md",
+      "line": 25,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.py",
+      "line": 4,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.py",
+      "line": 5,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.sh",
+      "line": 2,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.sh",
+      "line": 4,
+      "ruleId": "agent-cloud-upload",
+      "language": "shell",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.sh",
+      "line": 5,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/.npmrc",
+      "line": 1,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/.yarnrc",
+      "line": 1,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/.yarnrc.yml",
+      "line": 1,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "yaml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 8,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 9,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 10,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 11,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 12,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 13,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 14,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 15,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 16,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 17,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 18,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 19,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 20,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 21,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 22,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 23,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 25,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 26,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 27,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 28,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 29,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 29,
+      "ruleId": "dep-pip-extra-index-url",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 30,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 30,
+      "ruleId": "dep-pip-extra-index-url",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 31,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 32,
+      "ruleId": "dep-pip-trusted-host",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 33,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 34,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 35,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 36,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 38,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 39,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 40,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 41,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 42,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 43,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 44,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 45,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 46,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 47,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 48,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/SKILL.md",
+      "line": 49,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/pip.conf",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/pyproject.toml",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/scripts/s.py",
+      "line": 2,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/scripts/s.py",
+      "line": 3,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/scripts/s.py",
+      "line": 4,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/scripts/s.py",
+      "line": 5,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/scripts/s.py",
+      "line": 6,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/sub/pip.ini",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev6/skills/x/uv.toml",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/alt/SKILL.md",
+      "line": 106,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/blank20/SKILL.md",
+      "line": 26,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/br/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/braille/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/braille200/SKILL.md",
+      "line": 6,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/comment/SKILL.md",
+      "line": 37,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/cr/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/crlf/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/em200/SKILL.md",
+      "line": 6,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/fm/SKILL.md",
+      "line": 33,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/hangul/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/htmlnbsp/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/indent/SKILL.md",
+      "line": 31,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/mix/SKILL.md",
+      "line": 6,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/nbsp/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/sp200/SKILL.md",
+      "line": 6,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/tab200/SKILL.md",
+      "line": 6,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev7/.claude/skills/zw/SKILL.md",
+      "line": 36,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/py/server.py",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/py/server.py",
+      "line": 9,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/py/server.py",
+      "line": 14,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/py/server.py",
+      "line": 18,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/py/server.py",
+      "line": 23,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 9,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 9,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 10,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 11,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 12,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 14,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 15,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/index.ts",
+      "line": 16,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/raw.ts",
+      "line": 3,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/raw.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/tools/add.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev8/src/tools/add.ts",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev9/esc.ts",
+      "line": 3,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev9/esc.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev9/esc.ts",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev9/esc.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev9/esc.ts",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
     }
   ],
   "opengrep": [

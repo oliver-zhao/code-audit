@@ -88,10 +88,28 @@ const BINARY_EXTENSIONS = new Set([
 
 export const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 
-/** Directory entries looked at while listing binaries in excluded directories of packages. */
-const BINARY_LIST_MAX_ENTRIES = 20_000;
-/** Excluded directories that are not listed for binaries even inside a package. */
-const BINARY_LIST_SKIPPED_DIRS = new Set([".git", "node_modules", ".venv", "venv", ".audit", ".code-audit"]);
+/** Directory entries looked at, per skill or plugin tree, while listing binaries in its excluded directories. */
+export const BINARY_LIST_MAX_ENTRIES = 20_000;
+/**
+ * Excluded directories that are not listed for binaries when they sit
+ * directly in the audit root (dependencies and tool output of the audited
+ * project itself). Inside a skill or plugin tree below the root they are
+ * listed like any other directory.
+ */
+const BINARY_LIST_ROOT_SKIPPED_DIRS = new Set([".git", "node_modules", ".venv", "venv", ".audit", ".code-audit"]);
+
+/** Interpreter named on a `#!` line, for extensionless scripts in skill trees. */
+const SHEBANG = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?)?(?:\S*\/)?(bash|sh|zsh|ksh|dash|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|tsx|ts-node)\b/;
+
+function shebangLanguage(text: string): Language | undefined {
+  const match = SHEBANG.exec(text.slice(0, 200));
+  if (!match) return undefined;
+  const name = match[1] as string;
+  if (/^(?:python|pypy)/.test(name)) return "python";
+  if (/^(?:tsx|ts-node)$/.test(name)) return "typescript";
+  if (/^(?:node|nodejs|deno|bun)$/.test(name)) return "javascript";
+  return "shell";
+}
 
 export type ManifestType =
   | "npm"
@@ -143,6 +161,13 @@ export interface InventoryFile {
    * run directories. Secret detectors run on it; rules do not.
    */
   toolOutput?: boolean;
+  /**
+   * Set when the file is inside a skill or plugin tree: the relative path of
+   * the nearest directory (the file's own or a parent, the root included,
+   * as "") that holds `SKILL.md`, `plugin.json` or `.claude-plugin/plugin.json`.
+   * Rules with `inSkillTree` use it.
+   */
+  skillTreeRoot?: string;
 }
 
 export interface SkippedFile {
@@ -204,6 +229,14 @@ export interface InventoryResult {
    * `binaryRules.ts`.
    */
   binaries: BinaryFile[];
+  /**
+   * Skill or plugin trees (relative path of the tree root, "" for the audit
+   * root; or of the excluded directory when no tree root is known) whose
+   * binary list is incomplete: the entry budget of the tree, the depth limit
+   * or the list cap was reached. A consumer that gives a verdict on a
+   * package must treat such a tree as not fully scanned.
+   */
+  binaryListIncomplete: string[];
 }
 
 interface Marker {
@@ -579,47 +612,70 @@ export function inventory(
   let excludedEntries = 0;
   const binaries: BinaryFile[] = [];
   let binariesTruncated = false;
-  const addBinary = (binary: BinaryFile): void => {
+  const incompleteTrees = new Set<string>();
+  const sourceFiles = new Set<string>();
+  const addBinary = (binary: BinaryFile, treeKey: string): void => {
     if (binaries.length >= MAX_BINARY_FILES) {
       binariesTruncated = true;
+      incompleteTrees.add(treeKey);
       return;
     }
     binaries.push(binary);
   };
-  const recordBinary = (rel: string, abs: string, size: number, reason: string, header?: Uint8Array): void => {
-    addBinary(binaryFileOf(rel, abs, size, header ?? readMagic(abs), reason));
+  const recordBinary = (
+    rel: string,
+    abs: string,
+    size: number,
+    reason: string,
+    treeKey: string,
+    header?: Uint8Array,
+  ): void => {
+    addBinary(binaryFileOf(rel, abs, size, header ?? readMagic(abs), reason), treeKey);
   };
   // Default-excluded directories inside a skill or plugin (`__pycache__/`,
   // `bin/`, `build/`) are not read, but a package that ships compiled code
   // there is reported: their files are listed by header (8 bytes each),
   // within a budget of directory entries.
-  let binaryListEntries = 0;
-  const listExcludedBinaries = (dir: string, depth: number): void => {
-    if (depth > 20 || binaryListEntries > BINARY_LIST_MAX_ENTRIES) return;
+  // Every tree has its own budget, so a tree cannot hide a binary behind
+  // the files of another one; a tree whose budget runs out is marked
+  // incomplete (`binaryListIncomplete`), not only warned about.
+  const binaryListEntries = new Map<string, number>();
+  const listExcludedBinaries = (dir: string, depth: number, treeKey: string): void => {
+    if ((binaryListEntries.get(treeKey) ?? 0) > BINARY_LIST_MAX_ENTRIES) return;
+    if (depth > 20) {
+      incompleteTrees.add(treeKey);
+      return;
+    }
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
+      incompleteTrees.add(treeKey);
       return;
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      binaryListEntries += 1;
-      if (binaryListEntries > BINARY_LIST_MAX_ENTRIES) {
-        // Once: the enclosing directories stop at the check above.
-        if (binaryListEntries === BINARY_LIST_MAX_ENTRIES + 1) warnings.push(
-          `more than ${BINARY_LIST_MAX_ENTRIES} entries in default-excluded directories of skill or plugin directories; binary files beyond that were not listed`,
-        );
+      const count = (binaryListEntries.get(treeKey) ?? 0) + 1;
+      binaryListEntries.set(treeKey, count);
+      if (count > BINARY_LIST_MAX_ENTRIES) {
+        incompleteTrees.add(treeKey);
+        // Once per tree: the enclosing directories stop at the check above.
+        if (count === BINARY_LIST_MAX_ENTRIES + 1) {
+          warnings.push(
+            `more than ${BINARY_LIST_MAX_ENTRIES} entries in default-excluded directories of the skill or plugin tree ${treeKey === "" ? "at the root" : treeKey}; binary files beyond that were not listed (the tree is marked incomplete)`,
+          );
+        }
         return;
       }
       const abs = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        if (!BINARY_LIST_SKIPPED_DIRS.has(entry.name.toLowerCase())) listExcludedBinaries(abs, depth + 1);
+        listExcludedBinaries(abs, depth + 1, treeKey);
         continue;
       }
       if (!entry.isFile()) continue;
       const rel = toPosixRelative(root, abs);
+      if (rel.endsWith(".py")) sourceFiles.add(rel);
       let size = 0;
       try {
         size = fs.statSync(abs).size;
@@ -629,7 +685,7 @@ export function inventory(
       const header = readMagic(abs);
       const binaryName = BINARY_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
       if (binaryName || /(?:^|\/)__pycache__\//.test(rel) || (header && looksExecutableHeader(header))) {
-        recordBinary(rel, abs, size, "in a default-excluded directory", header);
+        recordBinary(rel, abs, size, "in a default-excluded directory", treeKey, header);
       }
     }
   };
@@ -662,7 +718,7 @@ export function inventory(
     }
   };
 
-  const walk = (dir: string, parentInPackage: boolean): void => {
+  const walk = (dir: string, parentInPackage: boolean, parentTreeRoot: string | undefined): void => {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -685,6 +741,16 @@ export function inventory(
           (entry.isFile() && entry.name.toLowerCase() === "skill.md") ||
           (entry.isDirectory() && entry.name === ".claude-plugin"),
       );
+    // The nearest skill or plugin tree root (rules with `inSkillTree`).
+    const isTreeRoot = entries.some(
+      (entry) =>
+        (entry.isFile() && (entry.name === "SKILL.md" || entry.name === "plugin.json")) ||
+        (entry.isDirectory() &&
+          entry.name === ".claude-plugin" &&
+          fs.existsSync(path.join(dir, entry.name, "plugin.json"))),
+    );
+    const treeRoot = isTreeRoot ? toPosixRelative(root, dir) : parentTreeRoot;
+    const atRoot = dir === root;
 
     // Reports of earlier runs (an `--out` directory inside the audit root)
     // are not part of the audited project.
@@ -717,22 +783,26 @@ export function inventory(
         const lowerName = entry.name.toLowerCase();
         // `src/bin/` holds Cargo binary targets (source code), not build output.
         const cargoBin = lowerName === "bin" && path.basename(dir).toLowerCase() === "src";
+        // The `bin/` of a skill or plugin holds its scripts (the commands
+        // and hooks call them), not build output: it is read like source.
+        const skillBin = lowerName === "bin" && treeRoot !== undefined;
         if (
           excludedDirs.has(lowerName) &&
           !cargoBin &&
+          !skillBin &&
           (!untrusted || NEVER_SCANNED_DIRS.has(lowerName))
         ) {
           skipped.push({ relPath: `${rel}/`, reason: "default-excluded directory" });
           if (!NEVER_SCANNED_DIRS.has(lowerName)) countExcluded(abs, lowerName, 0);
           if (
             (inPackage || isAgentPackagePath(`${rel}/`)) &&
-            !BINARY_LIST_SKIPPED_DIRS.has(lowerName)
+            !(atRoot && BINARY_LIST_ROOT_SKIPPED_DIRS.has(lowerName))
           ) {
-            listExcludedBinaries(abs, 0);
+            listExcludedBinaries(abs, 0, treeRoot ?? rel);
           }
           continue;
         }
-        walk(abs, inPackage);
+        walk(abs, inPackage, treeRoot);
         continue;
       }
 
@@ -786,10 +856,12 @@ export function inventory(
       }
 
       const packaged = inPackage || isAgentPackagePath(rel);
+      const treeKey = treeRoot ?? path.posix.dirname(rel);
+      if (rel.endsWith(".py")) sourceFiles.add(rel);
       const ext = path.extname(entry.name).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) {
         skipped.push({ relPath: rel, reason: "binary extension" });
-        if (packaged) recordBinary(rel, abs, stat.size, "binary extension");
+        if (packaged) recordBinary(rel, abs, stat.size, "binary extension", treeKey);
         continue;
       }
       if (stat.size > maxFileSize) {
@@ -797,7 +869,7 @@ export function inventory(
           relPath: rel,
           reason: `file exceeds the ${Math.floor(maxFileSize / 1024 / 1024)} MB limit`,
         });
-        if (packaged) recordBinary(rel, abs, stat.size, "over the size limit");
+        if (packaged) recordBinary(rel, abs, stat.size, "over the size limit", treeKey);
         continue;
       }
 
@@ -811,12 +883,12 @@ export function inventory(
       }
       if (looksBinary(buffer)) {
         skipped.push({ relPath: rel, reason: "binary content detected (NUL byte)" });
-        if (packaged) recordBinary(rel, abs, stat.size, "binary content (NUL byte)", buffer);
+        if (packaged) recordBinary(rel, abs, stat.size, "binary content (NUL byte)", treeKey, buffer);
         continue;
       }
       // A text file (no NUL byte) with an executable or archive header.
       if (packaged && buffer.length >= 4 && looksExecutableHeader(buffer.subarray(0, 8))) {
-        recordBinary(rel, abs, stat.size, "text file with a binary header", buffer);
+        recordBinary(rel, abs, stat.size, "text file with a binary header", treeKey, buffer);
       }
 
       const text = buffer.toString("utf8");
@@ -825,7 +897,13 @@ export function inventory(
         continue;
       }
       const loc = countLines(text);
-      const language = detectLanguage(rel);
+      let language = detectLanguage(rel);
+      // Inside a skill or plugin tree, an extensionless script is classified
+      // by its #! line and a fish script is read as shell.
+      if (treeRoot !== undefined && language === "unknown") {
+        if (!entry.name.includes(".")) language = shebangLanguage(text) ?? language;
+        else if (ext === ".fish") language = "shell";
+      }
       const marker = classifyManifest(entry.name, rel, text);
       const isLockfile = marker?.lockfile ?? false;
       const isManifest = Boolean(marker);
@@ -857,6 +935,7 @@ export function inventory(
         isLockfile,
         manifestType: marker?.type,
         ...(pathContext ? { pathContext, pathContextSource: classification.source } : {}),
+        ...(treeRoot !== undefined ? { skillTreeRoot: treeRoot } : {}),
       });
 
       totalBytes += stat.size;
@@ -877,7 +956,16 @@ export function inventory(
     }
   };
 
-  walk(root, false);
+  walk(root, false, undefined);
+  // A .pyc in __pycache__/ whose source module sits next to the directory.
+  for (const binary of binaries) {
+    const at = binary.relPath.lastIndexOf("__pycache__/");
+    if (at < 0 || !/\.py[co]$/.test(binary.relPath)) continue;
+    const parent = binary.relPath.slice(0, at);
+    const module = binary.relPath.slice(at + "__pycache__/".length).split(".")[0] as string;
+    if (module.includes("/")) continue;
+    binary.sourcePresent = sourceFiles.has(`${parent}${module}.py`);
+  }
   if (binariesTruncated) {
     warnings.push(
       `more than ${MAX_BINARY_FILES} binary files in skill or plugin directories; only the first ${MAX_BINARY_FILES} were listed for the binary rules`,
@@ -906,5 +994,6 @@ export function inventory(
     toolOutputUnread,
     excludedSource,
     binaries,
+    binaryListIncomplete: [...incompleteTrees].sort(),
   };
 }

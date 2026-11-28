@@ -276,6 +276,7 @@ function buildCoverage(
     warnings,
     suppressed,
     pathContext: { lowering: pathContextLowering, files: pathContextFiles },
+    ...(inv.binaryListIncomplete.length > 0 ? { binaryListIncomplete: inv.binaryListIncomplete } : {}),
     ...(scope
       ? {
           scope: {

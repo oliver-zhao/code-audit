@@ -83,6 +83,12 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    - **Dockerfile**: an instruction continued with `\` (or the character of
      an `# escape=` parser directive at the start of the file) is one unit,
      and comment lines are blank.
+   - **Shell** scripts and the fenced shell blocks of **Markdown** files
+     (info string `sh`, `bash`, `shell`, `console`, ... or none): a command
+     continued with a trailing backslash is also matched as one unit, with
+     the backslash and the line break read as blanks, in addition to its
+     physical lines (`aws s3 \` followed by `cp ~/.ssh s3://b` is one
+     command).
    - **XML**: `<!-- -->` comments are blanked and a start tag that spans
      several lines is one unit. **Razor**: `@* *@` comments are blanked;
      every line is its own unit.
@@ -118,13 +124,34 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    `description` and `allowed-tools` there). The block is parsed like a
    `withinKeys` file (block scalars, quoting and escapes cannot hide a value)
    and a hit is reported at the line of the value. A file without front
-   matter is not matched; front matter that is not closed or does not parse
-   is not matched either, and the run gets a warning naming the file. These
-   rules are not prefiltered.
-7. Hits of rules that share a `group` and overlap in one expression collapse
-   into one result: the one with the highest confidence, then severity. This
-   is how a specific rule and its API-only fallback avoid double reporting.
-8. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
+   matter is not matched. Hosts read front matter more leniently than YAML
+   (an unquoted `: ` in a description, `globs: **` in a Cursor rule), so a
+   block that does not parse is read line by line instead: a `key: value`
+   line at column 0 and the indented lines below it. Front matter that is
+   not closed within 2,000 lines is not matched. Both cases are counted in
+   one warning per scan that names the first files. These rules are not
+   prefiltered.
+7. Rules with `withinMcpDescriptions` (`javascript`, `typescript`, `python`)
+   are matched against the tool and parameter descriptions of MCP servers
+   (`packages/core/src/mcpDescriptions.ts`), not against lines: every string
+   argument of a `.tool(`, `registerTool(` or `.describe(` call (Python: also
+   `add_tool(` and the arguments of an `@x.tool(...)` decorator), every
+   `description` value (`description: "..."`, `description="..."`,
+   `"description": "..."`), and the docstring of a function decorated with
+   `@<name>.tool` or `@tool`. Comments and other strings are never read.
+   Escape sequences are decoded (`\u200b`, `\u{202e}`, `\x20`), because the
+   model receives the decoded text, and string literals joined with `+` (or
+   written next to each other in Python) are one description. A file is
+   read only when it imports the SDK (`@modelcontextprotocol/sdk`,
+   `from mcp...`, `FastMCP`) or uses one of the registration forms
+   (case-sensitive), so a tool module without the import is covered.
+8. Hits of rules that share a `group` and overlap in one expression collapse
+   into one result: the one with the highest confidence, then severity, then
+   `groupPriority` (default 0). New rules that share a group with a released
+   rule have a negative priority, so a line the released rule already
+   reported keeps its rule id and fingerprint. This is how a specific rule
+   and its API-only fallback avoid double reporting.
+9. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
    suppresses the hit of a named rule (`*` matches any rule) when it is
    - on the matched line, on the first line of the statement, or on any
      other physical line of the expression the match belongs to (a
@@ -175,6 +202,24 @@ warning naming the language, file and lines (the first five regions of a
 file one by one, the rest counted in one warning; a rule scan lists at most
 1,000 warnings and counts the others).
 
+## Skill and plugin trees
+
+A directory that holds `SKILL.md`, `plugin.json` or `.claude-plugin/plugin.json`
+is the root of a skill or plugin tree, and so is the audit root when it holds
+one. The inventory records for every file inside a tree the nearest tree root
+(`skillTreeRoot`). Inside a tree:
+
+- a rule with `inSkillTree` also applies to a file whose path relative to the
+  tree root matches it (`true` for every file), whatever `pathInclude` says;
+  the agent rules use this for `SKILL.md`, `agents/*.md`, `commands/*.md` and
+  `skills/**/*.md` (instruction files), for scripts and for package
+  configuration, so a repository that is itself a skill or plugin is
+  covered;
+- an extensionless file is classified by its `#!` line (`sh`, `bash`, `zsh`,
+  `python`, `node`, ...) and a `.fish` script is read as shell;
+- `bin/` is read like source (it holds the commands' scripts), not skipped as
+  build output.
+
 ## Binary files in skills and plugins
 
 The inventory does not read binary files (a binary extension, a NUL byte in
@@ -186,13 +231,19 @@ its path contains `skills/`, `plugins/<name>/`, `.claude/`, `.codex/`,
 `SKILL.md` file or a `.claude-plugin/` directory. Inside such a directory the
 list also holds
 
-- the files of default-excluded directories (`__pycache__/`, `bin/`,
-  `build/`, ...; not `.git/`, `node_modules/`, `.venv/` or `venv/`) that have
-  a binary extension, sit in `__pycache__/` or have an executable header, and
+- the files of default-excluded directories (`__pycache__/`, `build/`,
+  `dist/`, `node_modules/`, `.venv/`, `.git/`, ...) that have a binary
+  extension, sit in `__pycache__/` or have an executable header; only
+  `node_modules/`, `.venv/`, `venv/`, `.git/`, `.audit/` and `.code-audit/`
+  directly in the audit root are left out, and
 - text files whose header is an ELF, Mach-O, WebAssembly or zip header.
 
-At most 10,000 files are listed and at most 20,000 entries of excluded
-directories are looked at; beyond that the run gets a warning. The header is
+At most 10,000 files are listed, and at most 20,000 entries of excluded
+directories are looked at per tree. A tree that reaches a limit is listed in
+`binaryListIncomplete` of `coverage.json` (the tree root, `""` for the audit
+root) and the run gets a warning: a verdict on that package must not say it
+was fully scanned. For a `.pyc` in `__pycache__/` the list also says whether
+its source module (`<name>.py` next to the directory) exists. The header is
 classified (`elf`, `mach-o`, `mach-o-universal`, `java-class`, `pe`, `wasm`,
 `python-bytecode`, `zip`, common archive, image and font formats, `text`
 for printable UTF-8 such as a text file over the size limit, `empty`, or
@@ -201,7 +252,8 @@ are not printable text.
 
 Rules with `languages: [binary]` match this list, not text: `pathInclude` and
 `pathExclude` as usual, `pattern` and `notPattern` against the path, and
-`fileMagic` against the header. A hit is reported at line 1 with the evidence
+`fileMagic` against the header, `fileType` against the classified type, and
+`sourcePresent` against the `.pyc` source check. A hit is reported at line 1 with the evidence
 `binary file (<type>, <size> bytes)`; hits of one `group` on one file
 collapse into one. Text-only fields (`patterns`, `filePattern`, `withinKeys`,
 `rawLines`, ...) are rejected for binary rules.
@@ -264,8 +316,13 @@ in `packages/core/src/rules.ts`, by a test):
 | `withinKeys` | list of YAML keys | no | YAML or JSON only (`languages: [yaml]` or `[json]`, not mixed): match inside the values of these mapping keys. |
 | `withinFrontmatter` | list of YAML keys | no | Markdown only (`languages: [markdown]`): match inside the values of these keys of the file's YAML front matter. Mutually exclusive with `withinKeys`. |
 | `rawLines` | boolean | no | Python and the C-family languages: match the physical lines as written, comments, docstrings and string text included, instead of the lexed statements. No effect in other languages. |
-| `minBlankLinesBefore` | integer | no | Keep a match only when at least this many blank lines come right before its line. |
+| `minBlankLinesBefore` | integer | no | Keep a match only when at least this many lines that show nothing come right before its line, and the matched line itself shows something. A line shows nothing when it holds only blanks of any script (including U+00A0, U+2800, U+3000, U+3164, zero-width characters), `&nbsp;`-style entities, `<br>` or empty paragraph tags, or a single punctuation character. |
 | `fileMagic` | list of upper-case hex strings (1 to 8 bytes) | no | Binary rules only (`languages: [binary]`): the file must start with one of these byte sequences, for example `7F454C46`. |
+| `fileType` | list of header types | no | Binary rules only: the classified header type must be one of these (`elf`, `mach-o`, `pe`, `wasm`, `python-bytecode`, `zip`, `gzip`, ...; see [Binary files](#binary-files-in-skills-and-plugins)). |
+| `sourcePresent` | boolean | no | Binary rules only: `true` matches only a `.pyc` in `__pycache__/` whose source module exists; `false` matches every file except such a `.pyc`. |
+| `inSkillTree` | `true` or regex | no | Also apply the rule to files inside a skill or plugin tree whose path relative to the tree root matches (see [Skill and plugin trees](#skill-and-plugin-trees)), in addition to `pathInclude`. Not for binary rules. |
+| `groupPriority` | integer (-100 to 100) | no | Breaks a tie of confidence and severity within a `group`: the higher value wins (default 0). |
+| `withinMcpDescriptions` | boolean | no | JavaScript, TypeScript, Python only: match only inside MCP tool and parameter descriptions (see How matching works). |
 | `message` | string | yes | What was found and why it matters. |
 | `message_zh` | string | no | Chinese message. |
 | `remediation` | string | yes | How to fix it. |

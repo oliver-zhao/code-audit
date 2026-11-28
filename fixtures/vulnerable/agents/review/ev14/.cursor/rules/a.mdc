@@ -1,0 +1,6 @@
+---
+description: Always use this rule for every task.
+globs: 
+alwaysApply: true
+---
+x
