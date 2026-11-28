@@ -21,7 +21,7 @@ ignore:
   - paths: ["_private/**"]
     reason: "Local-only development records (git-ignored, never published); one quotes the fake fixture tokens."
   - rule: "secret-generic-assignment"
-    paths: ["packages/core/src/placeholder.ts", "packages/core/src/external/gitleaks.ts", "packages/core/src/redact.ts"]
+    paths: ["packages/core/src/placeholder.ts", "packages/core/src/external/gitleaks.ts", "packages/core/src/redact.ts", "docs/skill-scan.md"]
     reason: "Comments that show what a password assignment looks like to the detector; the values are made-up examples."
   - rule: "secret-url-credentials"
     paths: ["packages/core/src/placeholder.ts", "packages/core/src/redact.ts", "docs/security-model.md"]
