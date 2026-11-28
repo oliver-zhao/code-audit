@@ -6,13 +6,16 @@
  * the edit distance D is measured first with the greedy forward pass (one
  * V array, no trace), then the middle-snake bisection finds the matched
  * lines. The result is the set of lines of the NEW text that are not part of
- * the longest common subsequence - inserted or replaced lines.
+ * the longest common subsequence - inserted or replaced lines - plus, by
+ * default, the new lines adjacent to each deletion.
  *
  * Inputs from the audited repository can be large or adversarial. Above
  * `maxLines` lines on either side, or an edit distance above `maxEditDistance`,
  * the diff is not computed and every line of the new text counts as changed
  * (fail open: more lines in scope, never fewer).
  */
+
+import { splitLines } from "./redact.js";
 
 export const DEFAULT_DIFF_MAX_LINES = 20_000;
 export const DEFAULT_DIFF_MAX_EDIT_DISTANCE = 5_000;
@@ -22,6 +25,12 @@ export interface LineDiffOptions {
   maxLines?: number;
   /** An edit distance above this: every new line counts as changed. */
   maxEditDistance?: number;
+  /**
+   * Also count the new lines directly before and after a deletion as changed
+   * (default true): removing a guard or sanitizer line changes what its
+   * neighbour does, though the neighbour's text is the same.
+   */
+  markDeletions?: boolean;
 }
 
 export type LineDiffResult =
@@ -42,19 +51,18 @@ export type LineDiffResult =
     };
 
 /**
- * Split a text into lines the way the scanner numbers them: on LF. A trailing
- * CR is not part of a line's content, so a change of line endings alone
- * (CRLF <-> LF) does not make a line "changed", and a final line break is not
- * an extra empty line ("a\nb" and "a\nb\n" both have two lines).
+ * Split a text into lines exactly the way the scanner numbers them
+ * (`splitLines` in redact.ts): `\r\n`, a lone `\r` and `\n` each end a line.
+ * Line N here is line N of every finding, so a lone CR cannot shift a finding
+ * onto a line the diff considers unchanged. The terminator is not part of a
+ * line's content, so a change of line endings alone (CRLF <-> LF) does not
+ * make a line "changed", and a final line break is not an extra empty line
+ * ("a\nb" and "a\nb\n" both have two lines).
  */
 export function splitDiffLines(text: string): string[] {
   if (text === "") return [];
-  const lines = text.split("\n");
+  const lines = splitLines(text);
   if (lines[lines.length - 1] === "") lines.pop();
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] as string;
-    if (line.endsWith("\r")) lines[index] = line.slice(0, -1);
-  }
   return lines;
 }
 
@@ -134,6 +142,7 @@ function markInserted(
   bLo: number,
   bHi: number,
   out: Set<number>,
+  deletions?: Set<number>,
 ): void {
   // An explicit stack instead of recursion: depth is bounded by log(N+M)
   // for balanced splits, but never trust that with adversarial input.
@@ -149,7 +158,12 @@ function markInserted(
       x1 -= 1;
       y1 -= 1;
     }
-    if (y0 === y1) continue; // only deletions remain
+    if (y0 === y1) {
+      // Only deletions remain: lines a[x0, x1) were removed between new
+      // lines y0 - 1 and y0 (0-based).
+      if (x0 < x1) deletions?.add(y0);
+      continue;
+    }
     if (x0 === x1) {
       for (let y = y0; y < y1; y += 1) out.add(y + 1);
       continue;
@@ -299,6 +313,19 @@ export function changedLines(
     return { whole: true, reason: "edit-distance", newLineCount: newLines.length };
   }
   const changed = new Set<number>();
-  markInserted(a, b, aLo, aHi, bLo, bHi, changed);
+  const deletions = new Set<number>();
+  markInserted(a, b, aLo, aHi, bLo, bHi, changed, deletions);
+  if (options.markDeletions !== false) {
+    const inserted = new Set(changed);
+    for (const at of deletions) {
+      // The deleted lines sit between new lines at - 1 and at (0-based),
+      // that is 1-based `at` and `at + 1`. A deletion next to an inserted
+      // line is a replacement, already marked; a pure deletion marks both
+      // neighbours.
+      if (inserted.has(at) || inserted.has(at + 1)) continue;
+      if (at >= 1) changed.add(at);
+      if (at < newLines.length) changed.add(at + 1);
+    }
+  }
   return { whole: false, changed, editDistance: distance, newLineCount: newLines.length };
 }

@@ -62,6 +62,19 @@ fi
 # ---- scan target: inside the workspace --------------------------------------
 case "$INPUT_PATH" in /*) fail "path must be relative to the workspace" ;; esac
 workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+# Neither the directory nor any directory on the way to it may be a symbolic
+# link (a pull request could replace one to point the scan, and the choice of
+# the base commit's ignore file, somewhere else), and no ".." component.
+walk="$workspace"
+IFS='/' read -r -a components <<< "$INPUT_PATH"
+for component in "${components[@]}"; do
+  case "$component" in
+    ""|.) continue ;;
+    ..) fail "path must not contain '..'" ;;
+  esac
+  walk="$walk/$component"
+  if [ -L "$walk" ]; then fail "path must not be or pass through a symbolic link: $INPUT_PATH"; fi
+done
 target="$(cd "$GITHUB_WORKSPACE" && cd -- "$INPUT_PATH" 2>/dev/null && pwd -P)" || fail "path does not exist: $INPUT_PATH"
 case "$target/" in "$workspace"/*) ;; *) fail "path must stay inside the workspace" ;; esac
 
@@ -114,6 +127,8 @@ mkdir -p "$work/out"
 
 prefix="$(g rev-parse --show-prefix 2>/dev/null || true)"
 case "$prefix" in *$'\n'*) fail "unexpected rev-parse output" ;; esac
+repo_root="$(g rev-parse --show-toplevel 2>/dev/null || true)"
+case "$repo_root" in *$'\n'*) fail "unexpected rev-parse output" ;; esac
 
 # Copy one file of the trusted commit (as stored: cat-file blob applies no
 # filter or textconv) to $RUNNER_TEMP. Prints the copy's path, or nothing.
@@ -172,6 +187,8 @@ out offline "$INPUT_OFFLINE"
 out upload-sarif "$INPUT_UPLOAD_SARIF"
 out comment "$comment"
 out artifact-name "$INPUT_ARTIFACT_NAME"
+out path-prefix "$prefix"
+out repo-root "$repo_root"
 out fork "$fork"
 
 echo "code-audit: mode $mode${since:+, changed lines since $since}${ignore_file:+, ignore file from $trusted_ref}${baseline_file:+, baseline from $trusted_ref}"

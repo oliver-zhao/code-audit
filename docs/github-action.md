@@ -43,7 +43,7 @@ The `workflows:` list in stage 2 must contain the `name:` of stage 1.
 
 | Input | Default | Meaning |
 |---|---|---|
-| `path` | `.` | Directory to scan, relative to the workspace (must stay inside it). |
+| `path` | `.` | Directory to scan, relative to the workspace (must stay inside it; no `..` and no symbolic link on the way). Finding paths in comments and SARIF are made relative to the repository root. |
 | `fail-on` | `high` | Lowest severity that fails the step: `info`, `low`, `medium`, `high`, `critical`. |
 | `min-confidence` | `medium` | Lowest confidence that counts: `low`, `medium`, `high`. |
 | `mode` | `diff` on `pull_request`, else `full` | `diff`: only findings on lines the pull request adds or changes. `full`: the whole tree. |
@@ -61,7 +61,7 @@ The `workflows:` list in stage 2 must contain the `name:` of stage 1.
 |---|---|
 | `findings-count` | Findings at or above `min-confidence` after the diff filter (the headline number of the report). |
 | `new-findings-count` | Findings not in the baseline; equal to `findings-count` without one. |
-| `sarif-file` | Path of the SARIF report. |
+| `sarif-file` | Path of the SARIF report uploaded to code scanning (`results-repo.sarif`: paths relative to the repository root). |
 | `exit-code` | `0` clean, `1` findings reached `fail-on`, `2` the scan could not complete. |
 
 The step fails with the scan's exit code after SARIF and the artifact are
@@ -87,7 +87,8 @@ The Action copies `<path>/.code-audit-ignore` and the `baseline` input from
 that commit with `git cat-file blob` (no filter or textconv) to
 `$RUNNER_TEMP` and passes them as `--ignore-file` / `--baseline`. The CLI
 applies such files under `--untrusted` only because they are absolute paths
-outside the scanned directory. A pull request that edits
+outside the scanned directory and its git work tree, and names each applied
+file in a warning. A pull request that edits
 `.code-audit-ignore` therefore changes nothing for its own scan; the edit
 takes effect once it is merged. These git commands run in the Action's
 shell on the checkout created by `actions/checkout`, whose `.git/config` is
@@ -105,7 +106,10 @@ fails and asks for `fetch-depth: 0`.
 `--diff-lines` keeps a finding when its line range touches an added or
 changed line (Myers line diff against the blob of the merge base; a change
 of line endings alone does not count). Dependency advisories and secrets are
-kept for the whole changed file. Files over 20,000 lines or with more than
+kept for the whole changed file. When a pull request only deletes lines
+(a guard or sanitizer, say), the new lines on either side of the deletion
+count as changed. Lines are numbered like the scanner numbers them (a lone
+CR ends a line too). Files over 20,000 lines or with more than
 5,000 changed lines count as changed in full (a warning names them). The
 number of results left out is `scope.diffLinesFiltered` in `run.json` and
 `findings.json`, and is printed in the summary.

@@ -76,7 +76,7 @@ import {
   type BaselineDocument,
   type BaselineEntry,
 } from "./baseline.js";
-import { listChangedFiles, listChangedLines, type FileLineChanges } from "./git.js";
+import { gitWorkTreeRoot, listChangedFiles, listChangedLines, type FileLineChanges } from "./git.js";
 import {
   crossEngineDedupe,
   defaultOpengrepRulesDir,
@@ -390,30 +390,33 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   // An ignore file named explicitly (`--ignore-file`) by whoever runs the scan
   // still applies under `--untrusted` when it lies OUTSIDE the audited
   // repository (a CI maintainer's file, e.g. taken from the base commit of a
-  // pull request). One inside the repository is the repository's own and is
-  // not read.
+  // pull request). One inside the audit root, or inside the git work tree
+  // that contains the root (a monorepo checkout scanned in a subdirectory),
+  // belongs to the repository and is not read. Symbolic links are resolved.
   const explicitIgnoreFile =
     options.noIgnoreFile !== true && typeof options.ignoreFile === "string" && options.ignoreFile !== ""
       ? options.ignoreFile
       : undefined;
-  const operatorIgnoreFile =
-    untrusted &&
-    explicitIgnoreFile !== undefined &&
-    path.isAbsolute(explicitIgnoreFile) &&
-    !isInsideRoot(validated.root, explicitIgnoreFile);
-  const refusedIgnoreFile = untrusted && explicitIgnoreFile !== undefined && !operatorIgnoreFile;
-  const noIgnoreFile = options.noIgnoreFile === true || (untrusted && !operatorIgnoreFile);
-  // The same for a baseline named explicitly (`--baseline`): applied under
-  // `--untrusted` only when it is an absolute path outside the repository.
   const explicitBaseline =
     options.noBaseline !== true && typeof options.baseline === "string" && options.baseline !== ""
       ? options.baseline
       : undefined;
+  const workTree =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? await gitWorkTreeRoot(validated.root, { pathEnv: options.pathEnv })
+      : undefined;
+  const outsideRepository = (file: string): boolean =>
+    path.isAbsolute(file) &&
+    !isInsideRoot(validated.root, file) &&
+    (workTree === undefined || !isInsideRoot(workTree, file));
+  const operatorIgnoreFile =
+    untrusted && explicitIgnoreFile !== undefined && outsideRepository(explicitIgnoreFile);
+  const refusedIgnoreFile = untrusted && explicitIgnoreFile !== undefined && !operatorIgnoreFile;
+  const noIgnoreFile = options.noIgnoreFile === true || (untrusted && !operatorIgnoreFile);
+  // The same for a baseline named explicitly (`--baseline`): applied under
+  // `--untrusted` only when it is an absolute path outside the repository.
   const operatorBaseline =
-    untrusted &&
-    explicitBaseline !== undefined &&
-    path.isAbsolute(explicitBaseline) &&
-    !isInsideRoot(validated.root, explicitBaseline);
+    untrusted && explicitBaseline !== undefined && outsideRepository(explicitBaseline);
   const refusedBaseline = untrusted && explicitBaseline !== undefined && !operatorBaseline;
   const noBaseline = options.noBaseline === true || (untrusted && !operatorBaseline);
   const noInlineIgnore = untrusted || options.noInlineIgnore === true;
@@ -926,12 +929,25 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     let ignoreEntries: IgnoreEntry[] = [];
     if (refusedBaseline) {
       warnings.push(
-        "--baseline is not applied with --untrusted: it is inside the audited repository or not an absolute path (name a file outside the repository)",
+        "--baseline is not applied with --untrusted: it is inside the audited directory or its git work tree, or not an absolute path (name a file outside the repository)",
       );
     }
     if (refusedIgnoreFile) {
       warnings.push(
-        "--ignore-file is not applied with --untrusted: it is inside the audited repository or not an absolute path (name a file outside the repository)",
+        "--ignore-file is not applied with --untrusted: it is inside the audited directory or its git work tree, or not an absolute path (name a file outside the repository)",
+      );
+    }
+    // An operator file that lowers the result under --untrusted is always
+    // named, so a reader of the run sees why findings are suppressed or
+    // counted as existing.
+    if (operatorIgnoreFile && explicitIgnoreFile) {
+      warnings.push(
+        `--untrusted: applied the ignore file given with --ignore-file: ${path.resolve(explicitIgnoreFile)}`,
+      );
+    }
+    if (operatorBaseline && explicitBaseline) {
+      warnings.push(
+        `--untrusted: applied the baseline given with --baseline: ${path.resolve(explicitBaseline)}`,
       );
     }
     if (ignorePath) {
@@ -985,6 +1001,9 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     let sinceRef: string | undefined;
     let outOfScope = 0;
     let diffLinesFiltered = 0;
+    // Findings left out only because they are on unchanged lines: they are
+    // still in the file, so a baseline entry for them is not "fixed".
+    const diffFilteredFingerprints = new Set<string>();
     let diffLinesWholeFiles = 0;
     if (options.since) {
       const scope = await listChangedFiles(validated.root, options.since, {
@@ -1046,7 +1065,11 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         };
         const beforeLineFindings = findings.length;
         const beforeLineHotspots = hotspots.length;
-        findings = findings.filter(touchesChange);
+        findings = findings.filter((finding) => {
+          if (touchesChange(finding)) return true;
+          diffFilteredFingerprints.add(finding.fingerprint);
+          return false;
+        });
         hotspots = hotspots.filter(touchesChange);
         diffLinesFiltered =
           beforeLineFindings - findings.length + (beforeLineHotspots - hotspots.length);
@@ -1071,8 +1094,10 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         baselineDoc = readBaseline(resolved);
         baselinePath = resolved;
         const comparison = compareBaseline(baselineDoc, findings);
-        baselineCounts = comparison.counts;
-        baselineFixed = comparison.fixed;
+        baselineFixed = comparison.fixed.filter(
+          (entry) => !diffFilteredFingerprints.has(entry.fingerprint),
+        );
+        baselineCounts = { ...comparison.counts, fixed: baselineFixed.length };
         findings = findings.map((finding) => {
           const state = comparison.states.get(finding.fingerprint);
           return state ? { ...finding, baselineState: state } : finding;

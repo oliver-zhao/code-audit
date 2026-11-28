@@ -811,4 +811,113 @@ describe("prepare.sh and the Scan step", () => {
     expect(prep.status).toBe(2);
     expect(prep.stdout).toMatch(/fetch-depth: 0/);
   });
+
+  it("M2: a subdirectory path gives repository-relative paths to comments and SARIF", () => {
+    const setup = setUpPullRequest("pr-subdir");
+    fs.mkdirSync(path.join(setup.workspace, "app"));
+    fs.writeFileSync(path.join(setup.workspace, "app", "app.py"), VULNERABLE_PY);
+    const { env, output } = prepareEnv(setup, { INPUT_PATH: "app" });
+    const prep = runPrepare(env);
+    expect(prep.stderr).toBe("");
+    expect(prep.status).toBe(0);
+    const outputs = parseOutputs(output);
+    expect(outputs["path-prefix"]).toBe("app/");
+    expect(fs.realpathSync(outputs["repo-root"] as string)).toBe(fs.realpathSync(setup.workspace));
+
+    // findings.json and SARIF as the scanner writes them for the subdirectory.
+    const dir = path.join(setup.root, "latest");
+    fs.mkdirSync(dir);
+    const finding = {
+      fingerprint: FP(9),
+      ruleId: "py-command-injection",
+      severity: "high",
+      confidence: "high",
+      status: "candidate",
+      title: "t",
+      file: "app.py",
+      startLine: 4,
+      endLine: 4,
+    };
+    fs.writeFileSync(
+      path.join(dir, "findings.json"),
+      JSON.stringify({ run: { minConfidence: "medium", failOn: "high", summary: { headline: { total: 1 } } }, findings: [finding] }),
+    );
+    fs.writeFileSync(
+      path.join(dir, "results.sarif"),
+      JSON.stringify({
+        runs: [
+          {
+            originalUriBaseIds: { "%SRCROOT%": { uri: `file://${outputs.target}/` } },
+            results: [{ locations: [{ physicalLocation: { artifactLocation: { uri: "app.py", uriBaseId: "%SRCROOT%" } } }] }],
+          },
+        ],
+      }),
+    );
+    const githubOutput = path.join(setup.root, "result-output");
+    fs.writeFileSync(githubOutput, "");
+    const run = spawnSync(
+      process.execPath,
+      [path.join(REPO_ROOT, "scripts/action/prepare.mjs"), path.join(dir, "findings.json"), path.join(dir, "comment-data.json")],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: githubOutput,
+          CODE_AUDIT_PR_NUMBER: "7",
+          CODE_AUDIT_HEAD_SHA: HEAD,
+          CODE_AUDIT_BASE_SHA: BASE,
+          CODE_AUDIT_MODE: "diff",
+          CODE_AUDIT_EXIT_CODE: "1",
+          CODE_AUDIT_PATH_PREFIX: outputs["path-prefix"],
+          CODE_AUDIT_REPO_ROOT: outputs["repo-root"],
+          CODE_AUDIT_SARIF_IN: path.join(dir, "results.sarif"),
+          CODE_AUDIT_SARIF_OUT: path.join(dir, "results-repo.sarif"),
+        },
+      },
+    );
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    const data = JSON.parse(fs.readFileSync(path.join(dir, "comment-data.json"), "utf8"));
+    expect(data.findings[0].file).toBe("app/app.py");
+    expect(parseOutputs(githubOutput)["sarif-file"]).toBe(path.join(dir, "results-repo.sarif"));
+    const sarif = JSON.parse(fs.readFileSync(path.join(dir, "results-repo.sarif"), "utf8"));
+    expect(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri).toBe("app/app.py");
+    expect(sarif.runs[0].originalUriBaseIds["%SRCROOT%"].uri).toBe(`file://${outputs["repo-root"]}/`);
+
+    // The comment goes on the file of the finding, not on a root file of the same name.
+    const result = runComment(
+      "subdir",
+      data,
+      workflowRunEvent(),
+      [
+        {
+          method: "GET",
+          match: "^repos/octo/repo/pulls/7/files\\?.*page=1$",
+          body: [
+            { filename: "app.py", patch: addedPatch(10) },
+            { filename: "app/app.py", patch: addedPatch(10) },
+          ],
+        },
+      ],
+    );
+    expect(result.status).toBe(0);
+    const inline = result.calls.filter((call) => call.method === "POST" && call.endpoint.endsWith("/pulls/7/comments"));
+    expect(inline.map((call) => call.body?.path)).toEqual(["app/app.py"]);
+    expect(() => prepare.normalizePrefix("../")).toThrow();
+    expect(() => prepare.normalizePrefix("a//")).toThrow();
+    expect(() => prepare.normalizePrefix("a")).toThrow();
+  });
+
+  it("LOW 3: refuses a path that is or passes through a symbolic link", () => {
+    const setup = setUpPullRequest("pr-symlink");
+    fs.mkdirSync(path.join(setup.workspace, "real", "inner"), { recursive: true });
+    fs.symlinkSync("real", path.join(setup.workspace, "link"));
+    for (const input of ["link", "link/inner", "real/../link"]) {
+      const run = runPrepare(prepareEnv(setup, { INPUT_PATH: input }).env);
+      expect(run.status, input).toBe(2);
+      expect(run.stdout, input).toMatch(/symbolic link|'\.\.'/);
+    }
+    const ok = runPrepare(prepareEnv(setup, { INPUT_PATH: "real/inner" }).env);
+    expect(ok.status).toBe(0);
+  });
 });

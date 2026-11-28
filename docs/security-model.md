@@ -70,10 +70,17 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   blob id of every working file is computed by code-audit itself
   (`sha1`/`sha256` of `"blob <size>\0"` + bytes) and compared with the tree.
   Every invocation also overrides `core.fsmonitor`, `core.hooksPath`,
-  `core.pager`, `diff.external`, `core.attributesFile` and
-  `protocol.allow`, and runs with `GIT_CONFIG_NOSYSTEM=1`,
-  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and a minimal
-  environment. Tests plant a marker program in each of `filter.*.clean`,
+  `core.pager`, `diff.external`, `core.attributesFile`, `protocol.allow`
+  and - because `protocol.<name>.allow` takes precedence over
+  `protocol.allow` and the repository can set it - `protocol.<name>.allow`
+  for `ext`, `file`, `fd`, `ssh`, `git`, `http` and `https`, plus
+  `core.useReplaceRefs=false`; and runs with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`,
+  `GIT_NO_LAZY_FETCH=1` (a partial clone never fetches a missing tree or
+  blob from its promisor remote; git 2.44 and later, older git is held by
+  the protocol overrides), `GIT_NO_REPLACE_OBJECTS=1` and
+  `GIT_GRAFT_FILE=/dev/null` (`refs/replace/` and `info/grafts` cannot swap
+  the object behind an id), and a minimal environment. Tests plant a marker program in each of `filter.*.clean`,
   `process`, `smudge`, `textconv`, `diff.external`, `core.fsmonitor`,
   `core.sshCommand`, an alias, `core.hooksPath`, `uploadpack`, pager, editor
   and credential-helper settings, and `include` / `includeIf` files; none is
@@ -88,15 +95,20 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   one form: `git cat-file blob <oid>`, with the full object id that
   `ls-tree` listed for a file of the ref. It prints the object as stored -
   without `--textconv` or `--filters` git runs no textconv, filter or EOL
-  conversion - and runs with `GIT_NO_LAZY_FETCH=1` (plus
-  `protocol.allow=never`), so a partial clone cannot fetch a missing blob
-  from a promisor remote. The working file is read by code-audit, and the
-  line diff (Myers, `lineDiff.ts`) is computed in-process; a file over
-  20,000 lines, over 16 MiB, with more than 5,000 changed lines, or that
-  cannot be read counts as changed in full. The marker tests above are
-  repeated for `--diff-lines` (filters, textconv, fsmonitor, external diff,
-  an alias for `cat-file`, and a partial clone whose promisor remote is an
-  `ext::` program with the blob deleted).
+  conversion - under the same hardening as every other call (no lazy
+  fetch, every transport refused, no replace refs or grafts). The working
+  file is read by code-audit, and the line diff (Myers, `lineDiff.ts`) is
+  computed in-process with the scanner's own line model (`\r\n`, a lone
+  `\r` and `\n` each end a line), so a finding's line number is the line
+  the diff looked at. A file over 20,000 lines, over 16 MiB, with more than
+  5,000 changed lines, or that cannot be read counts as changed in full; the
+  new lines next to a pure deletion count as changed. The marker tests
+  above are repeated for `--diff-lines` (filters, textconv, fsmonitor,
+  external diff, an alias for `cat-file`, a blob:none partial clone whose
+  promisor remote is an `ext::` program with the blob deleted, and a
+  tree:0 partial clone with `protocol.ext.allow=always` in `.git/config`
+  for both `--since` and `--diff-lines`), plus a `git replace` of the old
+  blob.
 - **No LLM.** No model is called by the scan, the CLI or the MCP server.
 - **Network.** The only network use is the dependency lookup at OSV.dev
   (package ecosystem, name and version; and advisory ids), skipped with
@@ -291,13 +303,17 @@ own configuration files are still honoured by those engines; the scan warns
 when one is present.
 
 An `--ignore-file` or `--baseline` named on the command line still applies
-under `--untrusted` when it is an **absolute path outside the audit root**:
-that file comes from whoever runs the scan (the GitHub Action copies them
-from the base commit of a pull request to `$RUNNER_TEMP`), not from the
-repository. A path inside the root - relative, absolute, or through a
-symbolic link that resolves into the root - is not applied, and the scan
-warns. The files used are recorded in `run.json` (`args.operatorIgnoreFile`,
-`args.operatorBaseline`). MCP `audit_start` has no ignore-file argument and
+under `--untrusted` when it is an **absolute path outside the audit root and
+outside the git work tree that contains the root**: that file comes from
+whoever runs the scan (the GitHub Action copies them from the base commit
+of a pull request to `$RUNNER_TEMP`), not from the repository. A path inside
+the root or inside its work tree (found with the same hardened `git
+rev-parse --show-toplevel`; a monorepo checkout scanned in a subdirectory
+is one work tree) - relative, absolute, or through a symbolic link that
+resolves there - is not applied, and the scan warns. An applied file is
+always named: a `WARNING:` line in the terminal summary, a warning in
+`run.json` (and in the CI annotations and step summary), and
+`args.operatorIgnoreFile` / `args.operatorBaseline` in `run.json`. MCP `audit_start` has no ignore-file argument and
 accepts a baseline only inside the root, so neither applies there under
 `untrusted`.
 

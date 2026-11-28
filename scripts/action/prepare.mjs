@@ -5,7 +5,14 @@
 //   1. writes the step outputs findings-count, new-findings-count (and the
 //      exit code is passed through by the caller) to $GITHUB_OUTPUT;
 //   2. writes comment-data.json: the data the separate, privileged comment
-//      workflow turns into pull request comments (scripts/action/comment.mjs).
+//      workflow turns into pull request comments (scripts/action/comment.mjs);
+//   3. with CODE_AUDIT_SARIF_IN / CODE_AUDIT_SARIF_OUT: a copy of the SARIF
+//      report whose paths are relative to the repository root.
+//
+// Finding paths are relative to the scanned directory. When the Action's
+// `path` is a subdirectory, CODE_AUDIT_PATH_PREFIX (git rev-parse
+// --show-prefix, e.g. "app/") is put in front, so comments and code scanning
+// name the file as GitHub does (relative to the repository root).
 //
 // Usage: node prepare.mjs <findings.json> <comment-data.json>
 //
@@ -44,7 +51,47 @@ export function countedFindings(document) {
   );
 }
 
+/** Validate a `git rev-parse --show-prefix` value: "" or "dir/sub/". */
+export function normalizePrefix(prefix) {
+  if (prefix === undefined || prefix === "") return "";
+  if (typeof prefix !== "string" || !prefix.endsWith("/") || prefix.length > 1000) {
+    throw new Error("invalid path prefix");
+  }
+  const segments = prefix.slice(0, -1).split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || /[\0\\]/.test(segment))) {
+    throw new Error("invalid path prefix");
+  }
+  return prefix;
+}
+
+/**
+ * The SARIF document with every `%SRCROOT%` location made relative to the
+ * repository root (`prefix` in front) and `%SRCROOT%` set to that root.
+ */
+export function rebaseSarif(sarif, prefix, repoRoot) {
+  const walk = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    if (typeof value.uri === "string" && value.uriBaseId === "%SRCROOT%" && !/^[a-z][a-z0-9+.-]*:/i.test(value.uri)) {
+      value.uri = `${encodeURI(prefix)}${value.uri}`;
+    }
+    for (const key of Object.keys(value)) walk(value[key]);
+  };
+  for (const run of Array.isArray(sarif?.runs) ? sarif.runs : []) {
+    walk(run.results);
+    walk(run.artifacts);
+    if (repoRoot && run.originalUriBaseIds?.["%SRCROOT%"]) {
+      run.originalUriBaseIds["%SRCROOT%"].uri = pathToFileURL(repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`).href;
+    }
+  }
+  return sarif;
+}
+
 export function buildCommentData(document, context) {
+  const prefix = normalizePrefix(context.prefix);
   const run = document.run ?? {};
   const summary = run.summary ?? {};
   const counted = countedFindings(document).sort(
@@ -77,7 +124,7 @@ export function buildCommentData(document, context) {
       severity: finding.severity,
       confidence: finding.confidence,
       title: clip(finding.title, 200) ?? "",
-      file: clip(finding.file, 500) ?? "",
+      file: clip(`${prefix}${finding.file ?? ""}`, 500) ?? "",
       startLine: finding.startLine,
       endLine: finding.endLine,
       ...(finding.cwe ? { cwe: clip(finding.cwe, 20) } : {}),
@@ -109,11 +156,25 @@ function main() {
     baseSha: process.env.CODE_AUDIT_BASE_SHA ?? "",
     mode: process.env.CODE_AUDIT_MODE === "diff" ? "diff" : "full",
     exitCode: Number.parseInt(process.env.CODE_AUDIT_EXIT_CODE ?? "0", 10) || 0,
+    prefix: process.env.CODE_AUDIT_PATH_PREFIX ?? "",
   });
+  const sarifIn = process.env.CODE_AUDIT_SARIF_IN;
+  const sarifOut = process.env.CODE_AUDIT_SARIF_OUT;
+  const outputs = {};
+  if (sarifIn && sarifOut && fs.existsSync(sarifIn)) {
+    const sarif = rebaseSarif(
+      JSON.parse(fs.readFileSync(sarifIn, "utf8")),
+      normalizePrefix(process.env.CODE_AUDIT_PATH_PREFIX ?? ""),
+      process.env.CODE_AUDIT_REPO_ROOT || undefined,
+    );
+    fs.writeFileSync(sarifOut, `${JSON.stringify(sarif, null, 2)}\n`);
+    outputs["sarif-file"] = sarifOut;
+  }
   fs.writeFileSync(outPath, `${JSON.stringify(data, null, 2)}\n`);
   writeOutputs({
     "findings-count": data.summary.findings,
     "new-findings-count": data.summary.newFindings,
+    ...outputs,
   });
 }
 

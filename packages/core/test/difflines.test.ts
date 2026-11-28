@@ -421,3 +421,138 @@ describe("--diff-lines never runs a program configured by the audited repository
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regressions from the adversarial review (F4_REVIEW.md).
+
+describe("review fixes", () => {
+  it("H1: lone CRs cannot move a new finding onto an unchanged line", async () => {
+    const base = 'const express = require("express");\nconst app = express();\nfunction ok() { return 1; }\nmodule.exports = ok;\n';
+    const repo = makeRepo("h1-lone-cr", { "app.js": base });
+    const sink = 'app.get("/", (req, res) => { eval(req.query.code); });\n';
+    // Line 1 (a changed line) ends with a comment that holds lone CRs.
+    write(
+      repo,
+      "app.js",
+      'const express = require("express"); //\r//\r//\r//\rx\nconst app = express();\nfunction ok() { return 1; }\n' + sink + "module.exports = ok;\n",
+    );
+    const byFile = await scan(repo, "h1-files", { since: "HEAD", untrusted: true });
+    const target = byFile.findings.find((f) => f.file === "app.js" && /eval|injection/.test(f.ruleId));
+    expect(target).toBeDefined();
+    const byLine = await scan(repo, "h1-lines", { since: "HEAD", diffLines: true, untrusted: true });
+    expect(byLine.findings.some((f) => f.fingerprint === target?.fingerprint)).toBe(true);
+    expect(byLine.summary.exitCode.code).toBe(byFile.summary.exitCode.code);
+  });
+
+  it("H2: a tree:0 partial clone with an ext:: promisor runs nothing for --since and --diff-lines", async () => {
+    const server = makeRepo("h2-server", { "a.py": OLD_APP });
+    write(server, "a.py", NEW_APP);
+    git(["commit", "-qam", "second"], server);
+    git(["config", "uploadpack.allowFilter", "true"], server);
+    const clone = path.join(temp, "h2-clone");
+    git(
+      ["-c", "protocol.file.allow=always", "clone", "-q", "--filter=tree:0", "--no-local", `file://${server}`, clone],
+      temp,
+    );
+    const marker = path.join(temp, "h2.marker");
+    git(["config", "remote.origin.url", `ext::sh -c touch% ${marker}`], clone);
+    git(["config", "protocol.ext.allow", "always"], clone);
+    write(clone, "a.py", `${NEW_APP}\nimport os\nos.system(x)\n`);
+    fs.rmSync(marker, { force: true });
+
+    for (const diffLines of [false, true]) {
+      try {
+        await scan(clone, `h2-${diffLines}`, { since: "HEAD~1", diffLines, untrusted: true });
+      } catch {
+        // The tree of HEAD~1 is missing and may not be fetched: an error is fine.
+      }
+      expect(fs.existsSync(marker), `diffLines=${diffLines}`).toBe(false);
+    }
+    await expect(listChangedFiles(clone, "HEAD~1")).rejects.toThrow();
+    expect(fs.existsSync(marker)).toBe(false);
+    // Control: plain git fetches the missing tree and runs the program.
+    spawnSync("git", ["ls-tree", "-r", "HEAD~1"], { cwd: clone, env: GIT_TEST_ENV, encoding: "utf8", timeout: 20_000 });
+    expect(fs.existsSync(marker)).toBe(true);
+  });
+
+  it("M1: a replace ref cannot swap the old blob", async () => {
+    const repo = makeRepo("m1-replace", { "app.py": OLD_APP });
+    const base = git(["rev-parse", "HEAD"], repo).trim();
+    write(repo, "app.py", NEW_APP);
+    git(["commit", "-qam", "add sink"], repo);
+    const before = await scan(repo, "m1-before", { since: base, diffLines: true });
+    const added = before.findings.filter((f) => f.file === "app.py" && f.startLine === 8);
+    expect(added.length).toBeGreaterThan(0);
+    // Make the old blob "be" the new one.
+    const oldBlob = git(["rev-parse", `${base}:app.py`], repo).trim();
+    const newBlob = git(["rev-parse", "HEAD:app.py"], repo).trim();
+    git(["replace", "-f", oldBlob, newBlob], repo);
+    expect(git(["cat-file", "blob", oldBlob], repo)).toBe(NEW_APP);
+    const after = await scan(repo, "m1-after", { since: base, diffLines: true });
+    expect(after.findings.filter((f) => f.file === "app.py" && f.startLine === 8).length).toBe(added.length);
+    const lines = await listChangedLines(repo, base, ["app.py"]);
+    expect([...(lines.files.get("app.py")?.lines ?? [])].sort()).toEqual([7, 8, 9]);
+  });
+
+  it("M3: an ignore file or baseline inside the root's git work tree is refused; an applied one is named", async () => {
+    const repo = makeRepo("m3-mono", {
+      "app/app.py": OLD_APP,
+      ".code-audit-ignore": 'version: 1\nignore:\n  - paths: ["**"]\n    reason: "hide everything"\n',
+    });
+    const root = path.join(repo, "app");
+    const plain = await scan(repo, "m3-plain", { root, untrusted: true } as Record<string, unknown>);
+    expect(plain.findings.length).toBeGreaterThan(0);
+    const { buildBaseline } = await import("../src/baseline.js");
+    write(repo, "bl.json", JSON.stringify(buildBaseline(plain.findings, new Date().toISOString(), "test")));
+    const refused = await scan(repo, "m3-refused", {
+      root,
+      untrusted: true,
+      ignoreFile: path.join(repo, ".code-audit-ignore"),
+      baseline: path.join(repo, "bl.json"),
+    } as Record<string, unknown>);
+    expect(refused.findings.some((f) => f.suppression?.source === "ignore-file")).toBe(false);
+    expect((refused.run as { baseline?: unknown }).baseline).toBeUndefined();
+    expect(refused.warnings.join("\n")).toMatch(/--ignore-file is not applied with --untrusted: .*git work tree/);
+    expect(refused.warnings.join("\n")).toMatch(/--baseline is not applied with --untrusted/);
+
+    // An accepted operator file is named in the warnings (run.json) and the CLI summary.
+    const outside = path.join(temp, "m3-operator-ignore.yml");
+    fs.writeFileSync(outside, 'version: 1\nignore:\n  - paths: ["**"]\n    reason: "operator"\n');
+    const applied = await scan(repo, "m3-applied", { root, untrusted: true, ignoreFile: outside } as Record<string, unknown>);
+    expect(applied.warnings).toContain(`--untrusted: applied the ignore file given with --ignore-file: ${outside}`);
+    const runJson = JSON.parse(fs.readFileSync(path.join(applied.runDir, "run.json"), "utf8"));
+    expect(runJson.warnings).toContain(`--untrusted: applied the ignore file given with --ignore-file: ${outside}`);
+    const cli = spawnSync(
+      process.execPath,
+      [CLI, "scan", root, "--untrusted", "--offline", "--engines", "builtin", "--ignore-file", outside, "--out", path.join(temp, "out-m3-cli")],
+      { cwd: REPO_ROOT, encoding: "utf8", timeout: 60_000 },
+    );
+    expect(cli.stdout).toContain(`WARNING: --untrusted, but the ignore file given with --ignore-file was applied: ${outside}`);
+  });
+
+  it("LOW 2: findings left out by --diff-lines are not counted as fixed", async () => {
+    const repo = makeRepo("l2-fixed", { "app.py": OLD_APP });
+    const first = await scan(repo, "l2-first", {});
+    const { buildBaseline } = await import("../src/baseline.js");
+    const baselineFile = path.join(temp, "l2-baseline.json");
+    fs.writeFileSync(baselineFile, JSON.stringify(buildBaseline(first.findings, new Date().toISOString(), "test")));
+    write(repo, "app.py", `${OLD_APP}# a comment\n`);
+    const result = await scan(repo, "l2-second", { since: "HEAD", diffLines: true, baseline: baselineFile });
+    const run = result.run as { baseline?: { new: number; existing: number; fixed: number } };
+    expect((result.run.scope as { diffLinesFiltered: number }).diffLinesFiltered).toBeGreaterThan(0);
+    expect(run.baseline?.fixed).toBe(0);
+    // A finding that is really gone is still fixed.
+    write(repo, "app.py", "import os\n# nothing left\n");
+    const gone = await scan(repo, "l2-gone", { since: "HEAD", diffLines: true, baseline: baselineFile });
+    expect((gone.run as { baseline?: { fixed: number } }).baseline?.fixed).toBe(first.findings.length);
+  });
+
+  it("LOW 1: deleting a guard line puts its neighbour in scope", async () => {
+    const repo = makeRepo("l1-delete", {
+      "a.txt": "one\nguard()\nsink()\nend\n",
+    });
+    write(repo, "a.txt", "one\nsink()\nend\n");
+    const lines = await listChangedLines(repo, "HEAD", ["a.txt"]);
+    expect([...(lines.files.get("a.txt")?.lines ?? [])].sort()).toEqual([1, 2]);
+  });
+});

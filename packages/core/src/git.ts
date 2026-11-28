@@ -66,6 +66,16 @@ const GIT_HARDENING_ARGS = [
   "core.attributesFile=/dev/null",
   "-c",
   "protocol.allow=never",
+  // `protocol.<name>.allow` wins over `protocol.allow`, and the repository
+  // config can set it (`protocol.ext.allow=always`): override every one on
+  // the command line, which wins over the repository config for the same key.
+  ...["ext", "file", "fd", "ssh", "git", "http", "https"].flatMap((name) => [
+    "-c",
+    `protocol.${name}.allow=never`,
+  ]),
+  // Object ids are content addresses only without replace refs and grafts.
+  "-c",
+  "core.useReplaceRefs=false",
   "--no-pager",
   "--no-optional-locks",
 ] as const;
@@ -79,6 +89,14 @@ const GIT_ENV: Record<string, string> = {
   GIT_ATTR_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",
   GIT_OPTIONAL_LOCKS: "0",
+  // A partial clone would fetch a missing tree or blob from its promisor
+  // remote (any command, `ls-tree` included): never (git >= 2.44; older git
+  // is held by the protocol overrides above).
+  GIT_NO_LAZY_FETCH: "1",
+  // `refs/replace/*` and `info/grafts` would let the repository swap the
+  // object behind an id (an old blob, a commit or tree of the ref).
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_GRAFT_FILE: os.devNull,
 };
 
 /**
@@ -181,9 +199,6 @@ function runGit(
     maxOutputBytes: options.maxOutputBytes ?? maxOutputBytes,
     env: {
       ...GIT_ENV,
-      // A partial clone would fetch a missing blob from its promisor remote:
-      // never (protocol.allow=never refuses every transport as well).
-      ...(args[0] === "cat-file" ? { GIT_NO_LAZY_FETCH: "1" } : {}),
       ...(options.pathEnv ? { PATH: options.pathEnv } : {}),
     },
   });
@@ -540,6 +555,32 @@ function canonicalDir(dir: string): string {
  */
 export function isGitRepository(root: string): boolean {
   return fs.existsSync(path.join(root, ".git"));
+}
+
+/**
+ * The top level of the git work tree that contains `rootInput` (canonical
+ * path), or `undefined` when it is not inside one or git is unavailable.
+ * Hardened like every other git call; never throws.
+ */
+export async function gitWorkTreeRoot(
+  rootInput: string,
+  options: ListChangedFilesOptions = {},
+): Promise<string | undefined> {
+  let root: string;
+  try {
+    root = fs.realpathSync(rootInput);
+  } catch {
+    return undefined;
+  }
+  try {
+    const result = await runGit(root, ["rev-parse", "--show-toplevel"], options);
+    if (result.timedOut || result.truncated || result.exitCode !== 0) return undefined;
+    const top = result.stdout.split("\n")[0]?.replace(/\r$/, "") ?? "";
+    if (!top || !path.isAbsolute(top)) return undefined;
+    return canonicalDir(top);
+  } catch {
+    return undefined;
+  }
 }
 
 /** A blob of the ref larger than this is not read: the file counts as changed in full. */

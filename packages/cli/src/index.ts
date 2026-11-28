@@ -393,6 +393,19 @@ function parseScanArgs(args: string[]): ScanArgs {
   };
 }
 
+/** `WARNING:` lines for operator files applied under --untrusted. */
+function operatorFileLines(run: Record<string, unknown>): string[] {
+  const args = (run.args ?? {}) as { operatorIgnoreFile?: unknown; operatorBaseline?: unknown };
+  const lines: string[] = [];
+  if (typeof args.operatorIgnoreFile === "string") {
+    lines.push(`WARNING: --untrusted, but the ignore file given with --ignore-file was applied: ${args.operatorIgnoreFile}`);
+  }
+  if (typeof args.operatorBaseline === "string") {
+    lines.push(`WARNING: --untrusted, but the baseline given with --baseline was applied: ${args.operatorBaseline}`);
+  }
+  return lines;
+}
+
 async function runScan(args: string[]): Promise<number> {
   const parsed = parseScanArgs(args);
   // A human at a shell may audit a credential directory on purpose.
@@ -476,6 +489,8 @@ async function runScan(args: string[]): Promise<number> {
         } / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
         `Rules: ${result.coverage.rulesCount}`,
         ...renderRunScopeText({ baseline, scope }),
+        // --untrusted with an operator's ignore file or baseline: always named.
+        ...operatorFileLines(result.run),
         // Headline, low-confidence candidates, hotspots, suppressed (never
         // hidden) and the line that explains the exit code.
         ...renderSummaryText(summary),

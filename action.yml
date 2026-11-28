@@ -79,8 +79,8 @@ outputs:
     description: Findings not in the baseline (equal to findings-count without a baseline).
     value: ${{ steps.result.outputs.new-findings-count }}
   sarif-file:
-    description: Path of the SARIF report.
-    value: ${{ steps.scan.outputs.sarif-file }}
+    description: Path of the SARIF report (paths relative to the repository root).
+    value: ${{ steps.result.outputs.sarif-file }}
   exit-code:
     description: Exit code of the scan (0 clean, 1 findings reached fail-on, 2 error).
     value: ${{ steps.scan.outputs.exit-code }}
@@ -190,16 +190,22 @@ runs:
         CODE_AUDIT_BASE_SHA: ${{ steps.prep.outputs.base-sha }}
         CODE_AUDIT_MODE: ${{ steps.prep.outputs.mode }}
         CODE_AUDIT_EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+        # Finding paths are relative to `path`; comments and code scanning
+        # need them relative to the repository root.
+        CODE_AUDIT_PATH_PREFIX: ${{ steps.prep.outputs.path-prefix }}
+        CODE_AUDIT_REPO_ROOT: ${{ steps.prep.outputs.repo-root }}
+        CODE_AUDIT_SARIF_IN: ${{ steps.prep.outputs.out }}/latest/results.sarif
+        CODE_AUDIT_SARIF_OUT: ${{ steps.prep.outputs.out }}/latest/results-repo.sarif
       run: node "$SRC/scripts/action/prepare.mjs" "$OUT/latest/findings.json" "$OUT/latest/comment-data.json"
 
     - name: Upload SARIF to code scanning
-      if: always() && steps.prep.outputs.upload-sarif == 'true' && steps.scan.outputs.sarif-file != ''
+      if: always() && steps.prep.outputs.upload-sarif == 'true' && steps.result.outputs.sarif-file != ''
       # A pull request from a fork gets a read-only token: the upload fails
       # there. That must not fail the job; the artifact still has the SARIF.
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
       with:
-        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        sarif_file: ${{ steps.result.outputs.sarif-file }}
         category: code-audit
 
     - name: Note on the SARIF upload
@@ -214,7 +220,7 @@ runs:
         name: ${{ steps.prep.outputs.artifact-name }}
         path: |
           ${{ steps.prep.outputs.out }}/latest/comment-data.json
-          ${{ steps.prep.outputs.out }}/latest/results.sarif
+          ${{ steps.prep.outputs.out }}/latest/results-repo.sarif
         if-no-files-found: error
         retention-days: 7
 
