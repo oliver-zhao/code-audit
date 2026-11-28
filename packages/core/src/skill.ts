@@ -899,6 +899,14 @@ function ownRunFile(relPath: string, ownRunRel: string | undefined): boolean {
   return ownRunRel !== undefined && relPath.startsWith(`${ownRunRel}/`);
 }
 
+function isRealDirectory(dir: string): boolean {
+  try {
+    return fs.lstatSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Files below a directory the inventory did not enter (bounded). */
 function filesBelow(root: string, relDir: string, limit: number): { files: string[]; more: number } {
   const files: string[] = [];
@@ -1276,11 +1284,28 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     const rel = path.relative(root, scan.runDir);
     return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : undefined;
   })();
+  const localDirectoryTarget = target.kind === "directory" || target.kind === "skill-file";
+  let rootGitNote: string | undefined;
+  // A `.git` FILE (a gitdir pointer of a worktree or submodule) is read as
+  // text, but the repository it points at is not part of the scan.
+  for (const scanned of scan.coverage.scannedFiles) {
+    if (scanned.path === ".git" || scanned.path.endsWith("/.git")) {
+      fileIncomplete.push({ path: scanned.path, reason: "a .git file (gitdir pointer); the repository data it points at is not analysed" });
+    }
+  }
   for (const skip of scan.coverage.skipped) {
     if (ownRunFile(skip.path, ownRunRel)) continue;
     if (skip.path.endsWith("/") && skip.reason === "default-excluded directory") {
       // A directory the inventory never enters (`.git`): every file in it.
       const dir = skip.path.slice(0, -1);
+      // Except the repository metadata at the root of a local directory
+      // target (a skill the user just cloned): a real directory there is
+      // not part of what gets installed. A `.git` in an archive, a nested
+      // one, or a `.git` file or link is still reported.
+      if (dir === ".git" && localDirectoryTarget && isRealDirectory(path.join(root, ".git"))) {
+        rootGitNote = "git metadata at .git/ not analysed: not part of an installed skill";
+        continue;
+      }
       const below = filesBelow(root, dir, 200);
       for (const file of below.files) fileIncomplete.push({ path: file, reason: `inside ${dir}/, which is never scanned (not analysed)` });
       if (below.more > 0) fileIncomplete.push({ path: dir, reason: `${below.more} more file(s) inside ${dir}/ not analysed` });
@@ -1365,7 +1390,12 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       incomplete.push({ reason: dependencyGap });
     }
     return toPackage(
-      { path: pkg.rel === "" ? "." : pkg.rel, name: pkg.name, kind: pkg.kind, notes: pkg.notes },
+      {
+        path: pkg.rel === "" ? "." : pkg.rel,
+        name: pkg.name,
+        kind: pkg.kind,
+        notes: rootGitNote && pkg.rel === "" ? [...pkg.notes, rootGitNote] : pkg.notes,
+      },
       own,
       incomplete,
       capabilityStates.get(pkg.rel) as CapabilityState,

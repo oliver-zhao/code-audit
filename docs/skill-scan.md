@@ -38,8 +38,12 @@ with a skipped file is never `SAFE_TO_INSTALL`.
 `INCOMPLETE` reasons, each listed by path: a file the scanner skipped (over
 1 MiB, unreadable, not a regular file, a symbolic link - also a `SKILL.md`
 that is a link); every file inside a `.git` directory (the inventory never
-enters one; only the `.git` of the tool's own fresh clone is deleted before
-the scan); control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
+enters one), except two cases: the `.git` of the tool's own fresh clone is
+deleted before the scan, and a real `.git` directory at the root of a local
+directory target (or of the directory of a `SKILL.md` target) is excluded
+with the note "git metadata at .git/ not analysed: not part of an installed
+skill". A nested `.git`, a `.git` inside an archive, and a `.git` that is a
+file (gitdir pointer) or a symbolic link are still reported; control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
 and files named like code-audit output that this run did not write (an
 earlier or planted `.audit/<run>/`); a binary file that is not a recognised
 image, font, audio, video or PDF under its own extension (executables, nested
