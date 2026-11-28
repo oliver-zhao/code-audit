@@ -225,13 +225,36 @@ const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
 
+/** Central header, local header, end record, ZIP64 end record and locator, data descriptor. */
+const ZIP_SIGNATURES: readonly Buffer[] = [
+  [1, 2],
+  [3, 4],
+  [5, 6],
+  [6, 6],
+  [6, 7],
+  [7, 8],
+].map(([a, b]) => Buffer.from([0x50, 0x4b, a as number, b as number]));
+
 function findEndOfCentralDirectory(buffer: Buffer): number {
   const last = buffer.length - 22;
   const first = Math.max(0, last - 0xffff);
   for (let offset = last; offset >= first; offset -= 1) {
     if (buffer.readUInt32LE(offset) !== EOCD_SIGNATURE) continue;
     const commentLength = buffer.readUInt16LE(offset + 20);
-    if (offset + 22 + commentLength === buffer.length) return offset;
+    if (offset + 22 + commentLength !== buffer.length) continue;
+    // The end record sits exactly at end-of-file minus its comment. A
+    // comment that holds zip structures is a second archive that other
+    // extractors (unzip, bsdtar) pick instead of this one.
+    const comment = buffer.subarray(offset + 22);
+    for (const signature of ZIP_SIGNATURES) {
+      if (comment.indexOf(signature) >= 0) {
+        throw new ArchiveError(
+          `zip archive comment contains a zip record signature (PK\\x${signature[2]?.toString(16).padStart(2, "0")}\\x${signature[3]?.toString(16).padStart(2, "0")}): a hidden second archive`,
+          "ARCHIVE_COMMENT",
+        );
+      }
+    }
+    return offset;
   }
   throw new ArchiveError("not a zip archive (no end of central directory record)", "ARCHIVE_MALFORMED");
 }

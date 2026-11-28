@@ -57,6 +57,9 @@ import { printable, readFileNoFollow } from "./safeFs.js";
 import type { HttpClient } from "./sca.js";
 import { scanProject, type EngineName, type ReportFormat, type ScanResult } from "./scan.js";
 import { runTool } from "./external/run.js";
+import { scanRules, type RuleHit } from "./rules.js";
+import { scanSecrets } from "./secrets.js";
+import { extractPrintableText, gitDirProblems } from "./skillText.js";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -637,6 +640,7 @@ function capabilityCheck(
   allowedByPackage: Map<string, string[] | null>,
   states: Map<string, CapabilityState>,
   notAnalysed: Array<{ path: string; reason: string }>,
+  invalidUtf8: string[],
 ): (inv: InventoryResult) => Finding[] {
   return (inv) => {
     const findings: Finding[] = [];
@@ -653,7 +657,9 @@ function capabilityCheck(
       try {
         content = STRICT_UTF8.decode(buffer);
       } catch {
-        notAnalysed.push({ path: file.relPath, reason: "not valid UTF-8 (unknown encoding; matched only as decoded with replacement characters)" });
+        // Also matched as decoded with replacement characters; its
+        // printable text goes through the text pass as well.
+        invalidUtf8.push(file.relPath);
         content = buffer.toString("utf8");
       }
       const owner = owningPackage(packages, file.relPath);
@@ -775,32 +781,6 @@ function readHead(file: string): Buffer | undefined {
   } finally {
     fs.closeSync(fd);
   }
-}
-
-/**
- * Undefined when a skipped binary file is a recognised data format under its
- * own extension AND really is binary (a NUL byte in its first 8 KiB): only
- * then does it need no analysis. A 2-5 byte magic alone (`BM`, `%PDF-`,
- * `ID3`, `true`) is printable text and proves nothing. Otherwise the reason
- * it makes the result incomplete.
- */
-export function classifySkippedBinary(relPath: string, head: Buffer | undefined): string | undefined {
-  if (!head) return "binary file could not be read";
-  const ext = path.extname(relPath).toLowerCase();
-  const executable = EXECUTABLE_FORMATS.find((magic) => magic.test(head));
-  if (executable) return `${executable.name} (not analysed)`;
-  const archive = ARCHIVE_FORMATS.find((magic) => magic.test(head));
-  if (archive) return `nested ${archive.name} (contents not analysed)`;
-  const known = KNOWN_DATA_FORMATS.find((magic) => magic.test(head));
-  const binary = head.subarray(0, BINARY_PROBE_BYTES).includes(0);
-  if (!binary) {
-    return known
-      ? `${known.name} header but text content (no NUL byte in the first 8 KiB; not analysed)`
-      : `text content under a binary file extension (not analysed)`;
-  }
-  if (known && known.extensions.includes(ext)) return undefined;
-  if (known) return `${known.name} content under a ${ext || "missing"} extension (not analysed)`;
-  return "unrecognised binary file (not analysed)";
 }
 
 // ---------------------------------------------------------------------------
@@ -944,6 +924,167 @@ function packageRelative(pkgRel: string, fileRel: string): string {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Text pass: rules over the printable text of every file
+// ---------------------------------------------------------------------------
+
+/** Extensions of text an agent may be told to read (skill-mode instructions). */
+export const INSTRUCTION_EXTENSIONS = [".md", ".mdc", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".html", ".htm"];
+/** Those the inventory does not already read as Markdown. */
+const NON_MARKDOWN_INSTRUCTION = new Set([".markdown", ".txt", ".rst", ".adoc", ".html", ".htm"]);
+
+interface TextPassState {
+  /** Files whose printable text went through the rules and secret detectors. */
+  passed: Set<string>;
+  /** Files the text pass could not read (too large, unreadable). */
+  notAnalysed: Array<{ path: string; reason: string }>;
+}
+
+function syntheticFile(relPath: string, absPath: string, language: InventoryFile["language"], size: number): InventoryFile {
+  return { relPath, absPath, language, size, loc: 0, kind: language === "markdown" ? "doc" : "source", scannable: true, isLockfile: false };
+}
+
+/**
+ * Skill mode does not trust file classification. Every file the inventory
+ * skipped as binary, and every file that is not valid UTF-8, is reduced to
+ * its printable text, which is matched with the Markdown (instruction) and
+ * shell rules and the secret detectors; results point at the original file
+ * and the line its text starts on. Text files with an instruction-like
+ * extension that the inventory does not read as Markdown (`.txt`, `.rst`,
+ * `.html`, ...) are matched with the instruction rules as Markdown.
+ */
+function textPass(
+  root: string,
+  ruleSet: RuleSet,
+  instructionIds: ReadonlySet<string>,
+  scratch: string,
+  invalidUtf8: readonly string[],
+  state: TextPassState,
+): (inv: InventoryResult) => Finding[] {
+  return (inv) => {
+    const candidates = new Set<string>(invalidUtf8);
+    for (const skip of inv.skipped) if (BINARY_SKIP_REASONS.has(skip.reason)) candidates.add(skip.relPath);
+    const extracted: Array<{ rel: string; lines: number[]; md: InventoryFile; sh: InventoryFile; secret: InventoryFile }> = [];
+    let counter = 0;
+    for (const rel of [...candidates].sort()) {
+      const abs = path.join(root, ...rel.split("/"));
+      let buffer: Buffer | undefined;
+      try {
+        const stat = fs.lstatSync(abs);
+        if (!stat.isFile()) continue;
+        if (stat.size > ARCHIVE_MAX_FILE_BYTES) {
+          state.notAnalysed.push({ path: rel, reason: `file exceeds the ${ARCHIVE_MAX_FILE_BYTES / 1024 / 1024} MiB limit of the text pass (not analysed)` });
+          continue;
+        }
+        buffer = readFileNoFollow(abs, ARCHIVE_MAX_FILE_BYTES);
+      } catch {
+        buffer = undefined;
+      }
+      if (buffer === undefined) {
+        state.notAnalysed.push({ path: rel, reason: "file could not be read for the text pass (not analysed)" });
+        continue;
+      }
+      const text = extractPrintableText(buffer);
+      counter += 1;
+      const textFile = path.join(scratch, `${counter}.txt`);
+      fs.writeFileSync(textFile, text.text, { mode: 0o600 });
+      extracted.push({
+        rel,
+        lines: text.lines,
+        md: syntheticFile(`${rel}.strings.md`, textFile, "markdown", text.text.length),
+        sh: syntheticFile(`${rel}.strings.sh`, textFile, "shell", text.text.length),
+        secret: syntheticFile(rel, textFile, "unknown", text.text.length),
+      });
+      state.passed.add(rel);
+    }
+    const instructionFiles: InventoryFile[] = inv.files
+      .filter((file) => NON_MARKDOWN_INSTRUCTION.has(path.extname(file.relPath).toLowerCase()) && file.language !== "markdown")
+      .map((file) => syntheticFile(`${file.relPath}.instr.md`, file.absPath, "markdown", file.size));
+
+    const originalOf = new Map<string, { rel: string; lines?: number[] }>();
+    for (const item of extracted) {
+      originalOf.set(item.md.relPath, { rel: item.rel, lines: item.lines });
+      originalOf.set(item.sh.relPath, { rel: item.rel, lines: item.lines });
+      originalOf.set(item.secret.relPath, { rel: item.rel, lines: item.lines });
+    }
+    for (const file of instructionFiles) originalOf.set(file.relPath, { rel: file.relPath.slice(0, -".instr.md".length) });
+    const lineOf = (relPath: string, line: number): { rel: string; line: number } => {
+      const original = originalOf.get(relPath) as { rel: string; lines?: number[] };
+      return { rel: original.rel, line: original.lines ? (original.lines[line - 1] ?? 1) : line };
+    };
+
+    const textRules: RuleSet = {
+      ...ruleSet,
+      rules: ruleSet.rules.filter((rule) => rule.languages.includes("markdown" as never) || rule.languages.includes("shell" as never)),
+    };
+    const instructionOnly: RuleSet = { ...ruleSet, rules: ruleSet.rules.filter((rule) => instructionIds.has(rule.id)) };
+    const hits: RuleHit[] = [
+      ...scanRules([...extracted.flatMap((item) => [item.md, item.sh])], textRules, { inlineIgnore: false }).hits,
+      ...scanRules(instructionFiles, instructionOnly, { inlineIgnore: false }).hits,
+    ];
+    const findings: Finding[] = [];
+    const seen = new Set<string>();
+    for (const hit of hits) {
+      const where = lineOf(hit.file.relPath, hit.line);
+      const key = `${hit.rule.id}\u0000${where.rel}\u0000${where.line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const fromStrings = originalOf.get(hit.file.relPath)?.lines !== undefined;
+      findings.push(
+        createFinding({
+          ruleId: hit.rule.id,
+          title: hit.rule.title,
+          category: "config",
+          severity: hit.rule.severity,
+          confidence: hit.rule.confidence,
+          kind: hit.rule.kind,
+          cwe: hit.rule.cwe,
+          owasp: hit.rule.owasp,
+          language: detectLanguage(where.rel),
+          file: where.rel,
+          startLine: where.line,
+          evidence: fromStrings ? `[text extracted from a non-text file] ${hit.evidence}` : hit.evidence,
+          message: `${hit.rule.message}${fromStrings ? " (matched in the printable text of a file that is not plain text)" : " (matched as an instruction file in skill mode)"}`,
+          remediation: hit.rule.remediation,
+          references: hit.rule.references ?? [hit.rule.cwe],
+          provenance: { engine: "builtin-rules", rule: hit.rule.id, version: TOOL_VERSION },
+        }),
+      );
+    }
+    // Files that are not valid UTF-8 already went through the secret
+    // detectors as decoded text; binaries had none.
+    const invalid = new Set(invalidUtf8);
+    for (const secret of scanSecrets(extracted.filter((item) => !invalid.has(item.rel)).map((item) => item.secret)).findings) {
+      const where = lineOf(secret.file, secret.startLine);
+      const { id: _id, fingerprint: _fingerprint, ...rest } = secret;
+      findings.push(
+        createFinding({
+          ...(rest as Parameters<typeof createFinding>[0]),
+          file: where.rel,
+          startLine: where.line,
+          endLine: where.line,
+          evidence: `[text extracted from a non-text file] ${secret.evidence}`,
+        }),
+      );
+    }
+    return findings;
+  };
+}
+
+/**
+ * After the text pass: a file that is still not analysed. Executables and
+ * nested archives are code or containers whose behaviour or content the text
+ * pass does not cover.
+ */
+export function classifySkippedBinary(_relPath: string, head: Buffer | undefined): string | undefined {
+  if (!head) return "binary file could not be read";
+  const executable = EXECUTABLE_FORMATS.find((magic) => magic.test(head));
+  if (executable) return `${executable.name} (only its printable text was analysed)`;
+  const archive = ARCHIVE_FORMATS.find((magic) => magic.test(head));
+  if (archive) return `nested ${archive.name} (contents not analysed)`;
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Instruction-file rules in skill mode
 // ---------------------------------------------------------------------------
 
@@ -999,9 +1140,10 @@ const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g
  */
 export function extendInstructionRules(ruleSet: RuleSet, ids: ReadonlySet<string>, packageRels: readonly string[]): RuleSet {
   if (ids.size === 0 || packageRels.length === 0) return ruleSet;
+  const extensions = "\\.(?:mdc?|mdx)$";
   const markdown = packageRels.includes("")
-    ? "\\.mdc?$"
-    : `^(?:${packageRels.map((rel) => `${escapeRegex(rel)}/`).join("|")}).*\\.mdc?$`;
+    ? extensions
+    : `^(?:${packageRels.map((rel) => `${escapeRegex(rel)}/`).join("|")}).*${extensions}`;
   return {
     ...ruleSet,
     rules: ruleSet.rules.map((rule) => {
@@ -1016,7 +1158,13 @@ export function extendInstructionRules(ruleSet: RuleSet, ids: ReadonlySet<string
 }
 
 /** `path` of the group of files outside every package. */
-export const OUTSIDE_PACKAGES_PATH = "(outside packages)";
+export const OUTSIDE_PACKAGES_PATH = "<outside packages>";
+
+/** How a package is shown to a person: `./relative/path`, or the outside group's fixed label. */
+export function displayPackagePath(pkg: Pick<SkillPackage, "path" | "kind">): string {
+  if (pkg.kind === "outside") return OUTSIDE_PACKAGES_PATH;
+  return pkg.path === "." ? "./" : `./${pkg.path}`;
+}
 
 export const SKILL_DEFAULT_ENGINES: EngineName[] = ["builtin", "opengrep", "gitleaks"];
 
@@ -1232,8 +1380,18 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   // as it is into the host's skills directory.
   const out = options.out ?? path.join(options.cwd ?? process.cwd(), ".audit");
   const contentNotAnalysed: Array<{ path: string; reason: string }> = [];
+  const invalidUtf8: string[] = [];
   const instructionRules = instructionRuleIds(options.rulesDir ?? defaultRulesDir());
-  const scan = await scanProject({
+  // Instruction matching covers the whole target: in a recursive scan a file
+  // outside every package (`../../shared.md`) feeds the outside group.
+  const skillRules = extendInstructionRules(loadRules(options.rulesDir ?? defaultRulesDir()), instructionRules, [""]);
+  const textState: TextPassState = { passed: new Set(), notAnalysed: [] };
+  const scratch = makeTempDir();
+  const capability = capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed, invalidUtf8);
+  const strings = textPass(root, skillRules, instructionRules, scratch, invalidUtf8, textState);
+  let scan: ScanResult;
+  try {
+    scan = await scanProject({
     root,
     untrusted: true,
     engines,
@@ -1245,9 +1403,12 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     ...(options.pathEnv ? { pathEnv: options.pathEnv } : {}),
     ...(options.http ? { http: options.http } : {}),
     ...(options.now ? { now: options.now } : {}),
-    extraFindings: capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed),
-    transformRules: (loaded) => extendInstructionRules(loaded, instructionRules, packageDirs.map((pkg) => pkg.rel)),
+    extraFindings: (inv) => [...capability(inv), ...strings(inv)],
+    transformRules: () => skillRules,
   });
+  } finally {
+    removeTempDir(scratch);
+  }
 
   // Tags come from the rule set the scan used, by rule id.
   const ruleSet = loadRules(options.rulesDir ?? defaultRulesDir());
@@ -1279,7 +1440,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
         ? "dependency advisories could not be checked for every package (OSV.dev unavailable)"
         : undefined;
 
-  const fileIncomplete: Array<{ path: string; reason: string }> = [...contentNotAnalysed];
+  const fileIncomplete: Array<{ path: string; reason: string }> = [...contentNotAnalysed, ...textState.notAnalysed];
   const ownRunRel = (() => {
     const rel = path.relative(root, scan.runDir);
     return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : undefined;
@@ -1303,8 +1464,14 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       // not part of what gets installed. A `.git` in an archive, a nested
       // one, or a `.git` file or link is still reported.
       if (dir === ".git" && localDirectoryTarget && isRealDirectory(path.join(root, ".git"))) {
-        rootGitNote = "git metadata at .git/ not analysed: not part of an installed skill";
-        continue;
+        const problems = gitDirProblems(path.join(root, ".git"));
+        if (problems.length === 0) {
+          rootGitNote = "git metadata at .git/ not analysed: not part of an installed skill";
+          continue;
+        }
+        // Not what git creates for a checkout: every unusual entry with its
+        // reason, then every file as before.
+        fileIncomplete.push(...problems);
       }
       const below = filesBelow(root, dir, 200);
       for (const file of below.files) fileIncomplete.push({ path: file, reason: `inside ${dir}/, which is never scanned (not analysed)` });
@@ -1312,6 +1479,9 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       continue;
     }
     if (BINARY_SKIP_REASONS.has(skip.reason)) {
+      // Analysed only once the text pass ran on it (its own reason is listed
+      // when it could not); executables and nested archives stay listed.
+      if (!textState.passed.has(skip.path)) continue;
       const reason = classifySkippedBinary(skip.path, readHead(path.join(root, ...skip.path.split("/"))));
       if (reason) fileIncomplete.push({ path: skip.path, reason });
       continue;
@@ -1475,10 +1645,10 @@ export function renderSkillMarkdown(document: SkillScanDocument): string {
     "| --- | --- | --- | --- |",
   ];
   for (const pkg of document.packages) {
-    lines.push(`| ${pkg.verdict} | ${mdText(pkg.name)} | ${mdText(pkg.path)} | ${pkg.riskScore} |`);
+    lines.push(`| ${pkg.verdict} | ${pkg.kind === "outside" ? "-" : mdText(pkg.name)} | ${mdText(displayPackagePath(pkg))} | ${pkg.riskScore} |`);
   }
   for (const pkg of document.packages) {
-    lines.push("", `## ${pkg.verdict}: ${mdText(pkg.name)} (${mdText(pkg.path)})`, "", pkg.verdictText);
+    lines.push("", `## ${pkg.verdict}: ${mdText(displayPackagePath(pkg))}${pkg.kind === "outside" ? "" : ` (name: ${mdText(pkg.name)})`}`, "", pkg.verdictText);
     if (pkg.reasons.length > 0) {
       lines.push("", "Reasons:", "");
       for (const reason of pkg.reasons) lines.push(`- ${mdText(reason.message)}`);
@@ -1505,7 +1675,9 @@ export function renderSkillText(document: SkillScanDocument, maxReasons = 5): st
   const lines: string[] = [`code-audit skill: ${printable(document.target.input, 300)} (${document.target.kind})`];
   for (const pkg of document.packages) {
     lines.push(
-      `${pkg.verdict.padEnd(15)} ${printable(pkg.name, 100)} (${printable(pkg.path, 200)})  risk ${pkg.riskScore}/100`,
+      pkg.kind === "outside"
+        ? `${pkg.verdict.padEnd(15)} ${OUTSIDE_PACKAGES_PATH}  risk ${pkg.riskScore}/100`
+        : `${pkg.verdict.padEnd(15)} ${printable(displayPackagePath(pkg), 200)}  (name: ${printable(pkg.name, 100)})  risk ${pkg.riskScore}/100`,
     );
     if (pkg.verdict === "SAFE_TO_INSTALL") lines.push(`  ${SAFE_TO_INSTALL_TEXT}`);
     for (const reason of pkg.reasons.slice(0, maxReasons)) lines.push(`  - ${printable(reason.message, 300)}`);

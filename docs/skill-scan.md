@@ -42,15 +42,22 @@ enters one), except two cases: the `.git` of the tool's own fresh clone is
 deleted before the scan, and a real `.git` directory at the root of a local
 directory target (or of the directory of a `SKILL.md` target) is excluded
 with the note "git metadata at .git/ not analysed: not part of an installed
-skill". A nested `.git`, a `.git` inside an archive, and a `.git` that is a
-file (gitdir pointer) or a symbolic link are still reported; control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
+skill" when it looks created by git: only git's standard top-level entries
+(`HEAD`, `config`, `description`, `hooks`, `info`, `objects`, `refs`, `logs`,
+`index`, `packed-refs`, `FETCH_HEAD`, `ORIG_HEAD`, `COMMIT_EDITMSG`,
+`shallow`), only `*.sample` hooks, only `info/exclude`, loose objects and
+pack files in `objects/`, no symbolic links, and no `config` key outside
+`core.{repositoryformatversion,filemode,bare,logallrefupdates,ignorecase,precomposeunicode,symlinks}`,
+`remote.*.{url,fetch}`, `branch.*.{remote,merge}` and
+`extensions.objectformat`. Otherwise every unusual entry is listed with its
+reason, and every file in it. A nested `.git`, a `.git` inside an archive,
+and a `.git` that is a file (gitdir pointer) or a symbolic link are still
+reported; control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
 and files named like code-audit output that this run did not write (an
-earlier or planted `.audit/<run>/`); a binary file that is not a recognised
-image, font, audio, video or PDF under its own extension (executables, nested
-archives and unknown binaries count), and a file with such an extension that
-is really text (no NUL byte in its first 8 KiB, whatever its first bytes
-say); a Git LFS pointer (the content was not present); text that is not
-valid UTF-8 (unknown encoding); an archive entry that was not unpacked
+earlier or planted `.audit/<run>/`); a file the text pass (below) could not
+cover (over 1 MiB, unreadable); an executable (ELF, Mach-O, PE) or a nested
+archive, which stay listed after the text pass; a Git LFS pointer (the
+content was not present); an archive entry that was not unpacked
 (too large, compression ratio over 100:1, unsupported method, encrypted,
 unsupported tar entry type); rule matching that stopped early in a file; an
 external engine that failed or timed out (or a requested one that is not
@@ -83,10 +90,29 @@ toward the exit code like a package; `summary.outside` counts its results.
 Without `--recursive` the target is one package; a `SKILL.md` target scans
 the directory that contains it.
 
-Every Markdown file inside a package (`*.md`, `*.mdc`) is treated as an
-instruction file: a skill tells the agent to read its `reference.md`,
-`FORMS.md` and so on. The rules whose `pathInclude` uses the `{{INSTR}}`
-macro (prompt injection, agent configuration) are applied to them too.
+Every file below the target with an instruction-like extension (`.md`,
+`.mdc`, `.markdown`, `.mdx`, `.txt`, `.rst`, `.adoc`, `.html`, `.htm`) is
+treated as an instruction file: a skill tells the agent to read its
+`reference.md`, `FORMS.md` and so on, and may point outside its own
+directory (`../../shared.md`). The rules whose `pathInclude` uses the
+`{{INSTR}}` macro (prompt injection, agent configuration) are applied to
+them too; outside every package they feed the `<outside packages>` group.
+
+In text output packages are shown as `./relative/path` (with their name in
+parentheses) and the outside group as `<outside packages>`, which no package
+path can produce.
+
+### Text pass (file classification is not trusted)
+
+Every file the inventory skips as binary (by extension or a NUL byte) and
+every file that is not valid UTF-8 goes through a text pass: its printable
+runs (4 or more characters of ASCII or UTF-8, or a whole newline-terminated
+line) are matched with the Markdown (instruction) rules, the shell rules and
+the secret detectors. Results point at the original file and the line its
+text starts on, with evidence marked "[text extracted from a non-text
+file]". A polyglot such as `%PDF-1.4` followed by a script is therefore
+matched like the script. A file counts as analysed only once the text pass
+ran on it; a file over 1 MiB is not analysed.
 
 ### Capability declaration check
 
@@ -123,6 +149,10 @@ refuses it (exit code 2, MCP code `ARCHIVE_*`):
   case folding), or a file used as a directory;
 - a name component ending in a dot or space, or full-width dots that fold
   to `..` (Windows rewrites them);
+- zip: an end record that is not exactly at end-of-file minus its declared
+  comment length, or a comment that contains a zip record signature
+  (`PK\1\2`, `PK\3\4`, `PK\5\6`, `PK\6\6`, `PK\6\7`, `PK\7\8`: a
+  second archive hidden in the comment, which other extractors pick);
 - zip: a local header that disagrees with the central directory on name,
   method, flags, CRC-32 or sizes (with bit 3 set: the data descriptor must
   match), an Info-ZIP Unicode path (in the local or the central record) that
