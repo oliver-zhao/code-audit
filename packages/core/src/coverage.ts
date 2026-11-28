@@ -59,5 +59,11 @@ export interface CoverageReport {
     since: string | null;
     changedFiles: number;
     outOfScope: number;
+    /** `--diff-lines`: findings were kept only when they touch a changed line. */
+    diffLines?: boolean;
+    /** Findings and hotspots in changed files left out by `--diff-lines`. */
+    diffLinesFiltered?: number;
+    /** Changed files that were not diffed line by line (counted in full). */
+    diffLinesWholeFiles?: number;
   };
 }

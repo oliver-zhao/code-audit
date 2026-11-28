@@ -1995,7 +1995,7 @@ export function renderHeadlineMarkdown(
 /** `Baseline: ...` and `Scope: ...` lines of a run, for the terminal and the CI summary. */
 export function renderRunScopeText(run: {
   baseline?: { new: number; existing: number; fixed: number };
-  scope?: { since: string; changedFiles: number };
+  scope?: { since: string; changedFiles: number; diffLines?: boolean; diffLinesFiltered?: number };
 }): string[] {
   const lines: string[] = [];
   if (run.baseline) {
@@ -2007,6 +2007,12 @@ export function renderRunScopeText(run: {
     lines.push(
       `Scope: files changed since ${run.scope.since} (${run.scope.changedFiles} ${run.scope.changedFiles === 1 ? "file" : "files"})`,
     );
+    if (run.scope.diffLines) {
+      const filtered = run.scope.diffLinesFiltered ?? 0;
+      lines.push(
+        `Scope: changed lines only (--diff-lines); ${filtered} ${filtered === 1 ? "result" : "results"} on unchanged lines of changed files left out`,
+      );
+    }
   }
   return lines;
 }

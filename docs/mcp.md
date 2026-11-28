@@ -132,6 +132,7 @@ Starts a scan in the background and returns immediately.
 | `untrusted` | boolean | false | The repository cannot lower its own result; implies the six switches above and scans default-excluded directories (`--untrusted`). |
 | `profile` | `quick` \| `standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups; `standard`: every installed engine (`--profile`). |
 | `since` | string | none | Only findings in files changed since this git ref (`--since`). |
+| `diffLines` | boolean | false | With `since`: only findings on lines added or changed since the ref (`--diff-lines`); dependency and secret findings are kept per file. Refused (`INVALID_ARGUMENT`) without `since`. |
 | `latestLink` | boolean | false | Also copy the reports to `<root>/.audit/latest/` (`--latest-link`). |
 
 Result:

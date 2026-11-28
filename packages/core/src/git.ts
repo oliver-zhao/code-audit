@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { runTool } from "./external/run.js";
 import { BASELINE_FILE_NAME, IGNORE_FILE_NAME } from "./ignore.js";
+import { changedLines } from "./lineDiff.js";
 import { LATEST_OUTPUT_FILES, RUN_OUTPUT_FILES } from "./meta.js";
 import { resolveInside, toPosixRelative, validateAuditRoot } from "./pathJail.js";
 
@@ -85,7 +86,16 @@ const GIT_ENV: Record<string, string> = {
  * of a working-tree file, so clean/smudge/process filters, textconv, external
  * diff, EOL conversion and hooks have nothing to run on.
  */
-const ALLOWED_GIT_COMMANDS = new Set(["rev-parse", "ls-tree", "ls-files"]);
+const ALLOWED_GIT_COMMANDS = new Set(["rev-parse", "ls-tree", "ls-files", "cat-file"]);
+
+/**
+ * `cat-file` is allowed in exactly one form: `cat-file blob <oid>` with a full
+ * hexadecimal object id (`--diff-lines`). It prints the object as stored in
+ * the object database: without `--textconv` or `--filters` git applies no
+ * textconv, clean/smudge/process filter, EOL conversion or external diff, and
+ * a working-tree file is never read.
+ */
+const CAT_FILE_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** Output cap of the listing commands (one line per file of the repository). */
 const LISTING_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
@@ -160,11 +170,20 @@ function runGit(
   if (!ALLOWED_GIT_COMMANDS.has(args[0] ?? "")) {
     throw new GitScopeError(`internal error: git ${String(args[0])} is not an allowed command`);
   }
+  if (
+    args[0] === "cat-file" &&
+    !(args.length === 3 && args[1] === "blob" && CAT_FILE_OID.test(args[2] ?? ""))
+  ) {
+    throw new GitScopeError("internal error: git cat-file is only allowed as `cat-file blob <oid>`");
+  }
   return runTool("git", gitArgs(root, args), {
     timeoutMs: options.timeoutMs,
     maxOutputBytes: options.maxOutputBytes ?? maxOutputBytes,
     env: {
       ...GIT_ENV,
+      // A partial clone would fetch a missing blob from its promisor remote:
+      // never (protocol.allow=never refuses every transport as well).
+      ...(args[0] === "cat-file" ? { GIT_NO_LAZY_FETCH: "1" } : {}),
       ...(options.pathEnv ? { PATH: options.pathEnv } : {}),
     },
   });
@@ -521,4 +540,143 @@ function canonicalDir(dir: string): string {
  */
 export function isGitRepository(root: string): boolean {
   return fs.existsSync(path.join(root, ".git"));
+}
+
+/** A blob of the ref larger than this is not read: the file counts as changed in full. */
+const MAX_DIFF_BLOB_BYTES = 16 * 1024 * 1024;
+
+/** How many `git cat-file blob` processes run at the same time. */
+const CAT_FILE_CONCURRENCY = 8;
+
+export interface ChangedLinesOptions extends ListChangedFilesOptions {
+  /** More lines than this on either side: the whole file counts as changed. */
+  maxLines?: number;
+  /** An edit distance above this: the whole file counts as changed. */
+  maxEditDistance?: number;
+}
+
+export type WholeFileReason =
+  | "new-file"
+  | "too-many-lines"
+  | "edit-distance"
+  | "too-large"
+  | "not-a-regular-file"
+  | "unreadable";
+
+export interface FileLineChanges {
+  /**
+   * 1-based line numbers of the working file that are new or changed since
+   * the ref. Absent when the whole file counts as changed.
+   */
+  lines?: Set<number>;
+  /** Why the whole file counts as changed (absent when `lines` is set). */
+  whole?: WholeFileReason;
+}
+
+export interface ChangedLinesResult {
+  ref: string;
+  /** Project-relative POSIX path -> changed lines, for each requested file. */
+  files: Map<string, FileLineChanges>;
+  warnings: string[];
+}
+
+/**
+ * For each of `files` (project-relative POSIX paths that `listChangedFiles`
+ * reported as changed since `refInput`), the lines of the working file that
+ * are new or changed compared with that file's blob in the ref (Myers line
+ * diff, `lineDiff.ts`).
+ *
+ * As in `listChangedFiles`, git never reads a working-tree file: the tree of
+ * the ref comes from `git ls-tree` and each old blob from `git cat-file blob
+ * <oid>` (object database only: no filter, no textconv, no EOL conversion);
+ * the working file is read by this process. A file that cannot be compared
+ * (new, too large, too many lines or changes, not a regular file, a read or
+ * git failure) counts as changed in full: fail open. A failing `ls-tree` or
+ * an unknown ref throws `GitScopeError`.
+ */
+export async function listChangedLines(
+  rootInput: string,
+  refInput: string,
+  files: readonly string[],
+  options: ChangedLinesOptions = {},
+): Promise<ChangedLinesResult> {
+  const ref = assertSafeRef(refInput);
+  const root = validateAuditRoot(rootInput).root;
+  const result = new Map<string, FileLineChanges>();
+  const warnings: string[] = [];
+  if (files.length === 0) return { ref, files: result, warnings };
+
+  const prefix = checked(await runGit(root, ["rev-parse", "--show-prefix"], options), "rev-parse")
+    .split("\n")[0]
+    ?.replace(/\r$/, "") ?? "";
+  const tree = parseTree(
+    checked(
+      await runGit(root, ["ls-tree", "-r", "-z", "--full-tree", ref], options, LISTING_MAX_OUTPUT_BYTES),
+      "ls-tree",
+    ),
+    prefix,
+  );
+
+  const linesOfFile = async (file: string): Promise<FileLineChanges> => {
+    let absolute: string;
+    let stat: fs.Stats;
+    try {
+      // The path jail again: the list comes from the caller.
+      absolute = resolveInside(root, file);
+      stat = fs.lstatSync(path.join(root, ...file.split("/")));
+    } catch {
+      return { whole: "unreadable" };
+    }
+    if (!stat.isFile()) return { whole: "not-a-regular-file" };
+    const entry = tree.get(file);
+    if (!entry) return { whole: "new-file" };
+    if ((entry.mode !== "100644" && entry.mode !== "100755") || !CAT_FILE_OID.test(entry.oid)) {
+      return { whole: "not-a-regular-file" };
+    }
+    if (stat.size > MAX_DIFF_BLOB_BYTES) return { whole: "too-large" };
+    const blob = await runGit(root, ["cat-file", "blob", entry.oid], options, MAX_DIFF_BLOB_BYTES);
+    if (blob.truncated) return { whole: "too-large" };
+    if (blob.timedOut || blob.exitCode !== 0) return { whole: "unreadable" };
+    let text: string;
+    try {
+      text = fs.readFileSync(absolute, "utf8");
+    } catch {
+      return { whole: "unreadable" };
+    }
+    const diff = changedLines(blob.stdout, text, {
+      maxLines: options.maxLines,
+      maxEditDistance: options.maxEditDistance,
+    });
+    return diff.whole ? { whole: diff.reason } : { lines: diff.changed };
+  };
+
+  const queue = [...files];
+  const worker = async (): Promise<void> => {
+    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+      result.set(file, await linesOfFile(file));
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CAT_FILE_CONCURRENCY, files.length) }, () => worker()),
+  );
+
+  const degraded = [...result.entries()].filter(
+    ([, change]) =>
+      change.whole === "too-many-lines" ||
+      change.whole === "edit-distance" ||
+      change.whole === "too-large",
+  );
+  if (degraded.length > 0) {
+    const names = degraded.slice(0, 5).map(([file, change]) => `${file} (${change.whole})`);
+    warnings.push(
+      `--diff-lines: ${degraded.length} file(s) were not diffed line by line and count as changed in full: ${names.join(", ")}${degraded.length > 5 ? ", ..." : ""}`,
+    );
+  }
+  const unreadable = [...result.values()].filter((change) => change.whole === "unreadable").length;
+  if (unreadable > 0) {
+    warnings.push(
+      `--diff-lines: ${unreadable} file(s) could not be compared with ${ref} and count as changed in full`,
+    );
+  }
+  return { ref, files: result, warnings };
 }

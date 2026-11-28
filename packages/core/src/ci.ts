@@ -133,7 +133,7 @@ export function renderStepSummaryMarkdown(input: {
   summary: FindingSummary;
   baseline?: { new: number; existing: number; fixed: number };
   /** Present when `--since` limited the run to changed files. */
-  scope?: { since: string; changedFiles: number };
+  scope?: { since: string; changedFiles: number; diffLines?: boolean; diffLinesFiltered?: number };
   reportPaths: string[];
   warnings?: string[];
 }): string {

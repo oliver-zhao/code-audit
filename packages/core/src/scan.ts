@@ -76,7 +76,7 @@ import {
   type BaselineDocument,
   type BaselineEntry,
 } from "./baseline.js";
-import { listChangedFiles } from "./git.js";
+import { listChangedFiles, listChangedLines, type FileLineChanges } from "./git.js";
 import {
   crossEngineDedupe,
   defaultOpengrepRulesDir,
@@ -147,6 +147,12 @@ export interface ScanOptions {
   failOnExisting?: boolean;
   /** Only report findings in files changed since this git ref. */
   since?: string;
+  /**
+   * With `since`: keep only findings whose line range touches a line that is
+   * new or changed since the ref (Myers line diff). Dependency and secret
+   * findings are kept per file. Requires `since`.
+   */
+  diffLines?: boolean;
   /** Write the baseline to this path instead of the default location. */
   baselineOutput?: string;
   /** Copy the produced report files to `<out>/latest/` after a successful write. */
@@ -232,7 +238,12 @@ function buildCoverage(
   engines: CoverageEngine[],
   warnings: string[],
   suppressed: CoverageReport["suppressed"],
-  scope?: { outOfScope: number; sinceRef?: string; changedFileCount: number },
+  scope?: {
+    outOfScope: number;
+    sinceRef?: string;
+    changedFileCount: number;
+    diffLines?: { filtered: number; wholeFiles: number };
+  },
   pathContextLowering = true,
 ): CoverageReport {
   const pathContextFiles = Object.fromEntries(
@@ -281,6 +292,13 @@ function buildCoverage(
             since: scope.sinceRef ?? null,
             changedFiles: scope.changedFileCount,
             outOfScope: scope.outOfScope,
+            ...(scope.diffLines
+              ? {
+                  diffLines: true,
+                  diffLinesFiltered: scope.diffLines.filtered,
+                  diffLinesWholeFiles: scope.diffLines.wholeFiles,
+                }
+              : {}),
           },
         }
       : {}),
@@ -353,6 +371,9 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const started = (options.now ?? (() => new Date()))();
   const startedMs = Date.now();
   const validated = validateAuditRoot(options.root);
+  if (options.diffLines === true && !options.since) {
+    throw new Error("--diff-lines requires --since <git-ref>");
+  }
   const formats = options.formats ?? ALL_FORMATS;
   const profile = options.profile ?? "standard";
   const lang = options.lang ?? "en";
@@ -366,8 +387,35 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const selected = resolveEngines(options);
   // `--untrusted`: nothing the audited repository contains may lower the result.
   const untrusted = options.untrusted === true;
-  const noIgnoreFile = untrusted || options.noIgnoreFile === true;
-  const noBaseline = untrusted || options.noBaseline === true;
+  // An ignore file named explicitly (`--ignore-file`) by whoever runs the scan
+  // still applies under `--untrusted` when it lies OUTSIDE the audited
+  // repository (a CI maintainer's file, e.g. taken from the base commit of a
+  // pull request). One inside the repository is the repository's own and is
+  // not read.
+  const explicitIgnoreFile =
+    options.noIgnoreFile !== true && typeof options.ignoreFile === "string" && options.ignoreFile !== ""
+      ? options.ignoreFile
+      : undefined;
+  const operatorIgnoreFile =
+    untrusted &&
+    explicitIgnoreFile !== undefined &&
+    path.isAbsolute(explicitIgnoreFile) &&
+    !isInsideRoot(validated.root, explicitIgnoreFile);
+  const refusedIgnoreFile = untrusted && explicitIgnoreFile !== undefined && !operatorIgnoreFile;
+  const noIgnoreFile = options.noIgnoreFile === true || (untrusted && !operatorIgnoreFile);
+  // The same for a baseline named explicitly (`--baseline`): applied under
+  // `--untrusted` only when it is an absolute path outside the repository.
+  const explicitBaseline =
+    options.noBaseline !== true && typeof options.baseline === "string" && options.baseline !== ""
+      ? options.baseline
+      : undefined;
+  const operatorBaseline =
+    untrusted &&
+    explicitBaseline !== undefined &&
+    path.isAbsolute(explicitBaseline) &&
+    !isInsideRoot(validated.root, explicitBaseline);
+  const refusedBaseline = untrusted && explicitBaseline !== undefined && !operatorBaseline;
+  const noBaseline = options.noBaseline === true || (untrusted && !operatorBaseline);
   const noInlineIgnore = untrusted || options.noInlineIgnore === true;
   const builtinEnabled = selected.has("builtin");
   const pathEnv = options.pathEnv;
@@ -876,6 +924,16 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       noIgnoreFile,
     });
     let ignoreEntries: IgnoreEntry[] = [];
+    if (refusedBaseline) {
+      warnings.push(
+        "--baseline is not applied with --untrusted: it is inside the audited repository or not an absolute path (name a file outside the repository)",
+      );
+    }
+    if (refusedIgnoreFile) {
+      warnings.push(
+        "--ignore-file is not applied with --untrusted: it is inside the audited repository or not an absolute path (name a file outside the repository)",
+      );
+    }
     if (ignorePath) {
       const loaded = loadIgnoreFile(ignorePath);
       ignoreEntries = loaded?.entries ?? [];
@@ -926,6 +984,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     let changedFiles: Set<string> | undefined;
     let sinceRef: string | undefined;
     let outOfScope = 0;
+    let diffLinesFiltered = 0;
+    let diffLinesWholeFiles = 0;
     if (options.since) {
       const scope = await listChangedFiles(validated.root, options.since, {
         pathEnv,
@@ -957,6 +1017,41 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       hotspots = hotspots.filter((hotspot) => inScope(hotspot.file));
       outOfScope =
         beforeFindings - findings.length + (beforeHotspots - hotspots.length);
+
+      // ---- --diff-lines: keep findings that touch a new or changed line ----
+      if (options.diffLines === true) {
+        const lineScope = await listChangedLines(validated.root, scope.ref, scope.files, {
+          pathEnv,
+        });
+        for (const warning of lineScope.warnings) warnings.push(warning);
+        const lineChanges = new Map<string, FileLineChanges>();
+        for (const [file, change] of lineScope.files) lineChanges.set(canonical(file), change);
+        const touchesChange = (finding: Finding): boolean => {
+          // Dependencies and secrets: per file (a manifest or lockfile line
+          // is rarely where the risk is introduced; a secret must never be
+          // dropped because a neighbouring line changed).
+          if (finding.category === "sca" || isCredentialFinding(finding)) return true;
+          const change = lineChanges.get(canonical(finding.file));
+          // In scope without a line diff (submodule or nested repository).
+          if (!change?.lines) return true;
+          const start = Math.max(1, finding.startLine);
+          const end = Math.max(start, finding.endLine);
+          // A file-level finding (line 0 or no range) is kept.
+          if (finding.startLine < 1) return true;
+          for (let line = start; line <= end; line += 1) {
+            if (change.lines.has(line)) return true;
+            if (line - start > 10_000) return true;
+          }
+          return false;
+        };
+        const beforeLineFindings = findings.length;
+        const beforeLineHotspots = hotspots.length;
+        findings = findings.filter(touchesChange);
+        hotspots = hotspots.filter(touchesChange);
+        diffLinesFiltered =
+          beforeLineFindings - findings.length + (beforeLineHotspots - hotspots.length);
+        diffLinesWholeFiles = [...lineScope.files.values()].filter((change) => !change.lines).length;
+      }
     }
 
     // ---- Baseline: mark new/existing and compute fixed ----
@@ -1027,7 +1122,14 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       engines,
       warnings,
       ruleScan.suppressed,
-      { outOfScope, sinceRef, changedFileCount: changedFiles?.size ?? 0 },
+      {
+        outOfScope,
+        sinceRef,
+        changedFileCount: changedFiles?.size ?? 0,
+        ...(options.diffLines === true && sinceRef
+          ? { diffLines: { filtered: diffLinesFiltered, wholeFiles: diffLinesWholeFiles } }
+          : {}),
+      },
       !includeTests,
     );
 
@@ -1082,6 +1184,14 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         includeDev,
         includePlaceholders,
         untrusted,
+        // `--untrusted` with an operator's ignore file outside the repository.
+        ...(operatorIgnoreFile && explicitIgnoreFile
+          ? { operatorIgnoreFile: path.resolve(explicitIgnoreFile) }
+          : {}),
+        ...(operatorBaseline && explicitBaseline
+          ? { operatorBaseline: path.resolve(explicitBaseline) }
+          : {}),
+        ...(options.diffLines === true ? { diffLines: true } : {}),
       },
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
@@ -1118,7 +1228,19 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           }
         : {}),
       ...(sinceRef
-        ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
+        ? {
+            scope: {
+              since: sinceRef,
+              changedFiles: changedFiles?.size ?? 0,
+              ...(options.diffLines === true
+                ? {
+                    diffLines: true,
+                    diffLinesFiltered,
+                    diffLinesWholeFiles,
+                  }
+                : {}),
+            },
+          }
         : {}),
       warnings,
     };

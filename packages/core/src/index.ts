@@ -21,6 +21,7 @@ export * from "./runstore.js";
 export * from "./ignore.js";
 export * from "./baseline.js";
 export * from "./git.js";
+export * from "./lineDiff.js";
 export * from "./ci.js";
 export * from "./scan.js";
 export * from "./external/index.js";
