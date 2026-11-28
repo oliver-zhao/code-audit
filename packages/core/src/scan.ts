@@ -511,6 +511,26 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     untrusted && explicitBaseline !== undefined && outsideRepository(explicitBaseline);
   const refusedBaseline = untrusted && explicitBaseline !== undefined && !operatorBaseline;
   const noBaseline = options.noBaseline === true || (untrusted && !operatorBaseline);
+  // A file named explicitly that will be used must exist and be readable: it
+  // is never reported as applied when nothing was loaded. (A baseline named
+  // without --untrusted keeps its own error from readBaseline.)
+  const assertReadable = (file: string, flag: string): void => {
+    try {
+      if (!fs.statSync(file).isFile()) throw new Error("not a file");
+      fs.accessSync(file, fs.constants.R_OK);
+    } catch {
+      throw new Error(`${flag} file not found or not readable: ${file}`);
+    }
+  };
+  if (explicitIgnoreFile !== undefined && (!untrusted || operatorIgnoreFile)) {
+    const candidate = path.isAbsolute(explicitIgnoreFile)
+      ? path.resolve(explicitIgnoreFile)
+      : path.resolve(validated.root, explicitIgnoreFile);
+    assertReadable(candidate, "--ignore-file");
+  }
+  if (operatorBaseline && explicitBaseline !== undefined) {
+    assertReadable(path.resolve(explicitBaseline), "--baseline");
+  }
   const noInlineIgnore = untrusted || options.noInlineIgnore === true;
   const builtinEnabled = selected.has("builtin");
   const pathEnv = options.pathEnv;

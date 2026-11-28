@@ -331,7 +331,24 @@ cannot be known and operator files are refused with a warning that names
 that file. When the root is not inside a git work tree at all (an extracted
 archive, a plain directory), only the root itself is the boundary: an
 operator file in a parent directory is applied. Keep operator files outside
-any copy of the code you scan (the Action uses `$RUNNER_TEMP`). MCP `audit_start` has no ignore-file argument and
+any copy of the code you scan (the Action uses `$RUNNER_TEMP`).
+
+An `--ignore-file` that does not exist or cannot be read is an error (exit
+code 2), with or without `--untrusted`; so is an operator `--baseline` under
+`--untrusted`. A file is never reported as applied when nothing was loaded.
+
+Known limits:
+
+- Linked worktrees and submodules (`.git` is a file): under `--untrusted`
+  every operator ignore file and baseline is refused (fail closed), so a
+  scan of a `git worktree add` checkout, or of a submodule directory, runs
+  without them and findings they would suppress come back.
+- Third-party git remote helpers (git older than 2.44 only): the protocol
+  overrides list the transports git ships (`ext`, `file`, `fd`, `ssh`, `git`,
+  `http`, `https`, `ftp`, `ftps`). A remote helper installed on `PATH` (for
+  example `git-remote-gcrypt`) that the repository enables with
+  `protocol.<name>.allow=always` is not in the list; on git 2.44 and later
+  `GIT_NO_LAZY_FETCH=1` keeps any promisor fetch from starting it. MCP `audit_start` has no ignore-file argument and
 accepts a baseline only inside the root, so neither applies there under
 `untrusted`.
 

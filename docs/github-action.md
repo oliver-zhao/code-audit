@@ -189,6 +189,16 @@ Limits, by design:
   posts what the artifact says, or nothing. Use branch protection with a
   required check from a workflow the pull request cannot alter if the scan
   must be a gate.
+- A `path:` that is a submodule, or a local run in a `git worktree`
+  checkout (`.git` is a file there), loses the base-commit ignore file and
+  baseline: under `--untrusted` the CLI refuses operator files when it
+  cannot tell where the repository ends, so findings they would suppress
+  come back and the step can fail. `actions/checkout` creates a `.git`
+  directory, so the default setup is not affected.
+- On git older than 2.44, a third-party git remote helper on the runner's
+  `PATH` that the repository enables is not covered by the protocol
+  overrides (see `docs/security-model.md`); GitHub-hosted runners ship a
+  current git.
 - `pnpm install --frozen-lockfile` of the Action's own source downloads its
   dependencies from the npm registry at the versions in `pnpm-lock.yaml`.
 

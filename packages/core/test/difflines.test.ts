@@ -615,6 +615,42 @@ describe("review fixes", () => {
     expect(text).toMatch(/LAZY=1 REPLACE=1 GRAFT=\/dev\/null/);
   });
 
+  it("N6: a missing or unreadable --ignore-file / operator --baseline is an error, never 'applied'", async () => {
+    const repo = makeRepo("n6-missing", { "app.py": OLD_APP });
+    const missing = path.join(temp, "n6-does-not-exist.yml");
+    await expect(scan(repo, "n6-a", { untrusted: true, ignoreFile: missing })).rejects.toThrow(
+      /--ignore-file file not found or not readable/,
+    );
+    await expect(scan(repo, "n6-b", { untrusted: true, baseline: path.join(temp, "n6-none.json") })).rejects.toThrow(
+      /--baseline file not found or not readable/,
+    );
+    // Without --untrusted: a missing --ignore-file is an error too.
+    await expect(scan(repo, "n6-c", { ignoreFile: missing })).rejects.toThrow(/--ignore-file file not found/);
+    await expect(scan(repo, "n6-d", { ignoreFile: "nope.yml" })).rejects.toThrow(/--ignore-file file not found/);
+    // A directory is not a file.
+    await expect(scan(repo, "n6-e", { untrusted: true, ignoreFile: temp })).rejects.toThrow(/not readable/);
+    // Unreadable (not as root, which can read anything).
+    if (process.getuid?.() !== 0) {
+      const locked = path.join(temp, "n6-locked.yml");
+      fs.writeFileSync(locked, "version: 1\nignore: []\n");
+      fs.chmodSync(locked, 0o000);
+      await expect(scan(repo, "n6-f", { untrusted: true, ignoreFile: locked })).rejects.toThrow(/not readable/);
+      fs.chmodSync(locked, 0o644);
+    }
+    // The CLI: exit 2 with the message, and no "applied" line.
+    const cli = spawnSync(
+      process.execPath,
+      [CLI, "scan", repo, "--untrusted", "--offline", "--engines", "builtin", "--ignore-file", missing, "--out", path.join(temp, "out-n6")],
+      { cwd: REPO_ROOT, encoding: "utf8", timeout: 60_000 },
+    );
+    expect(cli.status).toBe(2);
+    expect(cli.stderr).toMatch(/--ignore-file file not found or not readable/);
+    expect(cli.stdout).not.toMatch(/was applied/);
+    // A refused (inside the repository) file is still only a warning.
+    const refused = await scan(repo, "n6-g", { untrusted: true, ignoreFile: "nope.yml" });
+    expect(refused.warnings.join("\n")).toMatch(/--ignore-file is not applied with --untrusted/);
+  });
+
   it("LOW 1: deleting a guard line puts its neighbour in scope", async () => {
     const repo = makeRepo("l1-delete", {
       "a.txt": "one\nguard()\nsink()\nend\n",
