@@ -102,6 +102,11 @@ const RuleObjectSchema = z
     remediation: z.string().min(1),
     remediation_zh: z.string().min(1).optional(),
     references: z.array(z.string()).optional(),
+    /**
+     * Classification labels (same form as `id`). Consumers give some of them
+     * meaning; see docs/rules.md for the defined tags (`malicious-intent`).
+     */
+    tags: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "tags must be lowercase letters, digits, or dashes")).min(1).optional(),
   });
 
 /** Every field a rule may have, in schema order (documented in docs/rules.md). */

@@ -1140,6 +1140,28 @@ describe("evidence of credential rules", () => {
     expect(() => loadRules(rulesDir)).toThrow(/redactEvidence/);
   });
 
+  it("accepts lowercase tags and rejects malformed ones", () => {
+    const ok = writeRules("tags-ok", [
+      "rules:",
+      "  - id: t-tags",
+      "    title: tags",
+      "    pattern: 'x'",
+      "    tags: [malicious-intent, custom-1]",
+      ...RULE_TAIL,
+    ]);
+    const loaded = loadRules(ok);
+    expect(loaded.rules.find((r) => r.id === "t-tags")?.tags).toEqual(["malicious-intent", "custom-1"]);
+    const bad = writeRules("tags-bad", [
+      "rules:",
+      "  - id: t-tags",
+      "    title: tags",
+      "    pattern: 'x'",
+      "    tags: [Malicious Intent]",
+      ...RULE_TAIL,
+    ]);
+    expect(() => loadRules(bad)).toThrow(/tags/);
+  });
+
   it("masks literals from the match on, a named secret group, or the match itself", () => {
     // 16 characters or more: only the first 2 and last 2 stay visible.
     expect(redactEvidenceLine('cfg["SECRET_KEY"] = "0123456789abcdefghij"', 5, 42)).toBe(

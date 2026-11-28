@@ -226,6 +226,7 @@ in `packages/core/src/rules.ts`, by a test):
 | `remediation` | string | yes | How to fix it. |
 | `remediation_zh` | string | no | Chinese remediation. |
 | `references` | list of strings | no | Links or identifiers. |
+| `tags` | list of strings (same form as `id`) | no | Classification labels. Defined tags: `malicious-intent` — a match is evidence of hostile intent rather than a careless mistake (data exfiltration, persistence, decode-and-execute, tool poisoning). The skill-package verdict treats such a match as "do not install". Unknown tags are allowed and ignored. |
 
 A file that does not parse, a rule that fails the schema, an invalid regular
 expression, an unknown `{{NAME}}` or a duplicate `id` stops the scan with exit
