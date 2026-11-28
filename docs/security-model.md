@@ -84,6 +84,19 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   configuration is not read, a `safe.directory` entry there does not apply
   - in a repository owned by another user, `--since` fails with git's
   ownership message instead of scanning.
+  `--diff-lines` (with `--since`) adds one more command, allowed in exactly
+  one form: `git cat-file blob <oid>`, with the full object id that
+  `ls-tree` listed for a file of the ref. It prints the object as stored -
+  without `--textconv` or `--filters` git runs no textconv, filter or EOL
+  conversion - and runs with `GIT_NO_LAZY_FETCH=1` (plus
+  `protocol.allow=never`), so a partial clone cannot fetch a missing blob
+  from a promisor remote. The working file is read by code-audit, and the
+  line diff (Myers, `lineDiff.ts`) is computed in-process; a file over
+  20,000 lines, over 16 MiB, with more than 5,000 changed lines, or that
+  cannot be read counts as changed in full. The marker tests above are
+  repeated for `--diff-lines` (filters, textconv, fsmonitor, external diff,
+  an alias for `cat-file`, and a partial clone whose promisor remote is an
+  `ext::` program with the blob deleted).
 - **No LLM.** No model is called by the scan, the CLI or the MCP server.
 - **Network.** The only network use is the dependency lookup at OSV.dev
   (package ecosystem, name and version; and advisory ids), skipped with
@@ -276,6 +289,17 @@ vetting, or a pull request from outside the project. Expect more findings:
 vendored and build directories are read in full. The external engines'
 own configuration files are still honoured by those engines; the scan warns
 when one is present.
+
+An `--ignore-file` or `--baseline` named on the command line still applies
+under `--untrusted` when it is an **absolute path outside the audit root**:
+that file comes from whoever runs the scan (the GitHub Action copies them
+from the base commit of a pull request to `$RUNNER_TEMP`), not from the
+repository. A path inside the root - relative, absolute, or through a
+symbolic link that resolves into the root - is not applied, and the scan
+warns. The files used are recorded in `run.json` (`args.operatorIgnoreFile`,
+`args.operatorBaseline`). MCP `audit_start` has no ignore-file argument and
+accepts a baseline only inside the root, so neither applies there under
+`untrusted`.
 
 Text from the repository cannot shape the report either: every file name,
 ignore reason, package name, advisory title and warning is rendered as a

@@ -1,0 +1,66 @@
+# Scan this repository with its own GitHub Action (`uses: ./`).
+#
+# Pull requests from branches of this repository (changed lines only) and
+# pushes to master (full scan). The Action reads .code-audit-ignore from the
+# base commit of a pull request (from the pushed commit on master), so the
+# fixtures and test inputs stay suppressed while a pull request cannot add
+# suppressions for itself.
+#
+# Note: `uses: ./` runs the Action of the checked-out commit, so a pull
+# request can change the scanner it is checked with. This workflow is a smoke
+# test of the Action, not a security gate; other repositories pin a release.
+#
+# Third-party actions are pinned to full commit SHAs; the comment names the
+# release. Update both together.
+name: code-audit
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    # Same-repository pull requests only (fork pull requests get a read-only
+    # token, so the SARIF upload would fail; ci.yml still tests them).
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: code-audit (this repository's Action)
+        id: audit
+        uses: ./
+        with:
+          fail-on: high
+          min-confidence: medium
+          engines: builtin
+          offline: "true"
+          upload-sarif: "true"
+          # No comment workflow for this repository: SARIF and the job summary.
+          comment: "false"
+
+      - name: Outputs
+        if: always()
+        env:
+          FINDINGS: ${{ steps.audit.outputs.findings-count }}
+          NEW_FINDINGS: ${{ steps.audit.outputs.new-findings-count }}
+          EXIT_CODE: ${{ steps.audit.outputs.exit-code }}
+        run: echo "findings=$FINDINGS new=$NEW_FINDINGS exit=$EXIT_CODE"

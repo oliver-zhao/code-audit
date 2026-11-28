@@ -1,0 +1,42 @@
+# code-audit, stage 2 of 2: post the results of stage 1 as PR comments.
+#
+# Copy to .github/workflows/code-audit-comment.yml next to
+# code-audit-pr.yml. GitHub runs this file from the DEFAULT BRANCH (a pull
+# request cannot change it) with a token that can write pull request
+# comments. It never checks out or runs pull request code: the comment action
+# only downloads the artifact of the triggering run, validates it, checks
+# that the pull request number and head commit in it are the ones GitHub
+# associates with that run, and posts fixed-template comments in which all
+# text taken from the repository is shown as code.
+#
+# The `workflows:` name must equal the `name:` of the stage 1 workflow.
+# Replace OWNER/code-audit@<sha> with the repository and the full commit SHA
+# of the code-audit release you use. See docs/github-action.md.
+name: code-audit comment
+
+on:
+  workflow_run:
+    workflows: ["code-audit PR"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    # Only for runs started by a pull request that produced results (the
+    # scan fails the run when findings reach fail-on; it still has them).
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Post code-audit comments
+        uses: OWNER/code-audit/comment@0000000000000000000000000000000000000000 # vX.Y.Z
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          max-inline: "20"

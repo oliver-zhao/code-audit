@@ -24,8 +24,8 @@ ignore:
     paths: ["packages/core/src/placeholder.ts", "packages/core/src/external/gitleaks.ts", "packages/core/src/redact.ts"]
     reason: "Comments that show what a password assignment looks like to the detector; the values are made-up examples."
   - rule: "secret-url-credentials"
-    paths: ["packages/core/src/placeholder.ts", "packages/core/src/redact.ts"]
-    reason: "Comments documenting the scheme://user:password@host form."
+    paths: ["packages/core/src/placeholder.ts", "packages/core/src/redact.ts", "docs/security-model.md"]
+    reason: "Comments and documentation describing the scheme://user:password@host form (reported under --untrusted, which keeps placeholder confidence)."
   - rule: "secret-aws-access-key"
     paths: ["packages/core/src/placeholder.ts"]
     reason: "AWS's published documentation key id (AKIAIOSFODNN7EXAMPLE) in the list of known example values."

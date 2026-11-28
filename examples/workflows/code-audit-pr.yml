@@ -1,0 +1,46 @@
+# code-audit, stage 1 of 2: scan a pull request.
+#
+# Copy to .github/workflows/code-audit-pr.yml. It runs on `pull_request`, so
+# for a pull request from a fork it gets a read-only token and no secrets:
+# the scan never runs with write access. It uploads SARIF to code scanning
+# (same-repository pull requests; for forks the upload fails softly) and the
+# artifact `code-audit-results`, which stage 2 (code-audit-comment.yml) turns
+# into pull request comments.
+#
+# Replace OWNER/code-audit@<sha> with the repository and the full commit SHA
+# of the code-audit release you use. Third-party actions are pinned to full
+# commit SHAs; the comment names the release. See docs/github-action.md.
+name: code-audit PR
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The head commit, so inline comment positions match the PR diff.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Full history: the merge base with the base branch is needed.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: code-audit
+        uses: OWNER/code-audit@0000000000000000000000000000000000000000 # vX.Y.Z
+        with:
+          fail-on: high
+          min-confidence: medium
+          # mode: diff is the default for pull_request events.
+          # baseline: .code-audit-baseline.json   # read from the base commit
+          engines: builtin
+          upload-sarif: "true"
+          comment: "true"

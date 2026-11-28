@@ -1,0 +1,78 @@
+# code-audit pull request comments (second stage, composite).
+#
+# Use it ONLY in a workflow triggered by `workflow_run` of the scan workflow
+# (examples/workflows/code-audit-comment.yml). It downloads the results
+# artifact of the triggering run, validates it and posts inline review
+# comments plus one summary comment through the GitHub API. It never checks
+# out or runs code of the pull request: the only code that runs is this
+# Action's own scripts/action/comment.mjs (plain Node, no dependencies).
+#
+# Third-party actions are pinned to full commit SHAs; the comment names the
+# release. Update both together.
+name: code-audit comment
+description: Post code-audit results of a pull_request scan as pull request comments (workflow_run stage).
+author: Oliver Zhao
+branding:
+  icon: message-square
+  color: blue
+
+inputs:
+  github-token:
+    description: Token with pull-requests write and actions read (the workflow's GITHUB_TOKEN).
+    required: false
+    default: ${{ github.token }}
+  artifact-name:
+    description: Name of the results artifact uploaded by the scan.
+    required: false
+    default: code-audit-results
+  max-inline:
+    description: Most inline comments per run (at most 50); the rest goes into the summary comment.
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - name: Check the event
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        RUN_EVENT: ${{ github.event.workflow_run.event }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_MAX_INLINE: ${{ inputs.max-inline }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT_NAME" != "workflow_run" ]; then
+          echo "::error::code-audit comment: run this only from a workflow_run workflow"; exit 2
+        fi
+        if [ "$RUN_EVENT" != "pull_request" ]; then
+          echo "code-audit comment: the triggering run was not started by a pull request; nothing to do"
+        fi
+        [[ "$INPUT_ARTIFACT_NAME" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo "::error::invalid artifact-name"; exit 2; }
+        [[ "$INPUT_MAX_INLINE" =~ ^[0-9]{1,2}$ ]] || { echo "::error::invalid max-inline"; exit 2; }
+
+    - name: Download the results artifact
+      if: github.event.workflow_run.event == 'pull_request'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/code-audit-artifact
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ inputs.github-token }}
+
+    - name: Set up Node.js
+      if: github.event.workflow_run.event == 'pull_request'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "22"
+        package-manager-cache: false
+
+    - name: Post comments
+      if: github.event.workflow_run.event == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CODE_AUDIT_MAX_INLINE: ${{ inputs.max-inline }}
+        ACTION_PATH: ${{ github.action_path }}
+        ARTIFACT_DIR: ${{ runner.temp }}/code-audit-artifact
+      run: node "$ACTION_PATH/../scripts/action/comment.mjs" "$ARTIFACT_DIR/comment-data.json"
