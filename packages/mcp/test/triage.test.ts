@@ -70,6 +70,21 @@ async function allItems(runId: string, kind: string): Promise<Item[]> {
   return items;
 }
 
+async function allItemsBlind(runId: string): Promise<Item[]> {
+  const items: Item[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 50; page += 1) {
+    const result = (await call("audit_findings", { run_id: runId, kind: "finding", blind: true, ...(cursor ? { cursor } : {}) })) as {
+      items: Item[];
+      next_cursor: string | null;
+    };
+    items.push(...result.items);
+    if (!result.next_cursor) break;
+    cursor = result.next_cursor;
+  }
+  return items;
+}
+
 beforeAll(async () => {
   fs.cpSync(path.join(repoRoot, "fixtures/vulnerable"), project, { recursive: true });
   const server = createAuditServer({ base: temp });
@@ -171,7 +186,47 @@ describe("structured triage over MCP", () => {
     expect(confirmed.status).toBe("confirmed");
     expect(confirmed.strictEvidence).toBe(true);
 
-    // The independent reviewer gets only the id and location and disagrees.
+    // The independent reviewer lists blind: no verdict status, no review fields.
+    const blindPage = (await call("audit_findings", { run_id: runId, kind: "finding", blind: true, limit: 20 })) as {
+      blind: boolean;
+      items: Item[];
+    };
+    expect(blindPage.blind).toBe(true);
+    const blindFirst = (await allItemsBlind(runId)).find((item) => item.id === first.id);
+    expect(blindFirst?.status).toBe("candidate");
+    expect(blindFirst?.independently_reviewed).toBeUndefined();
+    expect((await callError("audit_findings", { run_id: runId, blind: true, status: "confirmed" })).message).toMatch(
+      /blind listing does not filter by status or minConfidence/,
+    );
+    const blindRead = await call("audit_read", { run_id: runId, file: first.file, startLine: first.start_line, blind: true });
+    expect(blindRead.blind).toBe(true);
+
+    // An independent review needs its own label and says how independent it is.
+    const noIndependence = await callError("audit_verdict", {
+      run_id: runId,
+      finding: first.id,
+      status: "false_positive",
+      rationale: "x",
+      reviewer: "fresh-subagent",
+      role: "independent",
+    });
+    expect(noIndependence.message).toMatch(/needs independence/);
+    const sameLabel = await callError("audit_verdict", {
+      run_id: runId,
+      finding: first.id,
+      status: "confirmed",
+      rationale: "same agent",
+      reviewer: "primary-model",
+      role: "independent",
+      independence: "same-session",
+      trace: [
+        { file: first.file, line: first.start_line, role: "source" },
+        { file: first.file, line: first.start_line, role: "sink" },
+      ],
+    });
+    expect(sameLabel.code).toBe("INDEPENDENT_SAME_REVIEWER");
+
+    // The fresh sub-agent disagrees.
     const independent = await call("audit_verdict", {
       run_id: runId,
       finding: first.id,
@@ -179,12 +234,39 @@ describe("structured triage over MCP", () => {
       rationale: `The value is fixed before the call; see ${first.file}:${first.start_line} where it is assigned from a constant.`,
       reviewer: "fresh-subagent",
       role: "independent",
+      independence: "subagent",
       control: { file: first.file, line: first.start_line, note: "constant value" },
     });
     expect(independent.status).toBe("needs_review");
     expect(independent.requestedStatus).toBe("false_positive");
     expect(String(independent.disagreement)).toContain("fresh-subagent");
     expect(independent.dismissedWarning).toBeUndefined();
+    // A sub-agent that forgot role cannot overwrite the decision.
+    const forgot = await callError("audit_verdict", {
+      run_id: runId,
+      finding: first.id,
+      status: "needs_review",
+      rationale: "forgot the role",
+      reviewer: "another-subagent",
+    });
+    expect(forgot.code).toBe("PRIMARY_REPLACE_REFUSED");
+    // A second sub-agent agrees with the decision: resolved, the dissent stays visible.
+    const resolved = await call("audit_verdict", {
+      run_id: runId,
+      finding: first.id,
+      status: "confirmed",
+      rationale: "traced it independently",
+      reviewer: "second-subagent",
+      role: "independent",
+      independence: "subagent",
+      trace: [
+        { file: first.file, line: first.start_line, role: "source" },
+        { file: first.file, line: first.start_line, role: "sink" },
+      ],
+    });
+    expect(resolved.status).toBe("confirmed");
+    expect(resolved.independentlyReviewed).toBe(true);
+    expect(resolved.disputed).toBe(true);
 
     // A proof gap needs `missing` under strict evidence.
     const gapRefused = await callError("audit_verdict", {
@@ -217,7 +299,9 @@ describe("structured triage over MCP", () => {
       finding: third.id,
       status: "confirmed",
       rationale: "x",
+      reviewer: "sub",
       role: "independent",
+      independence: "subagent",
       trace: [
         { file: third.file, line: third.start_line, role: "source" },
         { file: third.file, line: third.start_line, role: "sink" },
@@ -227,7 +311,7 @@ describe("structured triage over MCP", () => {
 
     const listed = await allItems(runId, "finding");
     const byId = new Map(listed.map((item) => [item.id, item]));
-    expect(byId.get(first.id)?.status).toBe("needs_review");
+    expect(byId.get(first.id)?.status).toBe("confirmed");
     expect(byId.get(first.id)?.independently_reviewed).toBe(true);
     expect(byId.get(second.id)?.status).toBe("proof_gap");
     expect(byId.get(second.id)?.independently_reviewed).toBe(false);
@@ -237,11 +321,12 @@ describe("structured triage over MCP", () => {
     const summary = await call("audit_report", { run_id: runId, format: "summary" });
     expect(summary.truncated).toBeUndefined();
     const parsed = JSON.parse(String(summary.text)) as {
-      triage: { findings: { reviewed: number }; open: number; independentlyReviewed: number; proofGaps: Array<{ id: string; missing: string }> };
+      triage: { findings: { reviewed: number }; open: number; independentlyReviewed: number; disputed: number; proofGaps: Array<{ id: string; missing: string }> };
     };
     expect(parsed.triage.findings.reviewed).toBe(2);
-    expect(parsed.triage.open).toBe(2);
+    expect(parsed.triage.open).toBe(1);
     expect(parsed.triage.independentlyReviewed).toBe(1);
+    expect(parsed.triage.disputed).toBe(1);
     expect(parsed.triage.proofGaps).toEqual([
       { id: second.id, location: `${second.file}:${second.start_line}`, missing: "whether the handler is mounted behind the login middleware" },
     ]);
@@ -249,9 +334,10 @@ describe("structured triage over MCP", () => {
     const md = await call("audit_report", { run_id: runId, format: "md" });
     const text = fs.readFileSync(String(md.path), "utf8");
     expect(text).toContain("### Review coverage");
-    expect(text).toContain("### Open proof gaps (1)");
+    expect(text).toContain("- **Open proof gaps (1)**");
+    expect(text).toContain("- **Disputed verdicts (1)**");
+    expect(text).toContain("was disputed: fresh-subagent said false\\_positive (subagent)");
     expect(text).toContain("Review incomplete:");
-    expect(text).toContain("(independently reviewed)");
     expect(text).not.toContain("No reportable issues found.");
 
     const sarif = await call("audit_report", { run_id: runId, format: "sarif" });
@@ -265,5 +351,46 @@ describe("structured triage over MCP", () => {
     const verdicts = JSON.parse(fs.readFileSync(path.join(String(started.run_dir), "verdicts.json"), "utf8"));
     expect(verdicts.schemaVersion).toBe(2);
     expect(verdicts.strictEvidence).toBe(true);
+  });
+
+  it("keeps phase, counts and the dismissal warning within the size cap (M2, harness t7b)", async () => {
+    // A repository can make every path long; the ledger must not push the
+    // essential fields out of audit_status or break the summary JSON.
+    const longRoot = path.join(temp, "long");
+    const deep = ["a", "b", "c", "d"].map((letter) => letter.repeat(150)).join("/");
+    const source = fs.readFileSync(path.join(repoRoot, "fixtures/vulnerable/python/app.py"), "utf8");
+    for (let index = 0; index < 8; index += 1) {
+      fs.mkdirSync(path.join(longRoot, deep), { recursive: true });
+      fs.writeFileSync(path.join(longRoot, deep, `copy${index}.py`), source);
+    }
+    const started = await call("audit_start", { root: longRoot, offline: true, engines: ["builtin"] });
+    const runId = String(started.run_id);
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const state = await call("audit_status", { run_id: runId });
+      if (state.phase !== "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const findings = await allItems(runId, "finding");
+    const serious = findings.filter((item) => item.severity === "high" || item.severity === "critical");
+    const dismissed = serious[0] as Item;
+    await call("audit_verdict", {
+      run_id: runId,
+      finding: dismissed.id,
+      status: "false_positive",
+      rationale: `The value is a constant assigned at ${path.basename(dismissed.file)}:${dismissed.start_line} and never user controlled.`,
+      evidenceLines: ["x = 1"],
+    });
+    for (const item of serious.slice(1, 12)) {
+      await call("audit_verdict", { run_id: runId, finding: item.id, status: "proof_gap", rationale: "x", missing: "m".repeat(400) });
+    }
+    const status = await call("audit_status", { run_id: runId });
+    expect(status.phase).toBe("complete");
+    expect(typeof status.findings).toBe("number");
+    expect(String(status.dismissedWarning)).toMatch(/^WARNING: /);
+    const report = await call("audit_report", { run_id: runId, format: "summary" });
+    const parsed = JSON.parse(String(report.text)) as Record<string, unknown>;
+    expect(parsed.phase).toBe("complete");
+    expect(String(parsed.dismissedWarning)).toMatch(/^WARNING: /);
+    expect(report.truncated).toBeUndefined();
   });
 });

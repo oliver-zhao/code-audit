@@ -79,21 +79,28 @@ summary, MCP `audit_status` / `audit_report` and `run.summary` in
   rationale of at least 40 characters and evidence lines, a checked `control`
   location or a `file:line` reference. The reviewer column says when the
   dismissal was independently reviewed, and the rationale shows the control.
-- **Review coverage** (under the run details): for findings and for hotspots,
-  how many records there are, how many have a verdict and how many nobody has
-  reviewed, with the rules that have the most unreviewed records; then the
-  records still open after review (`needs_review`, `proof_gap`), the
-  independently reviewed ones and the suppressed ones (not part of this
-  ledger). While any finding or hotspot has no verdict, a bold line under the
-  title says `Review incomplete: ...` and an empty section reads "Nothing to
-  list in this section. This is not a clean result: ..." instead of "No
-  reportable issues found." The summary JSON (`report --format summary`,
-  `status --json`, MCP) carries the same numbers as `triage`.
-- **Open proof gaps**: every record whose verdict is `proof_gap`, with the
-  fact the reviewer could not establish (`missing`). A proof gap counts like
-  `needs_review`: active, never a suppression. Finding details show the
-  verdict's structured evidence (trace, control, missing, a reviewer's
-  severity view) and whether it was independently reviewed.
+- **Review coverage** (under the run details), kept to a few lines so a
+  reviewed report is no longer than an unreviewed one: the heading names the
+  records still open after review (`needs_review`, `proof_gap`) and the
+  independently reviewed ones; one line per kind says how many records there
+  are, how many have a verdict and how many nobody has reviewed, with the
+  rules that have the most unreviewed records. Then, when there are any, one
+  line lists the **open proof gaps** (each with the fact the reviewer could
+  not establish, `missing`) and one the **disputed verdicts** (the dissenting
+  reviewer, status, independence and rationale, also once resolved); each
+  shows the first three and then "… N more (see findings.json)". A proof gap
+  counts like `needs_review`: active, never a suppression. Once a run has a
+  verdict and any finding or hotspot is still unreviewed, a bold line under
+  the title says `Review incomplete: ...`, an empty findings section reads
+  "Nothing to list in this section. This is not a clean result: ..." and an
+  empty dependency section "No vulnerable dependency was found." A plain scan
+  that nobody has reviewed keeps the wording it always had. The summary JSON
+  (`report --format summary`, `status --json`, MCP) carries the same numbers
+  as `triage`. Finding details end with the verdict's structured evidence on
+  the same line (at most three trace steps, then "… N more"), whether and
+  how it was independently reviewed, and any dispute. Reviewer text is
+  redacted and escaped, and `@mentions` and bare URLs in it are broken with a
+  zero-width space so a report posted to GitHub neither pings nor links.
 
 The Markdown report is ordered for reading: summary (the exit-code line, the
 count table, the top 10 risks), findings grouped by rule, dependencies,
@@ -107,10 +114,14 @@ each result carries `properties` (confidence, category, `pathContext`,
 <rationale>` for a `false_positive` verdict). In `findings.json` a record
 with a verdict has a `review` object (status, rationale, reviewer, time,
 evidence lines, and from verdicts.json schemaVersion 2 `trace`, `control`,
-`conditions`, `missing`, `cwe`, `severityOverride`, `reviewers` and
-`independentlyReviewed`), always taken from `verdicts.json`. SARIF results
-with a verdict have `properties.review` (status, `independentlyReviewed`,
-`missing`), and the run has `properties.review` with the unreviewed and open
+`conditions`, `missing`, `cwe`, `severityOverride`, `primaryStatus`, the
+review `history` (newest 50 entries, rationales cut at 300 characters, each
+marked `superseded` or `disagreed`), `independentlyReviewed`,
+`independentReview`, `disputed`, `dissent` and `disputeOpen`), always taken
+from `verdicts.json`. SARIF results with a verdict have `properties.review`
+(status, `independentlyReviewed`, `independence`, `missing`, and for a
+disputed verdict `disputed`, `disputeOpen` and `dissent`), and the run has
+`properties.review` with the unreviewed, open, proof-gap and dispute
 counts.
 
 **Top risks** are ordered by severity first, with one entry per rule and one

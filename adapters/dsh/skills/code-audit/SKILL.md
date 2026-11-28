@@ -97,8 +97,10 @@ your tool list whose name ends with the bare name.
    the root) and a line that exists: every location is checked, and a bad one
    is refused with `EVIDENCE_LOCATION_INVALID` naming the item. With
    `strict_evidence` (on `audit_start` or the call) `confirmed` needs a trace
-   with a `source` and a `sink`, `false_positive` a `control`, `proof_gap` a
-   `missing`; the error (`EVIDENCE_REQUIRED`) shows the field to add.
+   with a `source` and a `sink`, `likely` one with a `sink`, `false_positive`
+   a `control`, `proof_gap` a `missing`; the error (`EVIDENCE_REQUIRED`)
+   shows the field to add. `control` is only for `false_positive`, `missing`
+   only for `proof_gap`.
    **Dismissals are shown to the human.** Every `false_positive` is listed in
    the report under "Dismissed by review" with its severity, location, your
    reviewer label and your rationale; SARIF records it as a suppression; and
@@ -113,13 +115,21 @@ your tool list whose name ends with the bare name.
    `confirmed` or `false_positive`, get a second opinion that has not seen
    yours. If your host can start sub-agents, you **must** start a fresh one
    and give it only the run id, the finding id, its file and line, and these
-   tools - not your verdict, not your rationale. Ask it to try to refute the
-   finding's current reading and to record its own `audit_verdict` with
-   `role: "independent"` and its own `reviewer` label. Without sub-agents,
-   switch explicitly to a devil's-advocate pass in this session: argue the
-   opposite, re-read the code, and record `role: "independent"` with
-   `same-session` in the rationale. When the two disagree the finding
-   becomes `needs_review`; tell the user, do not overwrite it to win.
+   tools - not your verdict, not your rationale. Tell it to list findings with
+   `audit_findings` `blind: true` (and `audit_read` with `blind: true`), to
+   try to refute the finding, and to record its own `audit_verdict` with
+   `role: "independent"`, `independence: "subagent"` and a `reviewer` label
+   different from yours. Without sub-agents, switch explicitly to a
+   devil's-advocate pass in this session: argue the opposite, re-read the
+   code, and record `role: "independent"`, `independence: "same-session"`,
+   a label different from your primary one, and `same-session` in the
+   rationale. The server refuses an independent verdict under your own
+   label. When the two disagree the finding becomes `needs_review` and stays
+   so until another independent reviewer agrees with the decision; a new
+   primary verdict does not clear it. Tell the user; never re-record verdicts
+   to make a disagreement go away. A primary verdict that would replace
+   another reviewer's reviewed decision is refused unless you pass
+   `replace: true`; use it only when the user asks you to decide.
 
 6. **Add findings the static rules missed.** Before adding, check whether a
    finding or hotspot already covers that file and line: call `audit_findings`

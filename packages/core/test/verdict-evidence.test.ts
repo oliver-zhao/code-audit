@@ -1,14 +1,26 @@
 /**
  * F3: structured verdicts (verdicts.json schemaVersion 2), proof_gap,
  * strict evidence, location checks through the path jail, independent
- * review and the review ledger of the reports.
+ * review and the review ledger of the reports - including the scenarios of
+ * the adversarial review (F3_REVIEW.md: H1, H2, M1, M3, L1, L5-L10).
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFinding, type Finding } from "../src/finding.js";
-import { renderMarkdown, renderSarif, triageCoverage, type ReportContext } from "../src/report.js";
+import {
+  neutralizeLinks,
+  renderMarkdown,
+  renderSarif,
+  triageCoverage,
+  type ReportContext,
+} from "../src/report.js";
+import {
+  MAX_RUN_FILE_BYTES,
+  MAX_VERDICTS_PER_FINDING,
+} from "../src/runSchemas.js";
 import {
   RunStoreError,
   effectiveFindings,
@@ -18,12 +30,12 @@ import {
   recordVerdict,
   renderRunReport,
   runStatus,
+  textLineCount,
   verdictsDisagree,
   type RecordVerdictInput,
 } from "../src/runstore.js";
 import { scanProject } from "../src/scan.js";
-import { splitLines } from "../src/redact.js";
-import { VULNERABLE, cleanup, makeTempDir } from "./helpers.js";
+import { REPO_ROOT, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("verdict-evidence");
 const outside = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-f3-outside-"));
@@ -33,12 +45,10 @@ afterAll(() => {
 });
 
 const APP = "python/app.py";
-const APP_LINES = splitLines(fs.readFileSync(path.join(VULNERABLE, APP), "utf8")).length;
+const APP_LINES = textLineCount(fs.readFileSync(path.join(VULNERABLE, APP), "utf8"));
 
-async function freshRun(name: string) {
-  const project = path.join(temp, name);
-  fs.cpSync(VULNERABLE, project, { recursive: true });
-  const result = await scanProject({ root: project, offline: true, engines: ["builtin"] });
+async function runOf(project: string, untrusted = false) {
+  const result = await scanProject({ root: project, offline: true, engines: ["builtin"], untrusted });
   const options = { cwd: project };
   const run = loadRun(result.runId, options);
   const pick = (severity: string, kind = "finding"): Finding[] =>
@@ -58,7 +68,15 @@ async function freshRun(name: string) {
     return caught as RunStoreError;
   };
   const entries = () => loadRun(result.runId, options).verdictsDocument.entries;
-  return { project, runId: result.runId, runDir: result.runDir, options, pick, verdict, refused, entries };
+  const current = (finding: Finding) =>
+    effectiveFindings(loadRun(result.runId, options)).find((item) => item.fingerprint === finding.fingerprint);
+  return { project, runId: result.runId, runDir: result.runDir, options, run, pick, verdict, refused, entries, current };
+}
+
+async function freshRun(name: string) {
+  const project = path.join(temp, name);
+  fs.cpSync(VULNERABLE, project, { recursive: true });
+  return runOf(project);
 }
 
 type Ctx = Awaited<ReturnType<typeof freshRun>>;
@@ -67,6 +85,7 @@ const SOURCE = { file: APP, line: 1, role: "source" as const, note: "request dat
 const SINK = { file: APP, line: 2, role: "sink" as const, note: "dangerous call" };
 const CONTROL = { file: APP, line: 3, note: "the value is a constant" };
 const SAFE = "The argument is a constant defined in this module and never reaches the request handler.";
+const SUB = { role: "independent" as const, independence: "subagent" as const };
 
 describe("verdicts.json schemaVersion 2 reads version 1", () => {
   let ctx: Ctx;
@@ -74,7 +93,7 @@ describe("verdicts.json schemaVersion 2 reads version 1", () => {
     ctx = await freshRun("compat");
   });
 
-  it("loads a hand-written version 1 file and writes version 2 on the next verdict", () => {
+  it("loads a hand-written version 1 file and appends version 2 entries", () => {
     const [first, second] = ctx.pick("critical") as [Finding, Finding];
     const v1 = {
       schemaVersion: 1,
@@ -95,8 +114,8 @@ describe("verdicts.json schemaVersion 2 reads version 1", () => {
     expect(run.verdicts[first.fingerprint]?.status).toBe("confirmed");
     const listed = queryFindings(run, { kind: "finding" }, undefined, 20).items;
     expect(listed.find((item) => item.id === first.id)?.review?.independentlyReviewed).toBe(false);
-    // An independent review of a version 1 entry takes it as the primary.
-    const result = ctx.verdict(first, { status: "likely", rationale: "agrees", role: "independent", reviewer: "second" });
+    // A version 1 entry is the primary decision.
+    const result = ctx.verdict(first, { status: "likely", rationale: "agrees", reviewer: "second", ...SUB });
     expect(result.status).toBe("confirmed");
     expect(result.independentlyReviewed).toBe(true);
     ctx.verdict(second, { status: "needs_review", rationale: "unsure" });
@@ -104,10 +123,9 @@ describe("verdicts.json schemaVersion 2 reads version 1", () => {
     expect(written.schemaVersion).toBe(2);
     expect(written.entries).toHaveLength(3);
     expect(written.entries[0]).toEqual(v1.entries[0]);
-    expect(written.entries[1].reviewers.map((item: { reviewer: string; role: string }) => `${item.role}:${item.reviewer}`)).toEqual([
-      "primary:old-model",
-      "independent:second",
-    ]);
+    // Each entry is one reviewer's verdict, stored once.
+    expect(written.entries[1]).toMatchObject({ role: "independent", independence: "subagent", status: "likely", rationale: "agrees" });
+    expect(written.entries[1].reviewers).toBeUndefined();
   });
 
   it("refuses a file with an unknown schema version", () => {
@@ -137,8 +155,6 @@ describe("structured evidence is checked", () => {
       [{ trace: [{ line: 1, role: "source" } as never] }, /trace\[0\]\.file is missing: give the path relative to the audit root/],
       [{ trace: [{ file: APP, line: 0, role: "sink" }] }, /trace\[0\]\.line is missing or not a line number/],
       [{ trace: Array.from({ length: 21 }, () => SOURCE) }, /at most 20 are accepted/],
-      [{ control: { file: APP, line: 1 } as never }, /control\.note is missing/],
-      [{ missing: "too short" }, /missing must say in at least 20 characters/],
       [{ cwe: "89" }, /cwe must look like CWE-89/],
       [{ conditions: { auth: "root" } as never }, /conditions\.auth must be "none"/],
       [{ severityOverride: { severity: "huge", reason: "x" } as never }, /severityOverride\.severity must be one of/],
@@ -149,19 +165,45 @@ describe("structured evidence is checked", () => {
       expect(error.code).toBe("INVALID_EVIDENCE");
       expect(error.message).toMatch(message);
     }
+    expect(ctx.refused(finding, { status: "false_positive", rationale: SAFE, control: { file: APP, line: 1 } as never }).message).toMatch(
+      /control\.note is missing/,
+    );
+    expect(ctx.refused(finding, { status: "proof_gap", rationale: "x", missing: "too short" }).message).toMatch(
+      /missing must say in at least 20 characters/,
+    );
     expect(ctx.entries()).toHaveLength(0);
   });
 
-  it("refuses locations outside the root, outside the file or not in the inventory", () => {
+  it("refuses fields that do not belong to the status (L5)", () => {
     const finding = ctx.pick("medium")[0] as Finding;
+    const cases: Array<[RecordVerdictInput, RegExp]> = [
+      [{ status: "confirmed", rationale: "x", missing: "whether the handler is reachable at all" }, /missing belongs to proof_gap only/],
+      [{ status: "likely", rationale: "x", control: CONTROL }, /control belongs to false_positive only/],
+      [{ status: "false_positive", rationale: SAFE, control: CONTROL, severityOverride: { severity: "low", reason: "x" } }, /severityOverride belongs to confirmed and likely only/],
+      [{ status: "needs_review", rationale: "x", independence: "subagent" }, /independence belongs to role "independent" only/],
+    ];
+    for (const [input, message] of cases) {
+      const error = ctx.refused(finding, input);
+      expect(["INVALID_EVIDENCE", "INVALID_VERDICT"]).toContain(error.code);
+      expect(error.message).toMatch(message);
+    }
+    expect(ctx.entries()).toHaveLength(0);
+  });
+
+  it("refuses locations outside the root, outside the file or not scanned by the run", () => {
+    const finding = ctx.pick("medium")[0] as Finding;
+    // Created after the scan: not part of what the run scanned.
+    writeFile(ctx.project, "python/later.py", "x = 1\n");
+    writeFile(ctx.project, "python/nl.py", "a = 1\nb = 2\n");
     const cases: Array<[Record<string, unknown>, RegExp]> = [
       [{ ...SOURCE, file: "../outside.py" }, /trace\[0\] \(\.\.\/outside\.py:1\): the path leaves the audit root/],
       [{ ...SOURCE, file: path.join(ctx.project, APP) }, /an absolute path is not accepted/],
       [{ ...SOURCE, file: "/etc/passwd" }, /an absolute path is not accepted/],
       [{ ...SOURCE, file: "python/escape.py" }, /the path leaves the audit root/],
-      [{ ...SOURCE, file: "python/missing.py" }, /not a file of the audit inventory/],
-      [{ ...SOURCE, file: ".audit/index.json" }, /not a file of the audit inventory/],
-      [{ ...SOURCE, file: "python/app.py\u0000.txt" }, /cannot be resolved inside the audit root|not a file of the audit inventory/],
+      [{ ...SOURCE, file: "python/missing.py" }, /not a file this run scanned/],
+      [{ ...SOURCE, file: "python/later.py" }, /not a file this run scanned/],
+      [{ ...SOURCE, file: ".audit/index.json" }, /not a file this run scanned/],
+      [{ ...SOURCE, file: "python/app.py\u0000.txt" }, /cannot be resolved inside the audit root|not a file this run scanned/],
       [{ ...SOURCE, line: APP_LINES + 1 }, new RegExp(`line ${APP_LINES + 1} is beyond the end of python/app\\.py \\(${APP_LINES} lines\\)`)],
     ];
     for (const [step, message] of cases) {
@@ -172,7 +214,6 @@ describe("structured evidence is checked", () => {
       // The resolved target of a link is never echoed.
       expect(error.message).not.toContain(outside);
     }
-    // A bad control is named as such, and every bad item is listed.
     const both = ctx.refused(finding, {
       status: "false_positive",
       rationale: SAFE,
@@ -184,12 +225,30 @@ describe("structured evidence is checked", () => {
     expect(ctx.entries()).toHaveLength(0);
   });
 
-  it("stores checked locations relative to the root, with notes redacted", () => {
+  it("does not count a trailing line break as a line (L1)", () => {
+    expect(textLineCount("")).toBe(0);
+    expect(textLineCount("a")).toBe(1);
+    expect(textLineCount("a\nb\n")).toBe(2);
+    expect(textLineCount("a\r\nb")).toBe(2);
+    expect(textLineCount("a\n\n")).toBe(2);
+    // The fixture ends in a line break: its last line is accepted, the next is not.
     const finding = ctx.pick("medium")[0] as Finding;
+    const text = fs.readFileSync(path.join(ctx.project, APP), "utf8");
+    expect(text.endsWith("\n")).toBe(true);
+    const lines = text.split("\n").length - 1;
+    expect(ctx.refused(finding, { status: "likely", rationale: "x", trace: [{ ...SINK, line: lines + 1 }] }).code).toBe(
+      "EVIDENCE_LOCATION_INVALID",
+    );
+    expect(ctx.verdict(finding, { status: "likely", rationale: "x", trace: [{ ...SINK, line: lines }] }).status).toBe("likely");
+  });
+
+  it("stores checked locations relative to the root, with notes, rationale and label redacted (L7)", () => {
+    const finding = ctx.pick("medium")[1] as Finding;
     const token = ["ghp_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("");
     const result = ctx.verdict(finding, {
       status: "confirmed",
-      rationale: "request data reaches the call",
+      rationale: `request data reaches the call; token ${token}`,
+      reviewer: `model ${token}`,
       trace: [{ ...SOURCE, file: `./python/../${APP}`, note: `token ${token}` }, SINK],
       conditions: { auth: "none", userInteraction: false },
       cwe: "cwe-78",
@@ -202,11 +261,11 @@ describe("structured evidence is checked", () => {
       `${APP}:2:sink`,
     ]);
     expect(stored?.cwe).toBe("CWE-78");
-    expect(JSON.stringify(stored)).not.toContain(token);
+    expect(fs.readFileSync(path.join(ctx.runDir, "verdicts.json"), "utf8")).not.toContain(token);
+    expect(fs.readFileSync(path.join(ctx.runDir, "findings.json"), "utf8")).not.toContain(token);
+    expect(renderRunReport(ctx.runId, "md", ctx.options).text).not.toContain(token);
     // The counted severity does not change with an override.
-    const effective = effectiveFindings(loadRun(ctx.runId, ctx.options)).find(
-      (item) => item.fingerprint === finding.fingerprint,
-    );
+    const effective = ctx.current(finding);
     expect(effective?.severity).toBe(finding.severity);
     expect(effective?.review?.severityOverride?.severity).toBe("critical");
   });
@@ -215,7 +274,6 @@ describe("structured evidence is checked", () => {
     const high = ctx.pick("high")[0] as Finding;
     expect(ctx.refused(high, { status: "false_positive", rationale: SAFE }).code).toBe("DISMISSAL_NEEDS_EVIDENCE");
     expect(ctx.verdict(high, { status: "false_positive", rationale: SAFE, control: CONTROL }).status).toBe("false_positive");
-    // A control does not make up for a short rationale.
     const other = ctx.pick("high")[1] as Finding;
     expect(ctx.refused(other, { status: "false_positive", rationale: "fp", control: CONTROL }).code).toBe(
       "DISMISSAL_NEEDS_EVIDENCE",
@@ -223,8 +281,31 @@ describe("structured evidence is checked", () => {
   });
 
   it("accepts proof_gap without missing when strict evidence is off", () => {
-    const finding = ctx.pick("low")[0] ?? (ctx.pick("medium")[1] as Finding);
+    const finding = ctx.pick("low")[0] ?? (ctx.pick("medium")[2] as Finding);
     expect(ctx.verdict(finding, { status: "proof_gap", rationale: "could not tell" }).status).toBe("proof_gap");
+  });
+});
+
+describe("evidence of an untrusted run (M3)", () => {
+  it("accepts files the run scanned in default-excluded directories, and nothing created later", async () => {
+    const project = path.join(temp, "untrusted");
+    writeFile(project, "dist/bundle.py", "import os\n\ndef run(cmd):\n    os.system(cmd)\n");
+    writeFile(project, "app.py", "x = 1\n");
+    const ctx = await runOf(project, true);
+    const finding = [...ctx.run.findings, ...ctx.run.hotspots].find((item) => item.file === "dist/bundle.py");
+    expect(finding, "the untrusted scan reports dist/bundle.py").toBeDefined();
+    const at = { file: "dist/bundle.py", line: (finding as Finding).startLine };
+    const result = ctx.verdict(finding as Finding, {
+      status: "confirmed",
+      rationale: "cmd reaches os.system",
+      strictEvidence: true,
+      trace: [{ ...at, role: "source" }, { ...at, role: "sink" }],
+    });
+    expect(result.status).toBe("confirmed");
+    writeFile(project, "dist/new.py", "y = 2\n");
+    expect(
+      ctx.refused(finding as Finding, { status: "likely", rationale: "x", trace: [{ file: "dist/new.py", line: 1, role: "sink" }] }).message,
+    ).toMatch(/not a file this run scanned/);
   });
 });
 
@@ -234,7 +315,7 @@ describe("strict evidence", () => {
     ctx = await freshRun("strict");
   });
 
-  it("requires a source and a sink, a control, or missing, with an example of the field", () => {
+  it("requires a source and a sink, a sink for likely, a control, or missing", () => {
     const finding = ctx.pick("medium")[0] as Finding;
     const strict = { strictEvidence: true };
     let error = ctx.refused(finding, { status: "confirmed", rationale: "yes", ...strict });
@@ -242,14 +323,17 @@ describe("strict evidence", () => {
     expect(error.message).toMatch(/no "source" and no "sink" step given\). Example: trace: \[\{"file":/);
     error = ctx.refused(finding, { status: "confirmed", rationale: "yes", trace: [SOURCE], ...strict });
     expect(error.message).toMatch(/no "sink" step given/);
-    error = ctx.refused(finding, { status: "false_positive", rationale: SAFE, ...strict });
+    // L10: likely needs at least the sink it was checked at.
+    error = ctx.refused(finding, { status: "likely", rationale: "probably", ...strict });
     expect(error.code).toBe("EVIDENCE_REQUIRED");
+    expect(error.message).toMatch(/a likely verdict needs trace with at least one step of role "sink"/);
+    error = ctx.refused(finding, { status: "false_positive", rationale: SAFE, ...strict });
     expect(error.message).toMatch(/needs control: .* for example control: \{"file":/);
     error = ctx.refused(finding, { status: "proof_gap", rationale: "unclear", ...strict });
     expect(error.message).toMatch(/needs missing: the fact you could not establish, in at least 20 characters/);
     expect(ctx.entries()).toHaveLength(0);
-    // likely and needs_review need nothing more.
-    ctx.verdict(finding, { status: "likely", rationale: "probably", ...strict });
+    ctx.verdict(finding, { status: "likely", rationale: "probably", trace: [SINK], ...strict });
+    ctx.verdict(finding, { status: "needs_review", rationale: "unsure", ...strict });
     ctx.verdict(finding, { status: "confirmed", rationale: "traced", trace: [SOURCE, SINK], ...strict });
     ctx.verdict(finding, { status: "proof_gap", rationale: "unclear", missing: "whether the handler is reachable without login", ...strict });
     expect(ctx.entries().at(-1)?.status).toBe("proof_gap");
@@ -259,8 +343,7 @@ describe("strict evidence", () => {
     initRunVerdicts(ctx.runDir, ctx.runId, { strictEvidence: true });
     const document = loadRun(ctx.runId, ctx.options).verdictsDocument;
     expect(document.strictEvidence).toBe(true);
-    // Earlier entries survive.
-    expect(document.entries.length).toBe(3);
+    expect(document.entries.length).toBe(4);
     const finding = ctx.pick("medium")[1] as Finding;
     expect(ctx.refused(finding, { status: "confirmed", rationale: "yes" }).code).toBe("EVIDENCE_REQUIRED");
     expect(ctx.refused(finding, { status: "confirmed", rationale: "yes", strictEvidence: false }).code).toBe(
@@ -268,7 +351,6 @@ describe("strict evidence", () => {
     );
     const result = ctx.verdict(finding, { status: "confirmed", rationale: "traced", trace: [SOURCE, SINK] });
     expect(result.strictEvidence).toBe(true);
-    // The setting is kept when verdicts are written.
     expect(JSON.parse(fs.readFileSync(path.join(ctx.runDir, "verdicts.json"), "utf8")).strictEvidence).toBe(true);
   });
 });
@@ -291,89 +373,204 @@ describe("independent review", () => {
     expect(verdictsDisagree("false_positive", "needs_review")).toBe(true);
   });
 
-  it("needs a primary verdict first", () => {
+  it("needs a primary verdict, its own label and independence (M1)", () => {
     const finding = ctx.pick("high")[0] as Finding;
-    const error = ctx.refused(finding, { status: "confirmed", rationale: "x", role: "independent" });
+    let error = ctx.refused(finding, { status: "confirmed", rationale: "x", reviewer: "sub", ...SUB });
     expect(error.code).toBe("PRIMARY_VERDICT_REQUIRED");
     expect(error.message).toContain('role "primary"');
-    expect(ctx.refused(finding, { status: "confirmed", rationale: "x", role: "boss" as never }).code).toBe(
-      "INVALID_VERDICT",
-    );
-  });
-
-  it("downgrades a disagreement to needs_review and keeps both sides", () => {
-    const finding = ctx.pick("high")[0] as Finding;
-    ctx.verdict(finding, {
-      status: "confirmed",
-      rationale: "request data reaches the call",
-      reviewer: "primary-model",
-      trace: [SOURCE, SINK],
-    });
-    const result = ctx.verdict(finding, {
-      status: "false_positive",
-      rationale: `${SAFE} See python/app.py:3.`,
-      reviewer: "fresh-subagent",
-      role: "independent",
-    });
-    expect(result.status).toBe("needs_review");
-    expect(result.requestedStatus).toBe("false_positive");
-    expect(result.role).toBe("independent");
-    expect(result.independentlyReviewed).toBe(true);
-    expect(result.disagreement).toMatch(/independent reviewer fresh-subagent said false_positive, primary reviewer primary-model said confirmed/);
-    const stored = ctx.entries().at(-1);
-    expect(stored?.status).toBe("needs_review");
-    expect(stored?.rationale).toMatch(/^Reviewers disagree; needs a human decision\. primary \(primary-model\) said confirmed: request data reaches the call \| independent \(fresh-subagent\) said false_positive: /);
-    // The primary evidence stays.
-    expect(stored?.trace).toHaveLength(2);
-    expect(stored?.reviewers?.map((item) => `${item.role}:${item.status}`)).toEqual([
-      "primary:confirmed",
-      "independent:false_positive",
-    ]);
-    // A later independent review that agrees does not erase the disagreement.
-    const again = ctx.verdict(finding, { status: "confirmed", rationale: "same-session: traced it again", role: "independent" });
-    expect(again.status).toBe("needs_review");
-    // A new primary verdict starts over.
-    const reset = ctx.verdict(finding, { status: "confirmed", rationale: "re-decided by a person", reviewer: "human" });
-    expect(reset.status).toBe("confirmed");
-    expect(reset.independentlyReviewed).toBe(false);
-    expect(ctx.entries().at(-1)?.reviewers).toHaveLength(1);
-  });
-
-  it("keeps an agreed status and can never dismiss on its own", () => {
-    const [agreeFp, agreeReal, gap] = ctx.pick("high").slice(1) as [Finding, Finding, Finding];
-    ctx.verdict(agreeFp, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "a" });
-    const fp = ctx.verdict(agreeFp, {
+    expect(ctx.refused(finding, { status: "confirmed", rationale: "x", role: "boss" as never }).code).toBe("INVALID_VERDICT");
+    ctx.verdict(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "agent-x" });
+    // harness t2 case A: the primary reviewer reviewing itself.
+    error = ctx.refused(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "agent-x", ...SUB });
+    expect(error.code).toBe("INDEPENDENT_SAME_REVIEWER");
+    error = ctx.refused(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, ...SUB });
+    expect(error.message).toMatch(/an independent verdict needs reviewer/);
+    error = ctx.refused(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "sub", role: "independent" });
+    expect(error.message).toMatch(/needs independence: "subagent" .* or "same-session"/);
+    const ok = ctx.verdict(finding, {
       status: "false_positive",
       rationale: "same-session: devil's advocate found no path; python/app.py:3 holds a constant.",
+      reviewer: "devil",
       role: "independent",
-      reviewer: "a",
+      independence: "same-session",
     });
-    expect(fp.status).toBe("false_positive");
-    expect(fp.independentlyReviewed).toBe(true);
-    expect(fp.disagreement).toBeUndefined();
-    ctx.verdict(agreeReal, { status: "likely", rationale: "probably reachable", trace: [SOURCE, SINK] });
-    expect(ctx.verdict(agreeReal, { status: "confirmed", rationale: "traced", role: "independent" }).status).toBe("likely");
-    ctx.verdict(gap, { status: "proof_gap", rationale: "unclear", missing: "whether the route requires a session cookie" });
-    const later = ctx.verdict(gap, { status: "needs_review", rationale: "could not decide", role: "independent" });
-    expect(later.status).toBe("needs_review");
-    expect(ctx.entries().at(-1)?.missing).toBe("whether the route requires a session cookie");
+    expect(ok.status).toBe("false_positive");
+    expect(ok.independentlyReviewed).toBe(true);
+    expect(ctx.current(finding)?.review?.independentReview?.independence).toBe("same-session");
+    // A primary verdict by another label would replace a reviewed decision.
+    error = ctx.refused(finding, { status: "confirmed", rationale: "x", reviewer: "forgot-role", trace: [SOURCE, SINK] });
+    expect(error.code).toBe("PRIMARY_REPLACE_REFUSED");
+    expect(error.message).toMatch(/set role "independent"/);
+    expect(error.message).toContain("replace: true");
+    const replaced = ctx.verdict(finding, { status: "confirmed", rationale: "re-decided", reviewer: "human", replace: true });
+    expect(replaced.status).toBe("confirmed");
+    expect(replaced.independentlyReviewed).toBe(false);
+    expect(ctx.entries().at(-1)?.replace).toBe(true);
   });
 
-  it("is reported in the Markdown report, SARIF, findings.json and the summary", () => {
-    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
-    expect(md).toContain("(independently reviewed)");
-    expect(md).toMatch(/\*\*Trace\*\*: python/);
-    // A dismissal shows its control in the "Dismissed by review" table.
-    expect(md).toContain("control: python/app.py:3");
-    const sarif = JSON.parse(renderRunReport(ctx.runId, "sarif", ctx.options).text);
-    const reviewed = sarif.runs[0].results.filter((result: { properties: { review?: unknown } }) => result.properties.review);
-    expect(reviewed.length).toBeGreaterThan(0);
-    expect(reviewed.some((result: { properties: { review: { independentlyReviewed: boolean } } }) => result.properties.review.independentlyReviewed)).toBe(true);
-    const json = JSON.parse(renderRunReport(ctx.runId, "json", ctx.options).text);
-    expect(json.findings.some((finding: Finding) => finding.review?.independentlyReviewed === true)).toBe(true);
-    const status = runStatus(ctx.runId, ctx.options);
-    expect(status.triage.independentlyReviewed).toBe(3);
+  it("never erases a disagreement (H1, harness t2 case B)", () => {
+    const finding = ctx.pick("high")[1] as Finding;
+    ctx.verdict(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    const dissent = ctx.verdict(finding, {
+      status: "confirmed",
+      rationale: "the value is user controlled",
+      reviewer: "sub",
+      trace: [SOURCE, SINK],
+      ...SUB,
+    });
+    expect(dissent.status).toBe("needs_review");
+    expect(dissent.disagreement).toMatch(/independent reviewer sub said confirmed while the decision was false_positive/);
+    // The same agent re-decides: the dispute stays open.
+    const again = ctx.verdict(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    expect(again.status).toBe("needs_review");
+    expect(again.disputed).toBe(true);
+    expect(again.independentlyReviewed).toBe(false);
+    // ... and cannot review itself.
+    expect(ctx.refused(finding, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p", ...SUB }).code).toBe(
+      "INDEPENDENT_SAME_REVIEWER",
+    );
+    // The independent evidence never becomes part of the decision (L5).
+    expect(ctx.current(finding)?.review?.trace).toBeUndefined();
+    expect(ctx.current(finding)?.review?.control?.file).toBe(APP);
+    let md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toMatch(/- \*\*Disputed verdicts \(\d+\)\*\*: /);
+    expect(md).toMatch(new RegExp(`\\*\\*${finding.id}\\*\\* .*Status: needs\\\\_review \\(decision: false\\\\_positive\\), disputed: sub said confirmed \\(subagent\\) — the value is user controlled`));
+    expect(md).not.toMatch(new RegExp(`\\| ${finding.id} \\|[^\\n]*independently reviewed`));
+    // An agreeing independent with another label resolves it; the dissent stays visible.
+    const resolved = ctx.verdict(finding, {
+      status: "false_positive",
+      rationale: `${SAFE} Checked python/app.py:3 again.`,
+      reviewer: "sub-2",
+      ...SUB,
+    });
+    expect(resolved.status).toBe("false_positive");
+    expect(resolved.independentlyReviewed).toBe(true);
+    expect(resolved.disputed).toBe(true);
+    md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toMatch(new RegExp(`\\| ${finding.id} \\|[^\\n]*\\(independently reviewed: subagent\\)[^\\n]*was disputed: sub said confirmed`));
+    const history = ctx.current(finding)?.review?.history ?? [];
+    expect(history.map((item) => `${item.role}:${item.reviewer}:${item.status}:${item.superseded}:${item.disagreed}`)).toEqual([
+      "primary:p:false_positive:true:false",
+      "independent:sub:confirmed:true:true",
+      "primary:p:false_positive:false:false",
+      "independent:sub-2:false_positive:false:false",
+    ]);
   });
+
+  it("keeps an agreed status, and an independent alone never dismisses", () => {
+    const [real, gap] = ctx.pick("high").slice(2) as [Finding, Finding];
+    ctx.verdict(real, { status: "likely", rationale: "probably reachable", trace: [SOURCE, SINK], reviewer: "p" });
+    expect(ctx.verdict(real, { status: "confirmed", rationale: "traced", reviewer: "s", ...SUB }).status).toBe("likely");
+    const dismiss = ctx.verdict(real, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "s2", ...SUB });
+    expect(dismiss.status).toBe("needs_review");
+    expect(ctx.current(real)?.status).toBe("needs_review");
+    ctx.verdict(gap, { status: "proof_gap", rationale: "unclear", missing: "whether the route requires a session cookie", reviewer: "p" });
+    const later = ctx.verdict(gap, { status: "needs_review", rationale: "could not decide", reviewer: "s", ...SUB });
+    expect(later.status).toBe("needs_review");
+    expect(ctx.current(gap)?.review?.missing).toBe("whether the route requires a session cookie");
+  });
+
+  it("is reported in SARIF, findings.json and the summary", () => {
+    const sarif = JSON.parse(renderRunReport(ctx.runId, "sarif", ctx.options).text);
+    const reviewed = sarif.runs[0].results.filter((result: { properties: { review?: { independentlyReviewed: boolean } } }) => result.properties.review?.independentlyReviewed);
+    expect(reviewed.length).toBeGreaterThan(0);
+    expect(sarif.runs[0].properties.review.disputed).toBeGreaterThanOrEqual(2);
+    const json = JSON.parse(renderRunReport(ctx.runId, "json", ctx.options).text);
+    expect(json.findings.some((finding: Finding) => finding.review?.disputed === true)).toBe(true);
+    const status = runStatus(ctx.runId, ctx.options);
+    expect(status.triage.disputed).toBeGreaterThanOrEqual(2);
+    expect(status.triage.disputesOpen).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("verdict storage stays bounded (H2, harness t4)", () => {
+  let ctx: Ctx;
+  beforeAll(async () => {
+    ctx = await freshRun("storage");
+  });
+
+  it("stores each entry once and caps entries per finding", () => {
+    const finding = ctx.pick("high")[0] as Finding;
+    ctx.verdict(finding, { status: "likely", rationale: "p".repeat(4000), reviewer: "p" });
+    const sizes: number[] = [];
+    for (let index = 1; index < MAX_VERDICTS_PER_FINDING; index += 1) {
+      const result = ctx.verdict(finding, {
+        status: "likely",
+        rationale: String(index).padEnd(5000, "r"),
+        reviewer: `r${index}`,
+        ...SUB,
+      });
+      expect(result.notices.join(" ")).toMatch(/cut to 4000 characters/);
+      sizes.push(fs.statSync(path.join(ctx.runDir, "verdicts.json")).size);
+    }
+    // Linear growth: about one rationale per entry, never a copy of the history.
+    const perEntry = (sizes.at(-1)! - sizes[0]!) / (sizes.length - 1);
+    expect(perEntry).toBeLessThan(5000);
+    expect(sizes.at(-1)!).toBeLessThan(300_000);
+    const error = ctx.refused(finding, { status: "likely", rationale: "one more", reviewer: "extra", ...SUB });
+    expect(error.code).toBe("VERDICT_LIMIT");
+    expect(ctx.entries()).toHaveLength(MAX_VERDICTS_PER_FINDING);
+    // The run is still readable by every tool.
+    expect(runStatus(ctx.runId, ctx.options).phase).toBe("complete");
+    // findings.json carries a short history, not 50 full rationales.
+    const findingsJson = fs.statSync(path.join(ctx.runDir, "findings.json")).size;
+    expect(findingsJson).toBeLessThan(2_000_000);
+  });
+
+  it("refuses a verdict that would make verdicts.json unreadable, and writes nothing", () => {
+    const file = path.join(ctx.runDir, "verdicts.json");
+    const document = JSON.parse(fs.readFileSync(file, "utf8"));
+    const other = ctx.pick("high")[1] as Finding;
+    // Fill the file to just under the reader's limit.
+    const filler = MAX_RUN_FILE_BYTES - Buffer.byteLength(JSON.stringify(document, null, 2)) - 2000;
+    document.entries.push({
+      fingerprint: other.fingerprint,
+      findingId: other.id,
+      status: "needs_review",
+      rationale: "x".repeat(filler),
+      at: "2026-11-01T00:00:00.000Z",
+    });
+    fs.writeFileSync(file, `${JSON.stringify(document, null, 2)}\n`);
+    const before = fs.statSync(file).size;
+    expect(before).toBeLessThan(MAX_RUN_FILE_BYTES);
+    const third = ctx.pick("high")[2] as Finding;
+    const error = ctx.refused(third, { status: "needs_review", rationale: "y".repeat(3000) });
+    expect(error.code).toBe("VERDICT_STORE_FULL");
+    expect(fs.statSync(file).size).toBe(before);
+  }, 60_000);
+});
+
+describe("concurrent writers (L8, harness t8)", () => {
+  it("keeps every verdict of two processes writing at the same time", async () => {
+    const ctx = await freshRun("concurrent");
+    const [a, b] = ctx.pick("critical").concat(ctx.pick("high")) as [Finding, Finding];
+    const core = path.join(REPO_ROOT, "packages/core/dist/index.js");
+    const script = path.join(temp, "writer.mjs");
+    fs.writeFileSync(
+      script,
+      [
+        `const { recordVerdict } = await import(${JSON.stringify(core)});`,
+        "const [runId, cwd, finding, tag, count] = process.argv.slice(2);",
+        "for (let i = 0; i < Number(count); i++) {",
+        "  recordVerdict(runId, finding, { status: 'needs_review', rationale: tag + i }, { cwd });",
+        "}",
+      ].join("\n"),
+    );
+    const N = 15;
+    const runWriter = (finding: Finding, tag: string) =>
+      new Promise<number>((resolve) => {
+        const child = spawn(process.execPath, [script, ctx.runId, ctx.project, finding.id, tag, String(N)], {
+          stdio: ["ignore", "ignore", "inherit"],
+        });
+        child.on("exit", (code) => resolve(code ?? 1));
+      });
+    const codes = await Promise.all([runWriter(a, "A"), runWriter(b, "B")]);
+    expect(codes).toEqual([0, 0]);
+    const entries = ctx.entries();
+    expect(entries.filter((entry) => entry.rationale.startsWith("A"))).toHaveLength(N);
+    expect(entries.filter((entry) => entry.rationale.startsWith("B"))).toHaveLength(N);
+    expect(fs.existsSync(path.join(ctx.runDir, "verdicts.json.lock"))).toBe(false);
+  }, 120_000);
 });
 
 describe("proof gaps and the review ledger", () => {
@@ -391,13 +588,10 @@ describe("proof gaps and the review ledger", () => {
     expect(status.triage.proofGaps).toEqual([
       { id: finding.id, location: `${finding.file}:${finding.startLine}`, missing },
     ]);
-    // Still active: a proof_gap counts like needs_review.
-    const before = runStatus(ctx.runId, ctx.options).findings;
-    expect(before).toBeGreaterThan(0);
+    expect(status.findings).toBeGreaterThan(0);
     const md = renderRunReport(ctx.runId, "md", ctx.options).text;
-    expect(md).toContain("### Open proof gaps (1)");
-    expect(md).toContain(`**${finding.id}** · critical`);
-    // Escaped like every other piece of agent-written text.
+    expect(md).toContain("- **Open proof gaps (1)**");
+    expect(md).toContain(`**${finding.id}** critical ${finding.file}:${finding.startLine} — Missing: `);
     expect(md).toContain("&lt;b&gt;admin&lt;/b&gt; \\| export");
     const sarif = JSON.parse(renderRunReport(ctx.runId, "sarif", ctx.options).text);
     const result = sarif.runs[0].results.find((item: { properties: { fingerprint: string } }) => item.properties.fingerprint === finding.fingerprint);
@@ -417,12 +611,27 @@ describe("proof gaps and the review ledger", () => {
     const summary = JSON.parse(renderRunReport(ctx.runId, "summary", ctx.options).text);
     expect(summary.triage.findings.reviewed).toBe(1);
     expect(summary.triage.hotspots.unreviewed).toBe(summary.triage.hotspots.total);
-    expect(Object.keys(summary.triage.hotspots.unreviewedByRule).length).toBeGreaterThan(0);
     expect(Object.keys(summary.triage.findings.unreviewedByRule).length).toBeLessThanOrEqual(10);
+  });
+
+  it("neutralises mentions and bare links in reviewer text (L9)", () => {
+    const finding = ctx.pick("high")[0] as Finding;
+    ctx.verdict(finding, {
+      status: "proof_gap",
+      rationale: "x",
+      reviewer: "@octocat",
+      missing: "ask @octocat or see https://evil.example/auto and www.evil.example",
+    });
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).not.toMatch(/@octocat/);
+    expect(md).not.toMatch(/https:\/\/evil\.example/);
+    expect(md).not.toMatch(/www\.evil\.example/);
+    expect(md).toContain("https\u200b://evil.example/auto");
+    expect(neutralizeLinks("mail me@x.org at http://a.b")).toBe("mail me@\u200bx.org at http\u200b://a.b");
   });
 });
 
-describe("report wording without a verdict", () => {
+describe("report wording", () => {
   let serial = 0;
   function record(overrides: Record<string, unknown> = {}): Finding {
     serial += 1;
@@ -474,21 +683,30 @@ describe("report wording without a verdict", () => {
       warnings: [],
     };
   }
+  const reviewed = (overrides: Record<string, unknown> = {}) =>
+    record({ status: "needs_review", review: { status: "needs_review", rationale: "unsure" }, ...overrides });
 
-  it("does not say no issues while hotspots are unreviewed", () => {
+  it("keeps the plain-scan wording when nobody has reviewed anything (L6)", () => {
     const md = renderMarkdown(context([], [record(), record()]));
+    expect(md).not.toContain("Review incomplete");
+    expect(md).toContain("No reportable issues found.");
+    expect(md).toContain("### Review coverage");
+  });
+
+  it("does not say no issues once a review has started and records are left", () => {
+    const md = renderMarkdown(context([], [reviewed(), record()]));
     expect(md).not.toContain("No reportable issues found.");
-    expect(md).toContain("This is not a clean result: 2 finding(s) or hotspot(s) have no verdict yet");
-    expect(md).toContain("Review incomplete: 0 of 0 finding(s) and 2 of 2 hotspot(s) have no verdict");
-    const zh = renderMarkdown({ ...context([], [record()]), lang: "zh" });
+    expect(md).toContain("This is not a clean result: 1 finding(s) or hotspot(s) have no verdict yet");
+    expect(md).toContain("No vulnerable dependency was found.");
+    expect(md).toContain("Review incomplete: 0 of 0 finding(s) and 1 of 2 hotspot(s) have no verdict");
+    const zh = renderMarkdown({ ...context([], [reviewed(), record()]), lang: "zh" });
     expect(zh).not.toContain("未发现可报告的问题。");
     expect(zh).toContain("复核未完成");
     expect(zh).toContain("### 复核覆盖");
   });
 
   it("keeps the plain wording when nothing is left to review", () => {
-    const reviewed = record({ status: "false_positive", review: { status: "false_positive", rationale: "constant" } });
-    const md = renderMarkdown(context([], [reviewed]));
+    const md = renderMarkdown(context([], [record({ status: "false_positive", review: { status: "false_positive", rationale: "constant" } })]));
     expect(md).toContain("No reportable issues found.");
     expect(md).not.toContain("Review incomplete");
     expect(renderMarkdown(context([], []))).not.toContain("### Review coverage");

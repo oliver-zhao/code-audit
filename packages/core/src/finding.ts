@@ -84,6 +84,19 @@ export const ProvenanceSchema = z
   })
   .passthrough();
 
+/** One entry of a verdict's review history (see runstore `VerdictHistoryItem`). */
+const ReviewHistoryItemSchema = z.object({
+  reviewer: z.string(),
+  role: z.string(),
+  status: z.string(),
+  at: z.string(),
+  rationale: z.string(),
+  independence: z.string().optional(),
+  superseded: z.boolean().optional(),
+  disagreed: z.boolean().optional(),
+  replace: z.boolean().optional(),
+});
+
 export const FindingSchema = z
   .object({
     id: z.string().min(1),
@@ -188,19 +201,20 @@ export const FindingSchema = z
         severityOverride: z
           .object({ severity: z.string(), reason: z.string() })
           .optional(),
-        reviewers: z
-          .array(
-            z.object({
-              reviewer: z.string(),
-              role: z.string(),
-              status: z.string(),
-              at: z.string(),
-              rationale: z.string().optional(),
-            }),
-          )
-          .optional(),
-        /** True when an independent reviewer has checked the current decision. */
+        /** Status of the latest primary verdict (differs from `status` while a dispute is open). */
+        primaryStatus: z.string().optional(),
+        /** The review history, oldest first; nothing is removed. */
+        history: z.array(ReviewHistoryItemSchema).optional(),
+        /**
+         * True when an independent reviewer whose label differs from every
+         * primary label agreed with the current decision.
+         */
         independentlyReviewed: z.boolean().optional(),
+        independentReview: ReviewHistoryItemSchema.optional(),
+        /** An independent reviewer disagreed at some point. */
+        disputed: z.boolean().optional(),
+        dissent: ReviewHistoryItemSchema.optional(),
+        disputeOpen: z.boolean().optional(),
       })
       .optional(),
   })

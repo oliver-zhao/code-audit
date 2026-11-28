@@ -76,6 +76,8 @@ import {
   FindingsEnvelopeSchema,
   MAX_RUN_FILE_BYTES,
   MAX_TRACE_STEPS,
+  MAX_VERDICT_TEXT,
+  MAX_VERDICTS_PER_FINDING,
   MIN_MISSING_LENGTH,
   RunFileError,
   RunIndexSchema,
@@ -87,7 +89,6 @@ import {
   type TraceStepSchema,
   type VerdictConditionsSchema,
   type VerdictControlSchema,
-  type VerdictReviewerSchema,
 } from "./runSchemas.js";
 import {
   SafeFsError,
@@ -158,14 +159,23 @@ export type VerdictStatus = (typeof VERDICT_STATUSES)[number];
 export const VERDICT_ROLES = ["primary", "independent"] as const;
 export type VerdictRole = (typeof VERDICT_ROLES)[number];
 
+export const INDEPENDENCE_KINDS = ["subagent", "same-session"] as const;
+/** How an independent review was made: a fresh sub-agent, or a devil's-advocate pass in the same session. */
+export type Independence = (typeof INDEPENDENCE_KINDS)[number];
+
 export type TraceStep = z.infer<typeof TraceStepSchema>;
 export type VerdictConditions = z.infer<typeof VerdictConditionsSchema>;
 export type VerdictControl = z.infer<typeof VerdictControlSchema>;
-export type VerdictReviewer = z.infer<typeof VerdictReviewerSchema>;
 
+/**
+ * One entry of verdicts.json: what one reviewer decided, stored once. The
+ * file is append-only; the current state of a finding is computed from all
+ * of its entries (`currentVerdicts`).
+ */
 export interface VerdictRecord {
   fingerprint: string;
   findingId?: string;
+  /** The status this reviewer gave. */
   status: VerdictStatus;
   rationale: string;
   evidenceLines?: string[];
@@ -175,6 +185,10 @@ export interface VerdictRecord {
   reviewer?: string;
   /** Role of the reviewer who wrote this entry; absent (schemaVersion 1) means primary. */
   role?: VerdictRole;
+  /** For role independent: a fresh sub-agent or a same-session devil's-advocate pass. */
+  independence?: Independence;
+  /** A primary verdict that knowingly replaced another reviewer's reviewed decision. */
+  replace?: boolean;
   /** Source-to-sink path, at most `MAX_TRACE_STEPS` steps; every location was checked. */
   trace?: TraceStep[];
   conditions?: VerdictConditions;
@@ -185,8 +199,6 @@ export interface VerdictRecord {
   cwe?: string;
   /** A reviewer's view of the severity. Recorded and shown; never changes the counted severity. */
   severityOverride?: { severity: Severity; reason: string };
-  /** Who decided: the primary reviewer, then every independent reviewer since. */
-  reviewers?: VerdictReviewer[];
 }
 
 export interface VerdictsDocument {
@@ -197,7 +209,48 @@ export interface VerdictsDocument {
   entries: VerdictRecord[];
 }
 
-export type CurrentVerdicts = Record<string, VerdictRecord>;
+/** One entry of a finding's review history, as reports show it. */
+export interface VerdictHistoryItem {
+  reviewer: string;
+  role: VerdictRole;
+  status: VerdictStatus;
+  at: string;
+  rationale: string;
+  independence?: Independence;
+  /** A later primary verdict replaced the decision this entry belongs to. */
+  superseded: boolean;
+  /** An independent entry whose status contradicted the primary verdict of its time. */
+  disagreed: boolean;
+  replace?: boolean;
+}
+
+/**
+ * The current decision on a finding: the latest primary verdict (its status,
+ * rationale and evidence), with what the independent reviews make of it.
+ * `status` is the effective status: `needs_review` while a disagreement is
+ * open.
+ */
+export interface CurrentVerdict extends VerdictRecord {
+  /** The status of the latest primary verdict. */
+  primaryStatus: VerdictStatus;
+  /** Every entry of the finding, oldest first. Nothing is ever removed. */
+  history: VerdictHistoryItem[];
+  /**
+   * True when an independent reviewer whose label differs from every primary
+   * label agreed with the latest primary verdict, after the last dissent.
+   */
+  independentlyReviewed: boolean;
+  /** The independent review that made `independentlyReviewed` true. */
+  independentReview?: VerdictHistoryItem;
+  /** An independent reviewer disagreed at some point (shown even once resolved). */
+  disputed: boolean;
+  /** The latest dissenting independent review. */
+  dissent?: VerdictHistoryItem;
+  /** A dissent that no qualifying independent agreement has answered yet. */
+  disputeOpen: boolean;
+}
+
+export type CurrentVerdicts = Record<string, CurrentVerdict>;
 
 /** How the audit root of a loaded run was established. */
 export type RunRootSource =
@@ -745,12 +798,111 @@ export function initRunVerdicts(runDir: string, runId: string, settings: { stric
   } satisfies VerdictsDocument);
 }
 
+/** The label a verdict entry is known by. */
+export function verdictLabel(entry: Pick<VerdictRecord, "reviewer" | "actor">): string {
+  return (entry.reviewer || entry.actor || UNNAMED_REVIEWER).trim() || UNNAMED_REVIEWER;
+}
+
+/**
+ * Whether an independent reviewer's status contradicts the primary one.
+ * Equal statuses agree, and so do confirmed and likely (both say the finding
+ * is real); every other difference - confirmed or likely against
+ * false_positive, anything against proof_gap or needs_review - is a
+ * disagreement.
+ */
+export function verdictsDisagree(primary: VerdictStatus, independent: VerdictStatus): boolean {
+  if (primary === independent) return false;
+  const real = (status: VerdictStatus): boolean => status === "confirmed" || status === "likely";
+  return !(real(primary) && real(independent));
+}
+
+/**
+ * The current decision of one finding from its entries, oldest first.
+ *
+ * - The latest primary entry is the decision (a schemaVersion 1 entry is a
+ *   primary one).
+ * - An independent entry disagrees when its status contradicts the primary
+ *   decision of its time (`verdictsDisagree`). A disagreement is never
+ *   erased: it stays open, and the status is `needs_review`, until an
+ *   independent reviewer whose label differs from every primary label of the
+ *   finding agrees with the latest primary decision, after the last dissent.
+ * - Only such an agreement makes `independentlyReviewed` true.
+ */
+function foldVerdicts(entries: readonly VerdictRecord[]): CurrentVerdict {
+  let latestPrimary = -1;
+  const primaryLabels = new Set<string>();
+  entries.forEach((entry, index) => {
+    if ((entry.role ?? "primary") === "primary") {
+      latestPrimary = index;
+      primaryLabels.add(verdictLabel(entry));
+    }
+  });
+  // A file without any primary entry (hand-made): its first entry decides.
+  if (latestPrimary < 0) {
+    latestPrimary = 0;
+    primaryLabels.add(verdictLabel(entries[0] as VerdictRecord));
+  }
+  const decision = entries[latestPrimary] as VerdictRecord;
+  let primaryOfTime: VerdictRecord | undefined;
+  let lastDissent = -1;
+  const history: VerdictHistoryItem[] = entries.map((entry, index) => {
+    const role: VerdictRole = index === latestPrimary ? "primary" : (entry.role ?? "primary");
+    if (role === "primary") primaryOfTime = entry;
+    const disagreed =
+      role === "independent" &&
+      primaryOfTime !== undefined &&
+      verdictsDisagree(primaryOfTime.status, entry.status);
+    if (disagreed) lastDissent = index;
+    return {
+      reviewer: verdictLabel(entry),
+      role,
+      status: entry.status,
+      at: entry.at,
+      rationale: entry.rationale,
+      ...(entry.independence ? { independence: entry.independence } : {}),
+      superseded: index < latestPrimary,
+      disagreed,
+      ...(entry.replace ? { replace: true } : {}),
+    };
+  });
+  let independentReview: VerdictHistoryItem | undefined;
+  history.forEach((item, index) => {
+    if (
+      item.role === "independent" &&
+      index > latestPrimary &&
+      index > lastDissent &&
+      !primaryLabels.has(item.reviewer) &&
+      !verdictsDisagree(decision.status, item.status)
+    ) {
+      independentReview ??= item;
+    }
+  });
+  const disputeOpen = lastDissent >= 0 && independentReview === undefined;
+  const { role: _role, independence: _independence, replace: _replace, ...base } = decision;
+  return {
+    ...base,
+    role: "primary",
+    status: disputeOpen ? "needs_review" : decision.status,
+    primaryStatus: decision.status,
+    history,
+    independentlyReviewed: independentReview !== undefined,
+    ...(independentReview ? { independentReview } : {}),
+    disputed: lastDissent >= 0,
+    ...(lastDissent >= 0 ? { dissent: history[lastDissent] as VerdictHistoryItem } : {}),
+    disputeOpen,
+  };
+}
+
 export function currentVerdicts(document: VerdictsDocument): CurrentVerdicts {
   // No prototype: a fingerprint is a key chosen by a file in the repository.
-  const current = Object.create(null) as CurrentVerdicts;
+  const grouped = new Map<string, VerdictRecord[]>();
   for (const entry of document.entries) {
-    current[entry.fingerprint] = entry;
+    const list = grouped.get(entry.fingerprint);
+    if (list) list.push(entry);
+    else grouped.set(entry.fingerprint, [entry]);
   }
+  const current = Object.create(null) as CurrentVerdicts;
+  for (const [fingerprint, entries] of grouped) current[fingerprint] = foldVerdicts(entries);
   return current;
 }
 
@@ -1048,6 +1200,20 @@ export function loadRun(
  * and restores the scan's value when a later verdict says otherwise). Every
  * reader - `findings`, `status`, the reports, the files - sees this form.
  */
+/** Characters of a rationale carried in a finding's `review.history`. */
+const HISTORY_RATIONALE_MAX = 300;
+/** Entries of `review.history` carried in a finding (the newest). */
+const HISTORY_SHOWN = 50;
+
+/** A history item for findings.json and the reports: redacted, short. */
+function historyView(item: VerdictHistoryItem): VerdictHistoryItem {
+  return {
+    ...item,
+    reviewer: redactText(item.reviewer).slice(0, 200),
+    rationale: redactText(item.rationale.slice(0, HISTORY_RATIONALE_MAX)),
+  };
+}
+
 function withVerdict(run: LoadedRun, finding: Finding): Finding {
   const verdict = run.verdicts[finding.fingerprint];
   // `review` always comes from verdicts.json, never from what findings.json
@@ -1059,9 +1225,10 @@ function withVerdict(run: LoadedRun, finding: Finding): Finding {
     status: verdict.status,
     review: {
       status: verdict.status,
-      rationale: verdict.rationale,
-      ...(verdict.reviewer ? { reviewer: verdict.reviewer } : {}),
-      ...(verdict.actor ? { actor: verdict.actor } : {}),
+      // Written redacted since schemaVersion 2; older files are redacted here.
+      rationale: redactText(verdict.rationale),
+      ...(verdict.reviewer ? { reviewer: redactText(verdict.reviewer) } : {}),
+      ...(verdict.actor ? { actor: redactText(verdict.actor) } : {}),
       at: verdict.at,
       ...(verdict.evidenceLines ? { evidenceLines: verdict.evidenceLines } : {}),
       ...(verdict.trace ? { trace: verdict.trace } : {}),
@@ -1070,15 +1237,20 @@ function withVerdict(run: LoadedRun, finding: Finding): Finding {
       ...(verdict.missing ? { missing: verdict.missing } : {}),
       ...(verdict.cwe ? { cwe: verdict.cwe } : {}),
       ...(verdict.severityOverride ? { severityOverride: verdict.severityOverride } : {}),
-      ...(verdict.reviewers ? { reviewers: verdict.reviewers } : {}),
-      independentlyReviewed: isIndependentlyReviewed(verdict),
+      primaryStatus: verdict.primaryStatus,
+      history: verdict.history.slice(-HISTORY_SHOWN).map(historyView),
+      independentlyReviewed: verdict.independentlyReviewed,
+      ...(verdict.independentReview ? { independentReview: historyView(verdict.independentReview) } : {}),
+      disputed: verdict.disputed,
+      ...(verdict.dissent ? { dissent: historyView(verdict.dissent) } : {}),
+      disputeOpen: verdict.disputeOpen,
     },
   });
 }
 
-/** True when an independent reviewer has checked the current decision. */
-export function isIndependentlyReviewed(verdict: VerdictRecord | undefined): boolean {
-  return (verdict?.reviewers ?? []).some((reviewer) => reviewer.role === "independent");
+/** True when a qualifying independent reviewer agreed with the current decision. */
+export function isIndependentlyReviewed(verdict: CurrentVerdict | undefined): boolean {
+  return verdict?.independentlyReviewed === true;
 }
 
 export function effectiveFindings(run: LoadedRun): Finding[] {
@@ -1159,6 +1331,13 @@ export interface RecordVerdictInput {
    * did not see the primary decision checks it; see `recordVerdict`.
    */
   role?: VerdictRole;
+  /** Required with role independent: a fresh sub-agent, or a same-session devil's-advocate pass. */
+  independence?: Independence;
+  /**
+   * A primary verdict that replaces the decision of another reviewer on a
+   * finding that has an independent review is refused unless this is true.
+   */
+  replace?: boolean;
   /** Source-to-sink path; every location must exist in the audit root. */
   trace?: TraceStep[];
   conditions?: VerdictConditions;
@@ -1191,10 +1370,12 @@ export interface RecordVerdictResult {
   role: VerdictRole;
   /** The status this call asked for; differs from `status` after a disagreement. */
   requestedStatus: VerdictStatus;
-  /** True when an independent reviewer has checked the current decision. */
+  /** True when a qualifying independent reviewer agreed with the current decision. */
   independentlyReviewed: boolean;
-  /** Set when an independent review disagrees with the primary verdict. */
+  /** Set while an independent review's disagreement is open. */
   disagreement?: string;
+  /** An independent reviewer disagreed at some point (also once resolved). */
+  disputed: boolean;
   /** Whether structured evidence was required for this verdict. */
   strictEvidence: boolean;
   history: number;
@@ -1209,10 +1390,13 @@ export interface RecordVerdictResult {
 
 /** Label of a reviewer who gave none. */
 export const UNNAMED_REVIEWER = "unnamed reviewer";
-/** Characters of one reviewer's rationale kept in `reviewers`. */
-const REVIEWER_RATIONALE_MAX = 4000;
-/** Characters kept of a note, `missing` or a severity override reason. */
+/** Characters kept of a rationale, `missing` or a severity override reason. */
+const REVIEWER_RATIONALE_MAX = MAX_VERDICT_TEXT;
+/** Characters kept of a note. */
 const EVIDENCE_TEXT_MAX = 2000;
+/** Evidence lines kept per verdict, and characters per line. */
+const MAX_EVIDENCE_LINES = 20;
+const EVIDENCE_LINE_MAX = 1000;
 
 const TRACE_EXAMPLE =
   '[{"file":"src/routes.py","line":12,"role":"source","note":"name = request.args[\\"name\\"]"},' +
@@ -1365,17 +1549,45 @@ function normalizeEvidence(input: RecordVerdictInput): StructuredEvidence {
   return evidence;
 }
 
+/**
+ * Fields that belong to some statuses only: `control` to false_positive,
+ * `missing` to proof_gap, `severityOverride` to confirmed and likely
+ * (findings that are real). Anything else is refused, so a report never
+ * shows evidence that does not fit the decision.
+ */
+function assertFieldsFitStatus(status: VerdictStatus, evidence: StructuredEvidence): void {
+  const problems: string[] = [];
+  if (evidence.control && status !== "false_positive") {
+    problems.push(`control belongs to false_positive only (this verdict is ${status}): remove it`);
+  }
+  if (evidence.missing && status !== "proof_gap") {
+    problems.push(`missing belongs to proof_gap only (this verdict is ${status}): remove it, or record proof_gap`);
+  }
+  if (evidence.severityOverride && status !== "confirmed" && status !== "likely") {
+    problems.push(`severityOverride belongs to confirmed and likely only (this verdict is ${status}): remove it`);
+  }
+  if (problems.length > 0) evidenceError(problems.join("; "));
+}
+
 /** With strict evidence: what each status must carry. */
 function assertStrictEvidence(status: VerdictStatus, evidence: StructuredEvidence): void {
   const prefix = "strict evidence is on for this verdict: ";
+  const roles = new Set((evidence.trace ?? []).map((step) => step.role));
   if (status === "confirmed") {
-    const roles = new Set((evidence.trace ?? []).map((step) => step.role));
     const absent = (["source", "sink"] as const).filter((role) => !roles.has(role));
     if (absent.length === 0) return;
     throw new RunStoreError(
       `${prefix}a confirmed verdict needs trace with at least one step of role "source" and one of role "sink" ` +
         `(no ${absent.map((role) => `"${role}"`).join(" and no ")} step given). Example: trace: ${TRACE_EXAMPLE}. ` +
         "If you cannot show both ends, record proof_gap with missing set to what you could not establish",
+      "EVIDENCE_REQUIRED",
+    );
+  }
+  if (status === "likely" && !roles.has("sink")) {
+    throw new RunStoreError(
+      `${prefix}a likely verdict needs trace with at least one step of role "sink" (the dangerous call you checked), ` +
+        `for example trace: [{"file":"src/db.py","line":40,"role":"sink","note":"cursor.execute(sql)"}]. ` +
+        "If you have not looked at the sink, record proof_gap with missing set to what you could not establish",
       "EVIDENCE_REQUIRED",
     );
   }
@@ -1395,12 +1607,21 @@ function assertStrictEvidence(status: VerdictStatus, evidence: StructuredEvidenc
   }
 }
 
+/** Lines of a text: a trailing line break does not start another line. */
+export function textLineCount(text: string): number {
+  if (text === "") return 0;
+  const lines = splitLines(text);
+  return lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+}
+
 /**
  * Every `trace` step and the `control` must name a line that exists: a file
- * of the audit inventory, reached through the path jail of the audit root
- * (no absolute path, no `..` or symbolic link that leaves the root), and a
- * line within it. Returns the evidence with each file as its path relative
- * to the root. Throws `EVIDENCE_LOCATION_INVALID` naming every bad item.
+ * the run itself scanned (coverage.json `scannedFiles`: the inventory of the
+ * scan, with its own options such as `--untrusted`), reached through the path
+ * jail of the audit root (no absolute path, no `..` or symbolic link that
+ * leaves the root), still a regular text file, and a line within it. Returns
+ * the evidence with each file as its path relative to the root. Throws
+ * `EVIDENCE_LOCATION_INVALID` naming every bad item.
  */
 function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): StructuredEvidence {
   const items: Array<{ label: string; file: string; line: number; set: (file: string) => void }> = [];
@@ -1414,7 +1635,7 @@ function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): S
   }
   if (items.length === 0) return evidence;
   const root = requireAuditRoot(run);
-  const files = new Map(loadInventoryForRun(root).files.map((entry) => [entry.relPath, entry]));
+  const scanned = new Set(requireCoverage(run).scannedFiles.map((entry) => entry.path));
   const lineCounts = new Map<string, number>();
   const problems: string[] = [];
   for (const item of items) {
@@ -1436,14 +1657,24 @@ function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): S
       continue;
     }
     const relPath = toPosixRelative(root, resolved);
-    const entry = files.get(relPath);
-    if (!entry || entry.size > MAX_TEXT_FILE_BYTES) {
-      problems.push(`${shown}: not a file of the audit inventory (missing, excluded, binary or oversized)`);
+    if (!scanned.has(relPath)) {
+      problems.push(`${shown}: not a file this run scanned (missing, excluded, binary, oversized or created after the scan)`);
       continue;
     }
     let count = lineCounts.get(relPath);
     if (count === undefined) {
-      count = splitLines(fs.readFileSync(resolveInside(root, relPath), "utf8")).length;
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(resolved);
+      } catch {
+        problems.push(`${shown}: the file no longer exists`);
+        continue;
+      }
+      if (!stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES) {
+        problems.push(`${shown}: not a regular text file within the read limit`);
+        continue;
+      }
+      count = textLineCount(fs.readFileSync(resolved, "utf8"));
       lineCounts.set(relPath, count);
     }
     if (item.line > count) {
@@ -1464,42 +1695,110 @@ function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): S
   return { ...evidence, ...(trace ? { trace } : {}), ...(control ? { control } : {}) };
 }
 
-/**
- * Whether an independent reviewer's status contradicts the primary one.
- * Equal statuses agree, and so do confirmed and likely (both say the finding
- * is real); every other difference - confirmed or likely against
- * false_positive, anything against proof_gap or needs_review - is a
- * disagreement.
- */
-export function verdictsDisagree(primary: VerdictStatus, independent: VerdictStatus): boolean {
-  if (primary === independent) return false;
-  const real = (status: VerdictStatus): boolean => status === "confirmed" || status === "likely";
-  return !(real(primary) && real(independent));
+/** Name of the lock file that serialises verdict writes of a run. */
+export const VERDICT_LOCK_FILE = "verdicts.json.lock";
+/** How long a verdict waits for another writer of the same run. */
+const LOCK_TIMEOUT_MS = 15_000;
+/** A lock older than this is left over from a writer that died. */
+const LOCK_STALE_MS = 120_000;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** The primary reviewer of a stored entry (a schemaVersion 1 entry is one). */
-function primaryReviewerOf(entry: VerdictRecord): VerdictReviewer {
-  return (
-    entry.reviewers?.find((reviewer) => reviewer.role === "primary") ?? {
-      reviewer: entry.reviewer ?? entry.actor ?? UNNAMED_REVIEWER,
-      role: "primary",
-      status: entry.status,
-      at: entry.at,
-      rationale: entry.rationale.slice(0, REVIEWER_RATIONALE_MAX),
+/**
+ * Run `fn` holding the verdict lock of a run directory: a lock file created
+ * with O_EXCL (which also refuses a planted symbolic link), retried until
+ * `LOCK_TIMEOUT_MS`. Two processes (an agent and its independent sub-agent
+ * with its own MCP server) then read, merge and write verdicts.json one
+ * after the other instead of overwriting each other.
+ */
+export function withRunLock<T>(runDir: string, fn: () => T): T {
+  const lock = path.join(runDir, VERDICT_LOCK_FILE);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let fd: number | undefined;
+  for (;;) {
+    try {
+      fd = fs.openSync(
+        lock,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0),
+        0o600,
+      );
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new RunStoreError(
+          `cannot create the verdict lock ${lock}: ${(error as Error).message}`,
+          "RUN_STORE_WRITE",
+        );
+      }
+      try {
+        const stat = fs.lstatSync(lock);
+        if (stat.isFile() && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          fs.unlinkSync(lock);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new RunStoreError(
+          `another process is writing verdicts of this run (lock file ${lock}); call audit_verdict again in a moment. ` +
+            `A lock older than ${LOCK_STALE_MS / 1000} seconds is removed automatically`,
+          "RUN_LOCKED",
+        );
+      }
+      sleepSync(15 + Math.floor(Math.random() * 20));
     }
-  );
+  }
+  try {
+    fs.writeSync(fd, `${process.pid}\n`);
+    fs.closeSync(fd);
+    fd = undefined;
+    return fn();
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    try {
+      fs.unlinkSync(lock);
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+/**
+ * Refuse to write a run file the reader would refuse (`MAX_RUN_FILE_BYTES`):
+ * a verdict that would make the run unreadable is not recorded.
+ */
+function assertStorable(name: string, text: string): void {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_RUN_FILE_BYTES) {
+    throw new RunStoreError(
+      `recording this verdict would make ${name} ${bytes} bytes, over the ${MAX_RUN_FILE_BYTES} byte limit of the run store; ` +
+        "nothing was written. Shorten the rationale and notes, or render the report of the run as it is",
+      "VERDICT_STORE_FULL",
+    );
+  }
 }
 
 /**
  * Record a verdict.
  *
- * A `primary` verdict (the default) is the decision: it replaces the current
- * one and starts a new list of reviewers. An `independent` verdict checks the
- * current primary decision, made by a reviewer who did not see it: it is
- * added to `reviewers`, the evidence of the primary decision is kept, and when
- * any independent reviewer disagrees (`verdictsDisagree`) the current status
- * becomes `needs_review` with both rationales. An independent review alone
- * can therefore never dismiss a finding.
+ * verdicts.json is append-only and every entry is one reviewer's decision,
+ * stored once (`currentVerdicts` computes the current state):
+ *
+ * - `primary` (the default): the decision. On a finding that has an
+ *   independent review, replacing the decision of another reviewer label
+ *   needs `replace: true`.
+ * - `independent`: a second review by a reviewer who did not see the
+ *   decision. It needs an existing decision, a reviewer label that differs
+ *   from every primary label of the finding, and `independence`. A
+ *   disagreement keeps the finding at `needs_review` until a qualifying
+ *   independent reviewer agrees with the latest decision; it is never
+ *   erased. An independent review alone can never dismiss a finding.
+ *
+ * The run directory is locked (`withRunLock`) from reading the verdicts to
+ * writing them; a write the reader could not load is refused.
  */
 export function recordVerdict(
   ref: string,
@@ -1520,141 +1819,153 @@ export function recordVerdict(
       "INVALID_VERDICT",
     );
   }
-  const rationale = input.rationale?.trim();
-  if (!rationale) {
+  const reviewerInput = input.reviewer?.trim() ? redactText(input.reviewer.trim()).slice(0, 200) : undefined;
+  const actorInput = input.actor?.trim() ? redactText(input.actor.trim()).slice(0, 200) : undefined;
+  if (role === "independent") {
+    if (!reviewerInput) {
+      throw new RunStoreError(
+        'an independent verdict needs reviewer: your own label, different from the label of the primary reviewer (for example "subagent-1")',
+        "INVALID_VERDICT",
+      );
+    }
+    if (!INDEPENDENCE_KINDS.includes(input.independence as Independence)) {
+      throw new RunStoreError(
+        'an independent verdict needs independence: "subagent" when you are a fresh sub-agent that did not see the first verdict, ' +
+          'or "same-session" for a devil\'s-advocate pass in the session that made it',
+        "INVALID_VERDICT",
+      );
+    }
+  } else if (input.independence !== undefined) {
+    throw new RunStoreError('independence belongs to role "independent" only: remove it, or set role "independent"', "INVALID_VERDICT");
+  }
+  const rawRationale = input.rationale?.trim();
+  if (!rawRationale) {
     throw new RunStoreError(
       "rationale is required for a verdict",
       "RATIONALE_REQUIRED",
     );
   }
   const shaped = normalizeEvidence(input);
-  const run = loadRun(ref, options);
-  const finding = findTarget(run, target);
-  const strict = input.strictEvidence === true || run.verdictsDocument.strictEvidence === true;
-  if (strict) assertStrictEvidence(input.status, shaped);
-  const evidence = checkEvidenceLocations(run, shaped);
-  assertDismissalJustified(
-    finding,
-    input.status,
-    rationale,
-    input.evidenceLines,
-    evidence.control !== undefined,
-  );
-  const at = new Date().toISOString();
-  const evidenceLines =
-    input.evidenceLines && input.evidenceLines.length > 0
-      ? input.evidenceLines.map((line) => redactText(line))
-      : undefined;
-  const self: VerdictReviewer = {
-    reviewer: (input.reviewer || input.actor || UNNAMED_REVIEWER).slice(0, 200),
-    role,
-    status: input.status,
-    at,
-    rationale: rationale.slice(0, REVIEWER_RATIONALE_MAX),
-  };
-  const previous = run.verdicts[finding.fingerprint];
-  let entry: VerdictRecord;
-  let disagreement: string | undefined;
-  if (role === "primary") {
-    entry = {
+  assertFieldsFitStatus(input.status, shaped);
+  const notices: string[] = [];
+  const rationale = redactText(rawRationale).slice(0, REVIEWER_RATIONALE_MAX);
+  if (rawRationale.length > REVIEWER_RATIONALE_MAX) {
+    notices.push(`the rationale was cut to ${REVIEWER_RATIONALE_MAX} characters`);
+  }
+  const runDir = resolveRun(ref, options).runDir;
+  return withRunLock(runDir, () => {
+    // Read under the lock: what another process wrote meanwhile is kept.
+    const run = loadRun(ref, options);
+    const finding = findTarget(run, target);
+    const strict = input.strictEvidence === true || run.verdictsDocument.strictEvidence === true;
+    if (strict) assertStrictEvidence(input.status, shaped);
+    const evidence = checkEvidenceLocations(run, shaped);
+    assertDismissalJustified(finding, input.status, rawRationale, input.evidenceLines, evidence.control !== undefined);
+    const previous = run.verdicts[finding.fingerprint];
+    const label = reviewerInput ?? actorInput ?? UNNAMED_REVIEWER;
+    if (previous && previous.history.length >= MAX_VERDICTS_PER_FINDING) {
+      throw new RunStoreError(
+        `${finding.id} already has ${previous.history.length} verdicts, the most one finding keeps (${MAX_VERDICTS_PER_FINDING}); ` +
+          "nothing was written. Leave the current decision for a person to settle",
+        "VERDICT_LIMIT",
+      );
+    }
+    if (role === "independent") {
+      if (!previous) {
+        throw new RunStoreError(
+          `${finding.id} has no verdict yet, and an independent review checks an existing one. ` +
+            'Record the first verdict with role "primary" (the default); then a reviewer who has not seen it records role "independent"',
+          "PRIMARY_VERDICT_REQUIRED",
+        );
+      }
+      const primaryLabels = new Set(
+        previous.history.filter((item) => item.role === "primary").map((item) => item.reviewer),
+      );
+      if (primaryLabels.has(label)) {
+        throw new RunStoreError(
+          `reviewer ${printable(label, 80)} already recorded a primary verdict on ${finding.id}, so it cannot review it independently. ` +
+            "An independent review comes from a reviewer that did not make the decision: a fresh sub-agent with its own label",
+          "INDEPENDENT_SAME_REVIEWER",
+        );
+      }
+    } else if (previous && previous.history.some((item) => item.role === "independent")) {
+      const decidedBy = previous.history.filter((item) => item.role === "primary").at(-1)?.reviewer;
+      if (decidedBy !== undefined && decidedBy !== label && input.replace !== true) {
+        throw new RunStoreError(
+          `${finding.id} has a primary verdict by ${printable(decidedBy, 80)} that was independently reviewed; ` +
+            `a primary verdict by ${printable(label, 80)} would replace it. If you are the independent reviewer, set role "independent" ` +
+            "(with independence). To replace the decision on purpose, call again with replace: true; the replacement is shown in the report",
+          "PRIMARY_REPLACE_REFUSED",
+        );
+      }
+    }
+    const evidenceLines =
+      input.evidenceLines && input.evidenceLines.length > 0
+        ? input.evidenceLines
+            .slice(0, MAX_EVIDENCE_LINES)
+            .map((line) => redactText(String(line)).slice(0, EVIDENCE_LINE_MAX))
+        : undefined;
+    const entry: VerdictRecord = {
       fingerprint: finding.fingerprint,
       findingId: finding.id,
       status: input.status,
       rationale,
       ...(evidenceLines ? { evidenceLines } : {}),
-      at,
-      ...(input.actor ? { actor: input.actor } : {}),
-      ...(input.reviewer ? { reviewer: input.reviewer } : {}),
-      role: "primary",
+      at: new Date().toISOString(),
+      ...(actorInput ? { actor: actorInput } : {}),
+      ...(reviewerInput ? { reviewer: reviewerInput } : {}),
+      role,
+      ...(role === "independent" ? { independence: input.independence as Independence } : {}),
+      ...(role === "primary" && input.replace === true && previous ? { replace: true } : {}),
       ...evidence,
-      reviewers: [self],
     };
-  } else {
-    if (!previous) {
-      throw new RunStoreError(
-        `${finding.id} has no verdict yet, and an independent review checks an existing one. ` +
-          'Record the first verdict with role "primary" (the default); then a reviewer who has not seen it records role "independent"',
-        "PRIMARY_VERDICT_REQUIRED",
-      );
-    }
-    const primary = primaryReviewerOf(previous);
-    let reviewers = [...(previous.reviewers ?? [primary]), self];
-    if (reviewers.length > 1000) reviewers = [primary, ...reviewers.slice(-999)];
-    const independents = reviewers.filter((reviewer) => reviewer.role === "independent");
-    const against = independents.filter((reviewer) => verdictsDisagree(primary.status, reviewer.status));
-    const status: VerdictStatus = against.length > 0 ? "needs_review" : primary.status;
-    const said = (reviewer: VerdictReviewer): string =>
-      `${reviewer.role} (${reviewer.reviewer}) said ${reviewer.status}: ${reviewer.rationale ?? ""}`;
-    let merged: string;
-    if (against.length > 0) {
-      const latest = against[against.length - 1] as VerdictReviewer;
-      disagreement =
-        `independent reviewer ${latest.reviewer} said ${latest.status}, primary reviewer ${primary.reviewer} said ${primary.status}; ` +
-        "the status is needs_review until a person decides";
-      merged =
-        `Reviewers disagree; needs a human decision. ${said(primary)} | ${said(latest)}` +
-        (latest === self ? "" : ` | ${said(self)}`);
-    } else {
-      merged = [primary.rationale ?? previous.rationale, ...independents.map(said)].join(" | ");
-    }
-    const lines = [...new Set([...(previous.evidenceLines ?? []), ...(evidenceLines ?? [])])];
-    entry = {
+    const document: VerdictsDocument = {
+      schemaVersion: VERDICTS_SCHEMA_VERSION,
+      runId: run.runId,
+      ...(run.verdictsDocument.strictEvidence ? { strictEvidence: true } : {}),
+      entries: [...run.verdictsDocument.entries, entry],
+    };
+    const current = currentVerdicts(document);
+    const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
+    // Every file is rendered and measured before anything is written, so a
+    // run that cannot be rendered, or would not load again, is left as it was.
+    const verdictsText = `${JSON.stringify(document, null, 2)}\n`;
+    assertStorable("verdicts.json", verdictsText);
+    const artifacts = renderDerived(updated);
+    for (const [name, text] of artifacts.files) assertStorable(name, text);
+    writeText(run.runDir, "verdicts.json", verdictsText);
+    const refreshed = writeDerived(updated, artifacts);
+    const now = current[finding.fingerprint] as CurrentVerdict;
+    const total = run.findings.length + run.hotspots.length;
+    const dissent = now.dissent;
+    return {
+      runId: run.runId,
+      runDir: run.runDir,
       fingerprint: finding.fingerprint,
       findingId: finding.id,
-      status,
-      rationale: merged,
-      ...(lines.length > 0 ? { evidenceLines: lines } : {}),
-      at,
-      ...(previous.actor ? { actor: previous.actor } : {}),
-      ...(previous.reviewer ? { reviewer: previous.reviewer } : {}),
-      role: "independent",
-      // The primary decision's evidence stays; the independent reviewer's
-      // fills what it lacks.
-      ...evidence,
-      ...(previous.trace ? { trace: previous.trace } : {}),
-      ...(previous.conditions ? { conditions: previous.conditions } : {}),
-      ...(previous.control ? { control: previous.control } : {}),
-      ...(previous.missing ? { missing: previous.missing } : {}),
-      ...(previous.cwe ? { cwe: previous.cwe } : {}),
-      ...(previous.severityOverride ? { severityOverride: previous.severityOverride } : {}),
-      reviewers,
+      status: now.status,
+      rationale: now.rationale,
+      role,
+      requestedStatus: input.status,
+      independentlyReviewed: now.independentlyReviewed,
+      ...(now.disputeOpen && dissent
+        ? {
+            disagreement:
+              `independent reviewer ${dissent.reviewer} said ${dissent.status} while the decision was ` +
+              `${now.primaryStatus}; the status is needs_review until a person decides or an independent reviewer ` +
+              "with another label agrees with the decision",
+          }
+        : {}),
+      disputed: now.disputed,
+      strictEvidence: strict,
+      history: now.history.length,
+      reviewed: Object.keys(current).length,
+      total,
+      refreshed,
+      notices: [...run.notices, ...notices],
+      ...dismissedFields(updated),
     };
-  }
-  const document: VerdictsDocument = {
-    schemaVersion: VERDICTS_SCHEMA_VERSION,
-    runId: run.runId,
-    ...(run.verdictsDocument.strictEvidence ? { strictEvidence: true } : {}),
-    entries: [...run.verdictsDocument.entries, entry],
-  };
-  const current = currentVerdicts(document);
-  const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
-  // Every derived file is rendered before anything is written, so a run that
-  // cannot be rendered is left as it was.
-  const artifacts = renderDerived(updated);
-  writeJson(run.runDir, "verdicts.json", document);
-  const refreshed = writeDerived(updated, artifacts);
-  const total = run.findings.length + run.hotspots.length;
-  return {
-    runId: run.runId,
-    runDir: run.runDir,
-    fingerprint: finding.fingerprint,
-    findingId: finding.id,
-    status: entry.status,
-    rationale: entry.rationale,
-    role,
-    requestedStatus: input.status,
-    independentlyReviewed: isIndependentlyReviewed(entry),
-    ...(disagreement ? { disagreement } : {}),
-    strictEvidence: strict,
-    history: document.entries.filter(
-      (item) => item.fingerprint === finding.fingerprint,
-    ).length,
-    reviewed: Object.keys(current).length,
-    total,
-    refreshed,
-    notices: run.notices,
-    ...dismissedFields(updated),
-  };
+  });
 }
 
 export interface FindingsFilter {
@@ -2431,7 +2742,7 @@ export function reviewStats(run: LoadedRun): ReviewStats {
 /** Rules per kind listed in `triageSummary`; the rest is counted. */
 const TRIAGE_SUMMARY_RULES = 10;
 /** Proof gaps listed in `triageSummary`; the rest is counted. */
-const TRIAGE_SUMMARY_GAPS = 5;
+const TRIAGE_SUMMARY_GAPS = 3;
 
 /**
  * The review ledger of a run for `status` and `report --format summary`
@@ -2445,7 +2756,8 @@ export function triageSummary(run: LoadedRun) {
   const kind = (counts: TriageKindCount) => {
     const pending = counts.byRule.filter((row) => row.unreviewed > 0);
     const byRule = Object.create(null) as Record<string, number>;
-    for (const row of pending.slice(0, TRIAGE_SUMMARY_RULES)) byRule[row.ruleId] = row.unreviewed;
+    // Rule ids of agent-added and external findings are not ours: cut.
+    for (const row of pending.slice(0, TRIAGE_SUMMARY_RULES)) byRule[printable(row.ruleId, 100)] = row.unreviewed;
     return {
       total: counts.total,
       reviewed: counts.reviewed,
@@ -2461,10 +2773,14 @@ export function triageSummary(run: LoadedRun) {
     hotspots: kind(triage.hotspots),
     open: triage.open,
     independentlyReviewed: triage.independentlyReviewed,
+    disputed: triage.disputed,
+    disputesOpen: triage.disputesOpen,
+    // Paths and text come from the repository and the reviewer: cut, so the
+    // ledger cannot push the counts out of a size-capped response.
     proofGaps: triage.proofGaps.slice(0, TRIAGE_SUMMARY_GAPS).map((gap) => ({
-      id: gap.id,
-      location: `${gap.file}:${gap.line}`,
-      ...(gap.missing ? { missing: printable(gap.missing, 160) } : {}),
+      id: printable(gap.id, 40),
+      location: `${printable(gap.file, 140)}:${gap.line}`,
+      ...(gap.missing ? { missing: printable(redactText(gap.missing), 160) } : {}),
     })),
     ...(triage.proofGaps.length > TRIAGE_SUMMARY_GAPS
       ? { moreProofGaps: triage.proofGaps.length - TRIAGE_SUMMARY_GAPS }
@@ -2510,17 +2826,12 @@ function existsNoFollow(file: string): boolean {
 function reportContextOf(run: LoadedRun): ReportContext {
   const reviewerSet = new Set<string>();
   for (const entry of run.verdictsDocument.entries) {
-    if (entry.reviewer) reviewerSet.add(entry.reviewer);
-    for (const item of entry.reviewers ?? []) {
-      // The primary label is `entry.reviewer`; independent ones live here.
-      if (item.role === "independent" && item.reviewer && item.reviewer !== UNNAMED_REVIEWER) {
-        reviewerSet.add(item.reviewer);
-      }
-    }
+    // Labels are agent-written: redacted (older files were written as given).
+    if (entry.reviewer) reviewerSet.add(redactText(entry.reviewer));
   }
   for (const finding of run.findings) {
     const reviewer = (finding.provenance as { reviewer?: unknown }).reviewer;
-    if (typeof reviewer === "string" && reviewer) reviewerSet.add(reviewer);
+    if (typeof reviewer === "string" && reviewer) reviewerSet.add(redactText(reviewer));
   }
   const reviewers = [...reviewerSet].sort();
   const agentReviewed =

@@ -514,6 +514,70 @@ describe("report size and order", () => {
     expect(hotspotSection).toContain("+");
   });
 
+  it("stays within the same budget once every code finding and hotspot is reviewed", () => {
+    const trace = [
+      { file: "src/a.py", line: 1, role: "source", note: "request data" },
+      { file: "src/b.py", line: 2, role: "propagation" },
+      { file: "src/c.py", line: 3, role: "propagation" },
+      { file: "src/d.py", line: 4, role: "sink", note: "the call" },
+    ];
+    const states: Array<[string, Record<string, unknown>]> = [
+      ["needs_review", { status: "needs_review", review: { status: "needs_review", rationale: "unsure" } }],
+      [
+        "proof_gap with every field",
+        {
+          status: "proof_gap",
+          review: {
+            status: "proof_gap",
+            rationale: "could not tell",
+            missing: "whether the handler is reachable without the admin role, ".repeat(5),
+            trace,
+            severityOverride: { severity: "low", reason: "needs an admin session ".repeat(5) },
+          },
+        },
+      ],
+      ["confirmed with a trace", { status: "confirmed", review: { status: "confirmed", rationale: "traced", trace } }],
+      [
+        "disputed",
+        {
+          status: "needs_review",
+          review: {
+            status: "needs_review",
+            primaryStatus: "confirmed",
+            rationale: "traced",
+            trace,
+            disputed: true,
+            disputeOpen: true,
+            dissent: { reviewer: "sub", role: "independent", status: "false_positive", at: "x", rationale: "constant ".repeat(30), independence: "subagent" },
+          },
+        },
+      ],
+    ];
+    for (const [label, state] of states) {
+      const { findings, hotspots } = large();
+      // A confirmed verdict raises a low confidence to high and so moves a
+      // low-confidence candidate into the headline (counting behaviour from
+      // before F3, more findings rather than more review text): here the
+      // low-confidence records get needs_review, the rest the state.
+      const reviewed = (list: Finding[]) =>
+        list.map(
+          (finding) =>
+            (finding.confidence === "low" && state.status === "confirmed"
+              ? { ...finding, ...states[0]![1] }
+              : { ...finding, ...state }) as Finding,
+        );
+      const md = renderMarkdown(context(reviewed(findings), reviewed(hotspots)));
+      const lines = md.split("\n");
+      expect(lines.length, label).toBeLessThan(700);
+      if (label.startsWith("proof_gap")) {
+        expect(md).toContain("- **Open proof gaps (790)**");
+        expect(md).toContain("… 787 more (see findings.json)");
+        expect(md).toContain("… 1 more (see findings.json)");
+      }
+      if (label === "disputed") expect(md).toContain("- **Disputed verdicts (790)**");
+    }
+  });
+
   it("orders the sections: cover, findings, dependencies, candidates, hotspots, suppressed, fixed, coverage", () => {
     const { findings, hotspots } = mixed();
     const md = renderMarkdown(

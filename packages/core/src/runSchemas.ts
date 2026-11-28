@@ -219,20 +219,16 @@ export const VerdictControlSchema = z.object({
   note: NOTE,
 });
 
-export const VerdictReviewerSchema = z.object({
-  reviewer: z.string().max(200),
-  role: z.enum(["primary", "independent"]),
-  status: z.enum(VERDICT_STATUS_VALUES),
-  at: z.string(),
-  /** What this reviewer wrote; kept so a disagreement can be read later. */
-  rationale: z.string().max(4000).optional(),
-});
+/** Longest rationale, note or `missing` text stored with a verdict. */
+export const MAX_VERDICT_TEXT = 4000;
+/** Most verdict entries (primary and independent) stored for one finding. */
+export const MAX_VERDICTS_PER_FINDING = 50;
 
 /**
- * One entry of verdicts.json. Each entry is the full current decision on a
- * fingerprint at the time it was written (the last one wins). Every field
- * after `reviewer` is new in schemaVersion 2 and optional, so version 1
- * entries read unchanged.
+ * One entry of verdicts.json: what one reviewer decided about one
+ * fingerprint, stored once (append-only; the current state is computed from
+ * all entries of the fingerprint). Every field after `reviewer` is new in
+ * schemaVersion 2 and optional, so version 1 entries read unchanged.
  */
 export const VerdictRecordSchema = z.object({
   fingerprint: z.string().regex(FINGERPRINT),
@@ -245,15 +241,18 @@ export const VerdictRecordSchema = z.object({
   reviewer: z.string().optional(),
   /** Role of the reviewer who wrote this entry; absent (v1) means primary. */
   role: z.enum(["primary", "independent"]).optional(),
+  /** For role independent: how independent the review was. */
+  independence: z.enum(["subagent", "same-session"]).optional(),
+  /** A primary verdict that knowingly replaced another reviewer's reviewed decision. */
+  replace: z.boolean().optional(),
   trace: z.array(TraceStepSchema).max(MAX_TRACE_STEPS).optional(),
   conditions: VerdictConditionsSchema.optional(),
   control: VerdictControlSchema.optional(),
-  missing: z.string().max(4000).optional(),
+  missing: z.string().max(MAX_VERDICT_TEXT).optional(),
   cwe: z.string().regex(/^CWE-\d{1,6}$/).optional(),
   severityOverride: z
-    .object({ severity: z.enum(SEVERITIES), reason: z.string().max(2000) })
+    .object({ severity: z.enum(SEVERITIES), reason: z.string().max(MAX_VERDICT_TEXT) })
     .optional(),
-  reviewers: z.array(VerdictReviewerSchema).max(1000).optional(),
 });
 
 /** Version 1 and 2 are read; version 2 is written. */
