@@ -119,9 +119,13 @@ evidence lines, and from verdicts.json schemaVersion 2 `trace`, `control`,
 `conditions`, `missing`, `cwe`, `severityOverride`, `primaryStatus`, the
 review `history` (newest 50 entries, rationales cut at 300 characters, each
 marked `superseded` or `disagreed`), `independentlyReviewed`,
-`independentReview`, `disputed`, `dissent` and `disputeOpen`), always taken
-from `verdicts.json`. SARIF results with a verdict have `properties.review`
-(status, `independentlyReviewed`, `independence`, `missing`, and for a
+`independentReview`, `independentStatus` (the status the agreeing independent
+reviewer recorded: `likely` counts as agreeing with a `confirmed` decision but
+is weaker, and the report then says `confirmed (independently reviewed by
+<label>: subagent, said likely)`), `disputed`, `dissent` and `disputeOpen`),
+always taken from `verdicts.json`. SARIF results with a verdict have
+`properties.review` (status, `independentlyReviewed`, `independence`,
+`independentStatus`, `missing`, and for a
 disputed verdict `disputed`, `disputeOpen` and `dissent`), and the run has
 `properties.review` with the unreviewed, open, proof-gap and dispute
 counts.

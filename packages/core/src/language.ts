@@ -18,6 +18,8 @@ export type Language =
   | "ini"
   | "properties"
   | "shell"
+  // PowerShell scripts inside a skill or plugin tree (see inventory.ts).
+  | "powershell"
   | "template"
   | "requirements"
   | "unknown";

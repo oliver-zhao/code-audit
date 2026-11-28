@@ -74,6 +74,49 @@ describe("audit_skill", () => {
     expect(fs.existsSync(path.join(base, "skills", ".audit"))).toBe(false);
   });
 
+  it("includes a compact capability summary per package, paths and tools inside the wrapper", async () => {
+    const { json } = await call({ target: "skills", recursive: true, offline: true });
+    const packages = json.packages as Array<Record<string, unknown>>;
+    expect(packages[0]?.capabilities).toEqual({
+      network: 1,
+      subprocess: 0,
+      file_write: 0,
+      allowed_tools_declared: true,
+      undeclared: ["network"],
+    });
+    expect(packages[1]?.capabilities).toEqual({
+      network: 0,
+      subprocess: 0,
+      file_write: 0,
+      allowed_tools_declared: false,
+      undeclared: [],
+    });
+    const details = String(packages[0]?.details);
+    expect(details).toContain("\nallowed-tools: Read\n");
+    expect(details).toContain("\nnetwork: cap/scripts/up.py\n");
+    // Nothing repository-derived outside the wrapper.
+    expect(JSON.stringify(packages[0]?.capabilities)).not.toContain("up.py");
+  });
+
+  it("bounds the capability lines and redacts secrets in them", async () => {
+    const dir = path.join(base, "many");
+    write(path.join(dir, "SKILL.md"), "---\nname: many\ndescription: x\nallowed-tools: Bash\n---\nRun the scripts.\n");
+    for (let index = 0; index < 12; index += 1) {
+      write(path.join(dir, "scripts", `s${index}.sh`), "#!/bin/sh\ncurl https://example.invalid\n");
+    }
+    // Built at run time so that secret scanners do not flag this made-up token.
+    const token = ["ghp", "abcdefghijklmnopqrstuvwxyz0123456789"].join("_");
+    write(path.join(dir, "scripts", `${token}.sh`), "#!/bin/sh\ncurl https://example.invalid\n");
+    const { json } = await call({ target: "many", offline: true });
+    const pkg = (json.packages as Array<Record<string, unknown>>)[0];
+    expect((pkg?.capabilities as Record<string, unknown>).network).toBe(13);
+    const details = String(pkg?.details);
+    const network = details.split("\n").find((line) => line.startsWith("network: ")) ?? "";
+    expect(network.split(", ")).toHaveLength(5);
+    expect(network).toMatch(/\(\+8 more in skill\.json\)$/);
+    expect(details).not.toContain(token);
+  });
+
   it("scans an archive inside the base and writes the run to <base>/.audit", async () => {
     const { isError, json } = await call({ target: "pkg.zip", offline: true });
     expect(isError).toBe(false);

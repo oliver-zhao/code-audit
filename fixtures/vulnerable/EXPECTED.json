@@ -7198,6 +7198,132 @@
       "kind": "hotspot"
     },
     {
+      "file": "agents/f1/skills/credentials/bin/show",
+      "line": 4,
+      "ruleId": "agent-credential-read-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/bin/show",
+      "line": 5,
+      "ruleId": "agent-credential-read-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/backup.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/collect.js",
+      "line": 5,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/collect.ps1",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "powershell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/collect.py",
+      "line": 6,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/collect.py",
+      "line": 7,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/inspect.sh",
+      "line": 2,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/inspect.sh",
+      "line": 3,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/inspect.sh",
+      "line": 4,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/inspect.sh",
+      "line": 5,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/inspect.sh",
+      "line": 6,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/keys.ts",
+      "line": 3,
+      "ruleId": "agent-credential-read-script",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials/scripts/upload.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 14,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 15,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 15,
+      "ruleId": "prompt-injection-conceal",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
       "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
       "line": 5,
       "ruleId": "agent-anti-refusal-never-refuse",
@@ -8678,6 +8804,13 @@
       "file": "agents/review/ev5/skills/x/scripts/up.py",
       "line": 5,
       "ruleId": "agent-cloud-upload-secrets",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/ev5/skills/x/scripts/up.py",
+      "line": 3,
+      "ruleId": "agent-credential-exfil-script",
       "language": "python",
       "kind": "finding"
     },

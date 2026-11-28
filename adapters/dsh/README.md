@@ -114,7 +114,9 @@ $ dsh --profile web --patch examples/dsh-demo/dsh/cordis.patch.yml --dump-config
 
 The composed overlay has no `patch: entry ... not found` warning. A live stdio
 probe through the real `@deepseek-ai/dsh-mcp-client` `probeServer` (see
-`examples/dsh-demo/probe.mjs`) lists all eight tools:
+`examples/dsh-demo/probe.mjs`) lists every tool. The output below was
+recorded before `audit_skill` was added; the server now lists nine tools,
+`audit_skill` after `audit_report`:
 
 ```text
 $ node examples/dsh-demo/probe.mjs

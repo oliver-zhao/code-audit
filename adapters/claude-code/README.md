@@ -88,7 +88,8 @@ Run with Claude Code 2.1.183 on macOS:
 - **Project install, headless.** After `code-audit install --host claude-code
   --absolute`, `claude -p "/audit" --mcp-config .mcp.json --allowedTools
   "mcp__code-audit__*"` found the `code-audit` skill, the `/audit` command and
-  the eight `mcp__code-audit__audit_*` tools, and ran a full audit (start,
+  the `mcp__code-audit__audit_*` tools (eight in that release; the 0.4.0 host
+  test with Claude Code 2.1.332 listed all nine, `audit_skill` included), and ran a full audit (start,
   status, findings, read, search, verdict, add-finding, report): every tool
   call succeeded and nothing was denied.
 - **Plugin.** `claude -p "/code-audit:audit" --plugin-dir adapters/claude-code
