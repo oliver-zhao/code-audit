@@ -131,9 +131,10 @@ your tool list whose name ends with the bare name.
    to make a disagreement go away. A primary verdict that would replace
    another reviewer's decision is refused unless you pass `replace: true`,
    which does not settle a dispute. Only a person settles one: when the user
-   wants to, give them `code-audit verdict <run> <id> --role human --replace
-   --reviewer <their name> --status <s> --rationale "..."` and let them run
-   it; never record `role: "human"` yourself (MCP refuses it).
+   wants to, tell them to run `code-audit verdict --help` and record it with
+   `--role human` in their own terminal (it asks them to type the finding id
+   and refuses agent shells). Never record `role: "human"` yourself, and
+   never run that command for them.
 
 6. **Add findings the static rules missed.** Before adding, check whether a
    finding or hotspot already covers that file and line: call `audit_findings`

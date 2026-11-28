@@ -1,3 +1,4 @@
+import { HumanDecisionError, confirmHumanDecision, readTerminalLine } from "./humanGate.js";
 import {
   CONFIDENCES,
   SEVERITIES,
@@ -385,6 +386,23 @@ function runVerdictCommand(args: string[]): number {
   if (!statusValue) throw new QueryError("verdict requires --status");
   const rationale = single(parsed.flags, "rationale");
   if (!rationale) throw new QueryError("verdict requires --rationale");
+  let humanConfirmed = false;
+  if (single(parsed.flags, "role") === "human") {
+    try {
+      confirmHumanDecision({
+        finding: parsed.positionals[1] ?? "",
+        env: process.env,
+        stdinIsTTY: process.stdin.isTTY === true,
+        stdoutIsTTY: process.stdout.isTTY === true,
+        write: (text) => process.stdout.write(text),
+        readLine: readTerminalLine,
+      });
+    } catch (error) {
+      if (error instanceof HumanDecisionError) throw new QueryError(`${error.code}: ${error.message}`);
+      throw error;
+    }
+    humanConfirmed = true;
+  }
   const result = recordVerdict(
     parsed.ref,
     parsed.positionals[1] ?? "",
@@ -407,8 +425,9 @@ function runVerdictCommand(args: string[]): number {
       ...(single(parsed.flags, "cwe") ? { cwe: single(parsed.flags, "cwe") } : {}),
     },
     runOptions(parsed),
-    // A person at a shell: the only caller that may record role human.
-    { human: true },
+    // Only a person at a terminal who typed the finding id back may record
+    // role human (see humanGate.ts); everything else is an ordinary call.
+    { cli: true, human: humanConfirmed },
   );
   printNotices(result.notices);
   if (parsed.json) {

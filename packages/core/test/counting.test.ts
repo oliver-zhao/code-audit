@@ -587,6 +587,8 @@ describe("report size and order", () => {
             disputeOpen: true,
             dissent,
             history: Array.from({ length: 50 }, () => dissent),
+            // A person's decision on a disputed record adds the cover line.
+            decidedByPerson: { reviewer: "a".repeat(200), at: "x" },
           },
         },
       ]);
@@ -606,7 +608,8 @@ describe("report size and order", () => {
         );
       const md = renderMarkdown(context(reviewed(findings), reviewed(hotspots)));
       const lines = md.split("\n");
-      expect(lines.length, label).toBeLessThan(700);
+      expect(lines.length, label).toBeLessThanOrEqual(699);
+      if (label.startsWith("every field")) expect(md, label).toContain("were settled by a person's decision");
       if (label.startsWith("proof_gap")) {
         expect(md).toContain("- **Open proof gaps (790)**");
         expect(md).toContain("… 787 more (see findings.json)");

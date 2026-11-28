@@ -335,7 +335,7 @@ describe("structured triage over MCP", () => {
     const text = fs.readFileSync(String(md.path), "utf8");
     expect(text).toContain("### Review coverage");
     expect(text).toContain("- **Open proof gaps (1)**");
-    expect(text).toContain("- **Disputed verdicts (1)**");
+    expect(text).toContain(" · **Disputed verdicts (1)**");
     expect(text).toContain("was disputed: fresh-subagent said false\\_positive (subagent)");
     expect(text).toContain("Review incomplete:");
     expect(text).not.toContain("No reportable issues found.");
@@ -404,6 +404,7 @@ describe("structured triage over MCP", () => {
     }
     const findings = await allItems(runId, "finding");
     const high = findings.find((item) => item.severity === "high" || item.severity === "critical") as Item;
+    const before = (await call("audit_status", { run_id: runId, blind: true })) as { findings: number; summary: unknown };
     await call("audit_verdict", {
       run_id: runId,
       finding: high.id,
@@ -422,12 +423,17 @@ describe("structured triage over MCP", () => {
       replace: true,
     });
     expect(humanError.code).toBe("HUMAN_DECISION_CLI_ONLY");
-    expect(humanError.message).toContain("code-audit verdict");
+    expect(humanError.message).toContain("see `code-audit verdict --help`");
+    expect(humanError.message).not.toContain("--role human");
 
     const open = await call("audit_status", { run_id: runId });
     expect(String(open.dismissedWarning)).toContain("secret-label-p");
     const blind = await call("audit_status", { run_id: runId, blind: true });
     expect(blind.blind).toBe(true);
+    // L-r1: blind counts are the scan's, so a dismissal does not show.
+    expect(blind.findings).toBe(before.findings);
+    expect(blind.summary).toEqual(before.summary);
+    expect(Number(open.findings)).toBeLessThan(before.findings);
     expect(blind.phase).toBe("complete");
     const text = JSON.stringify(blind);
     for (const hidden of ["\"dismissedWarning\"", "\"falsePositive\"", "\"triage\"", "secret-label-p", "\"reviewed\"", "\"unreviewed\""]) {
@@ -437,6 +443,7 @@ describe("structured triage over MCP", () => {
     expect(summary.blind).toBe(true);
     const summaryText = String(summary.text);
     expect(JSON.parse(summaryText).phase).toBe("complete");
+    expect(JSON.parse(summaryText).findings).toBe(before.findings);
     for (const hidden of ["\"dismissedWarning\"", "\"falsePositive\"", "\"falsePositives\"", "\"triage\"", "secret-label-p"]) {
       expect(summaryText, hidden).not.toContain(hidden);
     }

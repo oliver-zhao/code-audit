@@ -80,6 +80,9 @@ Usage:
                         [--independence subagent|same-session] [--replace]
                         [--trace <file:line:role[:note]>]... [--control <file:line[:note]>]
                         [--missing <text>] [--cwe <CWE-n>]
+                        --role human: a person's decision; needs --replace and
+                        --reviewer, an interactive terminal and the finding id
+                        typed back, and is refused in a coding agent's shell
   code-audit add-finding <run-id|run-dir> --rationale <text>
                         [--file <f> --start N [--end N] --title <t>
                          --severity <s> --cwe <cwe> [--confidence <c>]

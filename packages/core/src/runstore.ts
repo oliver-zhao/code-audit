@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Worker } from "node:worker_threads";
 import fs from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
@@ -1726,7 +1727,7 @@ function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): S
 export const VERDICT_LOCK_FILE = "verdicts.json.lock";
 /** How long a verdict waits for another writer of the same run. */
 const LOCK_TIMEOUT_MS = 15_000;
-/** A lock older than this is left over from a writer that died. */
+/** A lock not refreshed for this long is left over from a writer that died. */
 const LOCK_STALE_MS = 120_000;
 
 function sleepSync(ms: number): void {
@@ -1745,11 +1746,11 @@ export function withRunLock<T>(runDir: string, fn: () => T): T {
   const token = `${process.pid}:${crypto.randomBytes(12).toString("hex")}`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
-  /** The token in the lock file, or undefined when it cannot be read as one. */
-  const holder = (): string | undefined => {
+  /** The token in a lock file, or undefined when it cannot be read as one. */
+  const tokenIn = (file: string): string | undefined => {
     let fd: number | undefined;
     try {
-      fd = fs.openSync(lock, fs.constants.O_RDONLY | NOFOLLOW);
+      fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW);
       const buffer = Buffer.alloc(200);
       const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
       return buffer.subarray(0, read).toString("utf8").trim();
@@ -1790,52 +1791,141 @@ export function withRunLock<T>(runDir: string, fn: () => T): T {
     if (stat.isDirectory()) invalid("a directory");
     if (!stat.isFile()) invalid("not a regular file");
     if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-      // Take over a lock left by a writer that died: write our own lock
-      // under a temporary name and rename it over the stale one (atomic),
-      // but only if the lock still holds the token we judged stale; then
-      // check that the lock now holds our token.
-      const stale = holder();
-      const temp = `${lock}.${token.replace(/[^A-Za-z0-9]/g, "")}.tmp`;
-      let tempFd: number | undefined;
-      try {
-        tempFd = fs.openSync(temp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
-        fs.writeSync(tempFd, `${token}\n`);
-        fs.closeSync(tempFd);
-        tempFd = undefined;
-        if (holder() === stale) fs.renameSync(temp, lock);
-      } catch {
-        // Another writer is doing the same; try again.
-      } finally {
-        if (tempFd !== undefined) fs.closeSync(tempFd);
-        try {
-          fs.unlinkSync(temp);
-        } catch {
-          // Renamed into place, or never created.
-        }
-      }
-      if (holder() === token) break;
+      takeOverStaleLock(lock, token, tokenIn);
       continue;
     }
     if (Date.now() > deadline) {
       throw new RunStoreError(
-        `another process is writing verdicts of this run (lock file ${lock}, held by ${printable(holder() ?? "an unknown writer", 60)}); ` +
-          `call audit_verdict again in a moment. A lock left by a writer that died is taken over once it is ${LOCK_STALE_MS / 1000} seconds old`,
+        `another process is writing verdicts of this run (lock file ${lock}, held by ${printable(tokenIn(lock) ?? "an unknown writer", 60)}); ` +
+          `call audit_verdict again in a moment. A lock its writer has not refreshed for ${LOCK_STALE_MS / 1000} seconds is taken over`,
         "RUN_LOCKED",
       );
     }
     sleepSync(15 + Math.floor(Math.random() * 20));
   }
+  // While the write runs (synchronously), a worker thread refreshes the
+  // lock's mtime every LOCK_REFRESH_MS, so a slow write is never judged
+  // stale. It only touches a lock that still holds this writer's token.
+  const heartbeat = startLockHeartbeat(lock, token);
   try {
     return fn();
   } finally {
+    heartbeat?.terminate().catch(() => undefined);
     // Only our own lock is removed.
-    if (holder() === token) {
+    if (tokenIn(lock) === token) {
       try {
         fs.unlinkSync(lock);
       } catch {
         // Already gone.
       }
     }
+  }
+}
+
+/** A takeover mutex older than this was left by a writer that died during a takeover. */
+const TAKEOVER_STALE_MS = 30_000;
+
+/**
+ * Remove a lock that nobody refreshed for LOCK_STALE_MS (its writer died),
+ * so that the normal O_EXCL create can run again.
+ *
+ * Takeovers are serialised by `<lock>.takeover`, created with O_EXCL: under
+ * it, the lock is checked again - a live writer may have replaced the stale
+ * lock since this writer looked - and only a lock that is still stale is
+ * moved, to a name unique to this writer (`<lock>.stale.<token>`; the lock
+ * path is never renamed over). The moved file must still hold the token
+ * read before the move; if it does not, it is put back with link(), which
+ * never overwrites a lock that appeared meanwhile.
+ */
+function takeOverStaleLock(
+  lock: string,
+  token: string,
+  tokenIn: (file: string) => string | undefined,
+): void {
+  const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+  const mutex = `${lock}.takeover`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(mutex, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
+    fs.writeSync(fd, `${token}\n`);
+    fs.closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) fs.closeSync(fd);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      // Another writer is taking over; a mutex left by a crash is cleared.
+      try {
+        const stat = fs.lstatSync(mutex);
+        if (stat.isFile() && Date.now() - stat.mtimeMs > TAKEOVER_STALE_MS) fs.rmSync(mutex, { force: true });
+      } catch {
+        // Gone already.
+      }
+    }
+    return;
+  }
+  try {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(lock);
+    } catch {
+      return; // Released meanwhile.
+    }
+    if (!stat.isFile() || Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return;
+    const stale = tokenIn(lock);
+    const moved = `${lock}.stale.${token.replace(/[^A-Za-z0-9]/g, "")}`;
+    try {
+      fs.renameSync(lock, moved);
+    } catch {
+      return; // Released meanwhile.
+    }
+    if (tokenIn(moved) !== stale) {
+      try {
+        fs.linkSync(moved, lock);
+      } catch {
+        // A lock appeared meanwhile; it stands.
+      }
+    }
+    fs.rmSync(moved, { force: true });
+  } finally {
+    if (tokenIn(mutex) === token) fs.rmSync(mutex, { force: true });
+  }
+}
+
+/** How often a held lock is refreshed. */
+export const LOCK_REFRESH_MS = 10_000;
+
+/** `CODE_AUDIT_LOCK_REFRESH_MS` (tests only) shortens the refresh interval; never longer than the default. */
+function lockRefreshMs(): number {
+  const value = Number(process.env.CODE_AUDIT_LOCK_REFRESH_MS);
+  return Number.isFinite(value) && value >= 20 && value < LOCK_REFRESH_MS ? value : LOCK_REFRESH_MS;
+}
+
+const HEARTBEAT_SOURCE = `
+const { workerData } = require("node:worker_threads");
+const fs = require("node:fs");
+setInterval(() => {
+  try {
+    const fd = fs.openSync(workerData.lock, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const buffer = Buffer.alloc(200);
+    const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+    if (buffer.subarray(0, read).toString("utf8").trim() !== workerData.token) return;
+    const now = new Date();
+    fs.utimesSync(workerData.lock, now, now);
+  } catch {}
+}, workerData.every);
+`;
+
+function startLockHeartbeat(lock: string, token: string): Worker | undefined {
+  try {
+    const worker = new Worker(HEARTBEAT_SOURCE, {
+      eval: true,
+      workerData: { lock, token, every: lockRefreshMs() },
+    });
+    worker.unref();
+    return worker;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1875,10 +1965,13 @@ function assertStorable(name: string, text: string): void {
  */
 export interface RecordVerdictAccess {
   /**
-   * The caller is a person at the command line. Only then is `role: "human"`
-   * accepted; the MCP server never sets it.
+   * A person at a terminal confirmed the decision (the CLI's checks in
+   * humanGate.ts passed). Only then is `role: "human"` accepted; the MCP
+   * server never sets it.
    */
   human?: boolean;
+  /** The call comes from the CLI: messages name its flags (`--replace`). */
+  cli?: boolean;
 }
 
 export function recordVerdict(
@@ -1903,12 +1996,12 @@ export function recordVerdict(
   }
   if (role === "human" && access.human !== true) {
     throw new RunStoreError(
-      'role "human" records a person\'s decision and is accepted only from the command line ' +
-        "(code-audit verdict <run> <finding> --role human --replace --reviewer <name> --status <s> --rationale <text>). " +
-        "An agent must not record it: tell the user the command and let them run it",
+      'role "human" records a person\'s decision; a person can record this decision with the code-audit CLI ' +
+        "(see `code-audit verdict --help`). An agent must not record it",
       "HUMAN_DECISION_CLI_ONLY",
     );
   }
+  const flag = (cliForm: string, mcpForm: string): string => (access.cli ? cliForm : mcpForm);
   const reviewerInput = input.reviewer?.trim() ? redactText(input.reviewer.trim()).slice(0, 200) : undefined;
   const actorInput = input.actor?.trim() ? redactText(input.actor.trim()).slice(0, 200) : undefined;
   if (role === "human") {
@@ -2006,8 +2099,8 @@ export function recordVerdict(
       if (decidedBy !== undefined && normalizeReviewerLabel(decidedBy) !== labelKey && input.replace !== true) {
         throw new RunStoreError(
           `${finding.id} has a primary verdict by ${printable(decidedBy, 80)}; a primary verdict by ${printable(label, 80)} would replace it. ` +
-            'If you are reviewing that verdict, pass role "independent" (with independence and your own reviewer label). ' +
-            "To replace the decision on purpose, call again with replace: true; the replacement is shown in the report",
+            `If you are reviewing that verdict, pass ${flag("--role independent --independence subagent|same-session", 'role "independent" (with independence')} and your own reviewer label${access.cli ? "" : ")"}. ` +
+            `To replace the decision on purpose, call again with ${flag("--replace", "replace: true")}; the replacement is shown in the report`,
           "PRIMARY_REPLACE_REFUSED",
         );
       }
@@ -2898,6 +2991,37 @@ export function triageSummary(run: LoadedRun) {
     ...(triage.proofGaps.length > TRIAGE_SUMMARY_GAPS
       ? { moreProofGaps: triage.proofGaps.length - TRIAGE_SUMMARY_GAPS }
       : {}),
+  };
+}
+
+/**
+ * The headline counts of a run as the scan left them, before any verdict:
+ * for a blind caller (an independent reviewer), whom verdict-adjusted
+ * counts would tell that a finding was dismissed or confirmed.
+ */
+export function scanTimeCounts(ref: string, options: ResolveRunOptions = {}) {
+  const run = loadRun(ref, options);
+  const reset = (finding: Finding): Finding => {
+    const { review: _review, confidenceBeforeVerdict, ...rest } = finding as Finding & {
+      confidenceBeforeVerdict?: Confidence;
+    };
+    if (!run.verdicts[finding.fingerprint]) return rest as Finding;
+    const status = rest.suppression
+      ? "suppressed"
+      : rest.provenance.engine === "agent"
+        ? "needs_review"
+        : "candidate";
+    return { ...rest, status, confidence: confidenceBeforeVerdict ?? rest.confidence } as Finding;
+  };
+  const counts = summaryCountFields(
+    summarizeRun(run.run, run.findings.map(reset), run.hotspots.map(reset)),
+  );
+  return {
+    findings: counts.findings,
+    findingCounts: counts.findingCounts,
+    lowConfidenceCandidates: counts.lowConfidenceCandidates,
+    hotspots: counts.hotspotCount,
+    summary: counts.summary,
   };
 }
 

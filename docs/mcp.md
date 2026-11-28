@@ -165,7 +165,9 @@ With `strict_evidence: true` the result also has `"strict_evidence": true`.
 
 Arguments: `run_id`, `root`, `blind` (boolean; for an independent reviewer:
 leaves out the dismissal counts and `dismissedWarning`, `reviewed` /
-`unreviewed`, reviewer labels and `triage`, and adds `blind: true`). Poll it
+`unreviewed`, reviewer labels and `triage`, reports the headline counts and
+`summary` as the scan left them, before any verdict, and adds
+`blind: true`). Poll it
 after `audit_start` until `phase` is
 `complete` or `failed`.
 
@@ -523,13 +525,33 @@ command line: `code-audit verdict <run> <finding> --role human --replace
 --reviewer <name> --status <status> --rationale <text>` (with `--control`,
 `--trace`, `--missing` or `--evidence-line` as the status and strict
 evidence require; a `high` or `critical` dismissal needs evidence as
-always). `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`:
-an agent never records it, it gives the user the command. A human decision
-becomes the current status, closes any dispute and is shown as "decided by a
-person (<name>)" next to the dissent history, which stays visible. After it,
-agent verdicts on the finding are refused (`HUMAN_DECISION_STANDS`); only
-another human decision changes it. The CLI is run by whoever has a shell, so
-this marks a decision made at a terminal, not proof that a person made it.
+always). Before recording it, the CLI requires:
+
+- that none of these variables is set (set at all, even empty): `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+  `OPENCODE`, `OPENCODE_BIN_PATH`, `AI_AGENT`, `DSH_AGENT`. The first two and
+  `AI_AGENT` were verified in the shell of Claude Code; Codex, OpenCode and
+  DSH were not installed where this was checked, so their names are the
+  expected ones, not verified. There is no override;
+- that stdin and stdout are both terminals;
+- that the person types the finding id back at the prompt.
+
+Otherwise it fails with `HUMAN_DECISION_REFUSED` and records nothing. These
+checks are a speed bump, not a proof: they stop an agent that runs the
+command from its own shell tool, not one that drives a pseudo-terminal, runs
+in a host that sets none of these variables, or a person who types for an
+agent. `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`,
+whose message points to `code-audit verdict --help` without spelling out the
+command. A human decision becomes the current status, closes any dispute and
+is shown as "decided by a person (<name>)" next to the dissent history,
+which stays visible; when it settled a dispute, the report cover says so
+("N dispute(s) between reviewers were settled by a person's decision ...")
+with the finding ids. After it, agent verdicts on the finding are refused
+(`HUMAN_DECISION_STANDS`); only another human decision changes it.
+
+**Messages by caller.** Errors name the flags of the interface the call came
+from: `--replace` and `--role independent --independence ...` from the CLI,
+`replace: true` and `role: "independent"` over MCP.
 
 Reports show every disputed verdict with the dissenting reviewer, status,
 independence and rationale, also once resolved ("Disputed verdicts" in
@@ -541,12 +563,21 @@ derived file larger than the run store can read (128 MiB) is refused with
 serialised by a lock file (`verdicts.json.lock`, created exclusively, holding
 a random owner token): two processes, for example an agent and a sub-agent
 with its own server, both keep their verdicts; a writer that waits more than
-15 seconds gets `RUN_LOCKED`. A lock older than two minutes, left by a writer
-that died, is taken over atomically: a new lock is written under a temporary
-name and renamed over it, and the owner token is checked after the rename. A
-lock path that is a symbolic link or a directory is not one this tool wrote:
-the call fails at once with `RUN_LOCK_INVALID`, naming the path to remove.
-A writer removes only a lock that holds its own token.
+15 seconds gets `RUN_LOCKED`. While a write holds the lock, a worker thread
+refreshes the lock's modification time every 10 seconds, so a slow write is
+never taken over; a lock not refreshed for two minutes was left by a writer
+that died. To take one over, a writer first creates `verdicts.json.lock.takeover`
+exclusively (only one takeover at a time; one older than 30 seconds is
+cleared), checks again under it that the lock is still stale, and moves it to
+a name unique to itself (`verdicts.json.lock.stale.<token>`): only one move
+can succeed, and the lock path is never renamed over. The moved file must
+hold the token read before the move (otherwise it is put back with `link`,
+which never overwrites a newer lock); it is then deleted and the writer
+creates the lock again exclusively. A lock path that is a symbolic link or a
+directory is not one this tool wrote: the call fails at once with
+`RUN_LOCK_INVALID`, naming the path to remove. A writer removes only a lock
+that holds its own token. (`CODE_AUDIT_LOCK_REFRESH_MS` shortens the refresh
+interval for tests; it cannot lengthen it.)
 
 **Limits.** These caps keep every run readable; they are not fair shares.
 One finding's 50 entries can all be used by one reviewer, so that no
@@ -557,7 +588,11 @@ of the run. Both fail safe: nothing is hidden and the run stays readable.
 "Independently reviewed" means that a second label recorded an agreeing
 verdict; one agent can invent labels, so real independence comes only from
 the host's sub-agent isolation, and blind mode only hides what a cooperating
-reviewer asks not to see.
+reviewer asks not to see. Labels are normalised (NFKC, invisible characters,
+case) but look-alike letters from other scripts are not: a Cyrillic `р` and a
+Latin `p` are different reviewers. The report therefore names the
+independent reviewer ("independently reviewed by <label>"), shows characters
+outside plain ASCII as `?` and marks such a label `[non-ASCII label]`.
 
 `verdicts.json` is written with `schemaVersion: 2`; files with
 `schemaVersion: 1` are read as before (their entries count as primary
@@ -630,7 +665,7 @@ Renders the report with the current verdicts.
 | Argument | Type | Meaning |
 |---|---|---|
 | `format` | `summary` \| `md` \| `json` \| `sarif` | Default `summary`. |
-| `blind` | boolean | Only with `summary` (other formats are refused with `BLIND_FORMAT`): the summary without dismissals, review progress, reviewer labels and `triage`. An independent reviewer should not call `audit_report` at all. |
+| `blind` | boolean | Only with `summary` (other formats are refused with `BLIND_FORMAT`): the summary without dismissals, review progress, reviewer labels and `triage`, with the headline counts as the scan left them. An independent reviewer should not call `audit_report` at all. |
 
 `summary` writes nothing and returns the review counts plus, in `text`, the
 same JSON document as `audit_status`. `md`, `json` and `sarif` write that

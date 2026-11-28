@@ -35,6 +35,7 @@ import {
   resolveWithinBase,
   runStatus,
   scanProject,
+  scanTimeCounts,
   searchCode,
   validateAuditRoot,
   writeRunState,
@@ -668,7 +669,12 @@ class ToolError extends Error {
 function statusTool(base: ServerBase, args: Record<string, unknown>): unknown {
   const blind = args.blind === true;
   const result = statusResult(base, args) as Record<string, unknown>;
-  return blind ? { ...(blindView(result) as Record<string, unknown>), blind: true } : result;
+  if (!blind) return result;
+  const runId = String(args.run_id ?? "");
+  // Counts as the scan left them: verdict-adjusted ones would tell a blind
+  // reviewer what was decided.
+  const counts = pendingRunDir(runId) ? {} : scanTimeCounts(runId, resolveOptions(base, runId, args));
+  return fitSummary({ ...(blindView(result) as Record<string, unknown>), ...(blindView(counts) as Record<string, unknown>), blind: true });
 }
 
 function statusResult(base: ServerBase, args: Record<string, unknown>): unknown {
@@ -831,9 +837,8 @@ function verdictTool(base: ServerBase, args: Record<string, unknown>): unknown {
   const role = args.role === undefined ? "primary" : String(args.role);
   if (role === "human") {
     throw new ToolError(
-      'role "human" is a person\'s decision and is accepted only from the command line: ' +
-        "code-audit verdict <run_id> <finding> --role human --replace --reviewer <name> --status <status> --rationale <text>. " +
-        "Do not record it yourself; give the user that command",
+      'role "human" is a person\'s decision, refused over MCP: a person can record this decision with the code-audit CLI ' +
+        "(see `code-audit verdict --help`). Do not record it yourself, and do not run the CLI for the user",
       "HUMAN_DECISION_CLI_ONLY",
     );
   }
@@ -951,7 +956,12 @@ function reportTool(base: ServerBase, args: Record<string, unknown>): unknown {
       text: JSON.stringify(inner),
     });
     const parsed = JSON.parse(report.text) as Record<string, unknown>;
-    const inner = blind ? (blindView(parsed) as Record<string, unknown>) : parsed;
+    const inner = blind
+      ? ({
+          ...(blindView(parsed) as Record<string, unknown>),
+          ...(blindView(scanTimeCounts(runId, lookupOptions(base, runId, args))) as Record<string, unknown>),
+        } as Record<string, unknown>)
+      : parsed;
     text = JSON.stringify(fitSummary(inner, envelope, MAX_RESPONSE_BYTES - 300));
   }
   if (blind) {

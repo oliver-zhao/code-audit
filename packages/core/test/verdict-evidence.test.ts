@@ -32,9 +32,15 @@ import {
   runStatus,
   textLineCount,
   verdictsDisagree,
+  withRunLock,
   type RecordVerdictInput,
 } from "../src/runstore.js";
 import { scanProject } from "../src/scan.js";
+import {
+  AGENT_ENVIRONMENT_VARIABLES,
+  confirmHumanDecision,
+  type HumanGateInput,
+} from "../../cli/src/humanGate.js";
 import { CLI, REPO_ROOT, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("verdict-evidence");
@@ -447,7 +453,7 @@ describe("independent review", () => {
     expect(resolved.independentlyReviewed).toBe(true);
     expect(resolved.disputed).toBe(true);
     md = renderRunReport(ctx.runId, "md", ctx.options).text;
-    expect(md).toMatch(new RegExp(`\\| ${finding.id} \\|[^\\n]*\\(independently reviewed: subagent\\)[^\\n]*was disputed: sub said confirmed`));
+    expect(md).toMatch(new RegExp(`\\| ${finding.id} \\|[^\\n]*\\(independently reviewed by sub-2: subagent\\)[^\\n]*was disputed: sub said confirmed`));
     const history = ctx.current(finding)?.review?.history ?? [];
     expect(history.map((item) => `${item.role}:${item.reviewer}:${item.status}:${item.superseded}:${item.disagreed}`)).toEqual([
       "primary:p:false_positive:true:false",
@@ -762,7 +768,9 @@ describe("round 2: labels, replacing a decision, human decisions, the lock", () 
     // Not from an agent: the MCP server never passes the human access.
     const agent = ctx.refused(finding, { status: "false_positive", rationale: SAFE, reviewer: "alice", role: "human", replace: true });
     expect(agent.code).toBe("HUMAN_DECISION_CLI_ONLY");
-    expect(agent.message).toContain("--role human --replace");
+    // It points at the CLI help without spelling out the command.
+    expect(agent.message).toContain("see `code-audit verdict --help`");
+    expect(agent.message).not.toContain("--role human");
     const refused = (input: RecordVerdictInput): RunStoreError => {
       try {
         human(finding, input);
@@ -868,12 +876,33 @@ describe("round 2: the CLI records structured, independent and human verdicts (L
     expect(loadRun(runId, { cwd: project }).verdicts[first.fingerprint]?.status).toBe("needs_review");
     // Another agent label is refused without --replace; a person settles it.
     result = cli("verdict", runId, first.id, "--status", "confirmed", "--rationale", "x", "--reviewer", "q", "--trace", "python/app.py:2:source", "--trace", "python/app.py:2:sink");
-    expect(result.stderr).toMatch(/PRIMARY_REPLACE_REFUSED|would replace it/);
-    result = cli(
+    expect(result.stderr).toMatch(/would replace it/);
+    // L-r3: the CLI message names the CLI flags.
+    expect(result.stderr).toContain("call again with --replace");
+    expect(result.stderr).toContain("--role independent --independence");
+    expect(result.stderr).not.toContain("replace: true");
+    // M-r2: not from a pipe, and not from an agent's shell.
+    const humanArgs = [
       "verdict", runId, first.id, "--status", "false_positive", "--rationale", SAFE, "--reviewer", "alice",
       "--role", "human", "--replace", "--control", "python/app.py:3:constant",
+    ];
+    const cleanEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !AGENT_ENVIRONMENT_VARIABLES.includes(name as never)),
     );
-    expect(result.status, result.stderr).toBe(0);
+    result = spawnSync(process.execPath, [CLI, ...humanArgs], { cwd: project, encoding: "utf8", env: cleanEnv });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/HUMAN_DECISION_REFUSED: --role human needs an interactive terminal/);
+    result = spawnSync(process.execPath, [CLI, ...humanArgs], { cwd: project, encoding: "utf8", env: { ...cleanEnv, CLAUDECODE: "1" } });
+    expect(result.stderr).toMatch(/HUMAN_DECISION_REFUSED: --role human is refused in a shell run by a coding agent \(CLAUDECODE set\)/);
+    expect(loadRun(runId, { cwd: project }).verdicts[first.fingerprint]?.decidedByPerson).toBeUndefined();
+    // What the CLI records once the person confirmed at a terminal.
+    recordVerdict(
+      runId,
+      first.id,
+      { status: "false_positive", rationale: SAFE, reviewer: "alice", role: "human", replace: true, control: { file: APP, line: 3, note: "constant" } },
+      { cwd: project },
+      { human: true, cli: true },
+    );
     const current = loadRun(runId, { cwd: project }).verdicts[first.fingerprint];
     expect(current?.status).toBe("false_positive");
     expect(current?.decidedByPerson?.reviewer).toBe("alice");
@@ -884,5 +913,140 @@ describe("round 2: the CLI records structured, independent and human verdicts (L
     result = cli("verdict", runId, second.id, "--status", "proof_gap", "--rationale", "x", "--role", "boss");
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/--role/);
+  });
+});
+
+describe("round 3: the human gate, the lock race, labels in the report", () => {
+  const gate = (overrides: Partial<HumanGateInput>): string | undefined => {
+    let prompt = "";
+    try {
+      confirmHumanDecision({
+        finding: "AUD-2026-0003",
+        env: {},
+        stdinIsTTY: true,
+        stdoutIsTTY: true,
+        write: (text) => {
+          prompt += text;
+        },
+        readLine: () => "AUD-2026-0003",
+        ...overrides,
+      });
+    } catch (error) {
+      return (error as Error).message;
+    }
+    expect(prompt).toContain("Type AUD-2026-0003 to confirm");
+    return undefined;
+  };
+
+  it("lets a person at a terminal confirm by typing the finding id, and nobody else (M-r2)", () => {
+    expect(gate({})).toBeUndefined();
+    expect(gate({ readLine: () => " AUD-2026-0003 " })).toBeUndefined();
+    expect(gate({ readLine: () => "yes" })).toMatch(/finding id was not typed back/);
+    expect(gate({ readLine: () => undefined })).toMatch(/finding id was not typed back/);
+    expect(gate({ stdinIsTTY: false })).toMatch(/needs an interactive terminal/);
+    expect(gate({ stdoutIsTTY: false })).toMatch(/needs an interactive terminal/);
+    for (const name of AGENT_ENVIRONMENT_VARIABLES) {
+      // Set, even empty, is enough; there is no override.
+      expect(gate({ env: { [name]: "" } }), name).toMatch(new RegExp(`coding agent \\(${name} set\\)`));
+      expect(gate({ env: { [name]: "1", CODE_AUDIT_I_AM_HUMAN: "1" } }), name).toMatch(/coding agent/);
+    }
+    expect(AGENT_ENVIRONMENT_VARIABLES).toEqual([
+      "CLAUDECODE",
+      "CLAUDE_CODE_ENTRYPOINT",
+      "CODEX_SANDBOX",
+      "CODEX_SANDBOX_NETWORK_DISABLED",
+      "OPENCODE",
+      "OPENCODE_BIN_PATH",
+      "AI_AGENT",
+      "DSH_AGENT",
+    ]);
+  });
+
+  it("keeps every verdict when four processes race for a stale lock, 40 rounds (M-r1)", async () => {
+    const ctx = await freshRun("stale-race");
+    const targets = [...ctx.pick("high"), ...ctx.pick("critical"), ...ctx.pick("medium")].slice(0, 4);
+    expect(targets).toHaveLength(4);
+    const core = path.join(REPO_ROOT, "packages/core/dist/index.js");
+    const script = path.join(temp, "stale-writer.mjs");
+    fs.writeFileSync(
+      script,
+      [
+        `const { recordVerdict } = await import(${JSON.stringify(core)});`,
+        "const [runId, cwd, finding, tag] = process.argv.slice(2);",
+        "recordVerdict(runId, finding, { status: 'needs_review', rationale: tag }, { cwd });",
+      ].join("\n"),
+    );
+    const lock = path.join(ctx.runDir, "verdicts.json.lock");
+    const write = (finding: Finding, tag: string) =>
+      new Promise<number>((resolve) => {
+        const child = spawn(process.execPath, [script, ctx.runId, ctx.project, finding.id, tag], {
+          stdio: ["ignore", "ignore", "inherit"],
+        });
+        child.on("exit", (code) => resolve(code ?? 1));
+      });
+    const ROUNDS = 40;
+    for (let round = 0; round < ROUNDS; round += 1) {
+      fs.writeFileSync(lock, "1\n");
+      const old = new Date(Date.now() - 10 * 60_000);
+      fs.utimesSync(lock, old, old);
+      const codes = await Promise.all(targets.map((finding, index) => write(finding, `r${round}w${index}`)));
+      expect(codes, `round ${round}`).toEqual([0, 0, 0, 0]);
+    }
+    const entries = ctx.entries();
+    expect(entries).toHaveLength(ROUNDS * 4);
+    for (let round = 0; round < ROUNDS; round += 1) {
+      for (let index = 0; index < 4; index += 1) {
+        expect(entries.filter((entry) => entry.rationale === `r${round}w${index}`), `r${round}w${index}`).toHaveLength(1);
+      }
+    }
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readdirSync(ctx.runDir).filter((name) => name.includes(".lock"))).toEqual([]);
+  }, 300_000);
+
+  it("refreshes a held lock so a slow write is not judged stale (L-r4)", () => {
+    const dir = fs.mkdtempSync(path.join(temp, "lockdir-"));
+    const lock = path.join(dir, "verdicts.json.lock");
+    const saved = process.env.CODE_AUDIT_LOCK_REFRESH_MS;
+    process.env.CODE_AUDIT_LOCK_REFRESH_MS = "50";
+    try {
+      withRunLock(dir, () => {
+        const old = new Date(Date.now() - 10 * 60_000);
+        fs.utimesSync(lock, old, old);
+        // Block this thread; the heartbeat runs in a worker thread.
+        const until = Date.now() + 1500;
+        while (Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+        expect(Date.now() - fs.statSync(lock).mtimeMs).toBeLessThan(1000);
+      });
+    } finally {
+      if (saved === undefined) delete process.env.CODE_AUDIT_LOCK_REFRESH_MS;
+      else process.env.CODE_AUDIT_LOCK_REFRESH_MS = saved;
+    }
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it("names the independent reviewer, marks non-ASCII labels and puts a human override on the cover (L-r2, M-r2)", async () => {
+    const ctx = await freshRun("labels");
+    const [one, two] = ctx.pick("high") as [Finding, Finding];
+    ctx.verdict(one, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    // A Cyrillic er looks like a Latin p.
+    ctx.verdict(one, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "р", ...SUB });
+    ctx.verdict(two, { status: "confirmed", rationale: "real", reviewer: "p", trace: [SOURCE, SINK] });
+    ctx.verdict(two, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "sub", ...SUB });
+    recordVerdict(
+      ctx.runId,
+      two.id,
+      { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "alice", role: "human", replace: true },
+      ctx.options,
+      { human: true, cli: true },
+    );
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toMatch(new RegExp(`\\| ${one.id} \\|[^\\n]*\\(independently reviewed by \\? \\[non-ASCII label\\]: subagent\\)`));
+    expect(md).toContain(
+      `> **1 dispute(s) between reviewers were settled by a person's decision recorded with the CLI (--role human): ${two.id}.`,
+    );
+    // L-r3: from MCP the message names replace: true.
+    const error = ctx.refused(one, { status: "confirmed", rationale: "x", reviewer: "q", trace: [SOURCE, SINK] });
+    expect(error.message).toContain("call again with replace: true");
+    expect(error.message).not.toContain("--replace");
   });
 });

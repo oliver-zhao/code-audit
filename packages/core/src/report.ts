@@ -142,6 +142,9 @@ const EN = {
   disputeSaid: "said",
   disputeDecision: "decision",
   decidedByPerson: "decided by a person ({label})",
+  independentBy: "by {label}",
+  humanOverride:
+    "{n} dispute(s) between reviewers were settled by a person's decision recorded with the CLI (--role human): {ids}. The dissent is listed under \u201cReview coverage\u201d; check each one.",
   traceLabel: "Trace",
   controlLabel: "Control",
   missingLabel: "Missing",
@@ -403,6 +406,9 @@ const ZH: Labels = {
   disputeSaid: "认为",
   disputeDecision: "裁定",
   decidedByPerson: "由人工裁定（{label}）",
+  independentBy: "（{label}）",
+  humanOverride:
+    "{n} 处复核者之间的争议由人工裁定（CLI --role human）解决：{ids}。反对意见列在“复核覆盖”中，请逐条核对。",
   traceLabel: "调用链",
   controlLabel: "防护点",
   missingLabel: "缺少",
@@ -2409,13 +2415,29 @@ function independentText(review: Finding["review"], l: Labels): string {
   const person = personText(review, l);
   if (!review?.independentlyReviewed) return person ? ` (${person})` : "";
   const how = review.independentReview?.independence;
-  return ` (${l.independentlyReviewed}${how ? `: ${escapeMarkdown(how, 20)}` : ""}${person ? `; ${person}` : ""})`;
+  const by = review.independentReview?.reviewer;
+  return (
+    ` (${l.independentlyReviewed}` +
+    (by ? ` ${fmt(l.independentBy, { label: labelText(by) })}` : "") +
+    `${how ? `: ${escapeMarkdown(how, 20)}` : ""}${person ? `; ${person}` : ""})`
+  );
+}
+
+/**
+ * A reviewer label for report.md: plain characters only (others become
+ * `?`), and marked when the label had any, so a look-alike label (a
+ * Cyrillic `р` for a Latin `p`) is visible to the reader.
+ */
+function labelText(label: string): string {
+  const shown = reviewText(reviewerLabel(label), 60);
+  // eslint-disable-next-line no-control-regex
+  return /[^\x00-\x7f]/.test(label) ? `${shown} [non-ASCII label]` : shown;
 }
 
 /** "decided by a person (<label>)" for a human decision. */
 function personText(review: Finding["review"], l: Labels): string {
   const person = review?.decidedByPerson;
-  return person ? fmt(l.decidedByPerson, { label: reviewText(reviewerLabel(person.reviewer), 60) }) : "";
+  return person ? fmt(l.decidedByPerson, { label: labelText(person.reviewer) }) : "";
 }
 
 /** The dissent of a disputed verdict: who said what, and whether it is still open. */
@@ -2423,7 +2445,7 @@ function disputeText(review: NonNullable<Finding["review"]>, l: Labels): string 
   const dissent = review.dissent;
   if (!dissent) return "";
   return (
-    `${review.disputeOpen ? l.disputeOpen : l.disputeResolved}: ${reviewText(reviewerLabel(dissent.reviewer), 60)} ` +
+    `${review.disputeOpen ? l.disputeOpen : l.disputeResolved}: ${labelText(dissent.reviewer)} ` +
     `${l.disputeSaid} ${escapeMarkdown(dissent.status, 20)}` +
     (dissent.independence ? ` (${escapeMarkdown(dissent.independence, 20)})` : "") +
     ` — ${reviewText(dissent.rationale, 160)}` +
@@ -2539,17 +2561,32 @@ export function renderMarkdown(input: ReportContext): string {
   // Only a run someone has started to review gets the banner; a plain scan
   // already says "Candidate results, not reviewed" and keeps its wording.
   const reviewStarted = triage.findings.reviewed + triage.hotspots.reviewed > 0;
+  const coverLines: string[] = [];
   if (reviewStarted && unreviewedRecords > 0) {
-    lines.push(
+    coverLines.push(
       `> **${fmt(l.reviewIncomplete, {
         findings: triage.findings.unreviewed,
         findingsTotal: triage.findings.total,
         hotspots: triage.hotspots.unreviewed,
         hotspotsTotal: triage.hotspots.total,
       })}**`,
-      "",
     );
   }
+  // A person's decision overrode a dispute between reviewers: say so on the
+  // cover, next to any dismissal warning, with the findings it concerns.
+  const overridden = [...context.findings, ...allHotspots].filter(
+    (finding) => finding.review?.decidedByPerson && finding.review.disputed,
+  );
+  if (overridden.length > 0) {
+    const ids = overridden.slice(0, 5).map((finding) => escapeMarkdown(finding.id));
+    coverLines.push(
+      `> **${fmt(l.humanOverride, {
+        n: overridden.length,
+        ids: ids.join(", ") + (overridden.length > ids.length ? `, ${fmt(l.moreSeeJson, { n: overridden.length - ids.length })}` : ""),
+      })}**`,
+    );
+  }
+  if (coverLines.length > 0) lines.push(coverLines.join("  \n"), "");
   const noneText =
     reviewStarted && unreviewedRecords > 0 ? fmt(l.noneUnreviewed, { n: unreviewedRecords }) : l.none;
   const noneDependencies = reviewStarted && unreviewedRecords > 0 ? l.noneDependencies : l.none;
@@ -2725,7 +2762,8 @@ export function renderMarkdown(input: ReportContext): string {
       triage.open + triage.independentlyReviewed > 0
         ? ` — ${fmt(l.triageOpen, { open: triage.open, independent: triage.independentlyReviewed })}`
         : "";
-    heading(3, `${l.triageHeading}${openText}`);
+    // No blank line after this heading: the list follows directly.
+    lines.push(`### ${l.triageHeading}${openText}`);
     const kindParts: string[] = [];
     for (const [kind, counts] of [
       [l.triageFindings, triage.findings],
@@ -2752,6 +2790,7 @@ export function renderMarkdown(input: ReportContext): string {
     }
     // Both kinds on one line: at most four lines whatever the review holds.
     lines.push(`- ${kindParts.join("; ")}`);
+    const openParts: string[] = [];
     if (triage.proofGaps.length > 0) {
       const shown = triage.proofGaps.slice(0, PROOF_GAPS_SHOWN).map(
         (gap) =>
@@ -2759,8 +2798,8 @@ export function renderMarkdown(input: ReportContext): string {
           (gap.missing ? reviewText(gap.missing, PROOF_GAP_TEXT_MAX) : l.proofGapNotStated),
       );
       const more = triage.proofGaps.length - shown.length;
-      lines.push(
-        `- **${l.proofGapsHeading} (${triage.proofGaps.length})** (${l.proofGapsNote}): ${shown.join("; ")}` +
+      openParts.push(
+        `**${l.proofGapsHeading} (${triage.proofGaps.length})** (${l.proofGapsNote}): ${shown.join("; ")}` +
           (more > 0 ? `; ${fmt(l.moreSeeJson, { n: more })}` : ""),
       );
     }
@@ -2774,11 +2813,13 @@ export function renderMarkdown(input: ReportContext): string {
         );
       });
       const more = disputed.length - shown.length;
-      lines.push(
-        `- **${l.disputesHeading} (${disputed.length})**: ${shown.join("; ")}` +
+      openParts.push(
+        `**${l.disputesHeading} (${disputed.length})**: ${shown.join("; ")}` +
           (more > 0 ? `; ${fmt(l.moreSeeJson, { n: more })}` : ""),
       );
     }
+    // Open proof gaps and disputed verdicts share one line.
+    if (openParts.length > 0) lines.push(`- ${openParts.join(" · ")}`);
     lines.push("");
   }
 
