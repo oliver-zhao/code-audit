@@ -233,9 +233,9 @@ gitleaks and is skipped without it.
 
 | Where | What |
 |---|---|
-| Finding field `history` | `{ commit, date, stillPresent, occurrences }`: the earliest commit (by date) that added the secret, its date (ISO 8601), whether the secret is still in the working tree, and how many history results were folded into the finding. Never the author or the commit message. Also in SARIF `properties.history` and as a "Git history" line under each finding in `report.md`. |
+| Finding field `history` | `{ commit, date, stillPresent, occurrences }`: the earliest commit (in `git rev-list --topo-order` order) that added the secret, its date (ISO 8601), whether the secret is still in the working tree, and how many history results were folded into the finding. Never the author or the commit message. Also in SARIF `properties.history` and as a "Git history" line under each finding in `report.md`. |
 | History-only findings | `provenance.engine: "gitleaks-history"`, the rule id `gitleaks-<rule>` of the working-tree scan and its severity and confidence; one per rule, file and secret. Their remediation: rotate the credential, because deleting the file or rewriting the history is not enough. |
-| A secret that is still there | Reported once, as the current finding, with `history.stillPresent: true`: the working-tree Gitleaks result for the same rule and value, or else the current secret finding on the line where the value is now. |
+| A secret that is still there | Reported once, as the current finding, with `history.stillPresent: true` and a "rotate it" sentence added to its remediation: the working-tree Gitleaks result for the same rule and value, or else the current secret finding on the line where the value is now. |
 | `coverage.json` `history` | `status` (`ok`, `partial` when the commit or time limit was hit, `skipped` without gitleaks, `failed`), `range` (null for all refs), `detail`, `commits`, `maxCommits`, `results`, `findings` (history-only findings) and `annotated` (current findings that got a `history`). Also an engine `gitleaks-history` in `engines`, and `args.history` in `run.json`. |
 
 History findings count toward the exit code like any other finding. With

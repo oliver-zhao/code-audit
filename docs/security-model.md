@@ -298,78 +298,137 @@ skipped (`coverage.json`: `history.status: "skipped"`), not an error.
 The range is checked before anything runs: nothing, or `<ref>`,
 `<ref>..<ref>`, `<ref>...<ref>` where a ref consists of `[A-Za-z0-9._/-]`,
 does not start with `-` or `.` and follows git's ref-name rules (`HEAD~1`,
-`a;b`, `--output=x` are refused with exit code 2). It reaches git and
-Gitleaks as one argument, never through a shell.
+`a;b`, `--output=x` are refused with exit code 2). It reaches git as one
+argument, never through a shell.
+
+**No git process of the history scan can fetch or swap objects.** Every one
+of them - `rev-parse` in the audited repository, the clone, the commands in
+the copy and the git that Gitleaks starts - runs with
+`GIT_NO_LAZY_FETCH=1`, `GIT_NO_REPLACE_OBJECTS=1` (and `--no-lazy-fetch
+--no-replace-objects` where code-audit starts git), the `--since` hardening
+above, and `protocol.allow=never` plus `protocol.<name>.allow=never` for
+`ext`, `fd`, `file`, `ssh`, `git`, `http` and `https` - by name, because a
+`protocol.ext.allow=always` in the audited repository's own configuration
+is more specific than `protocol.allow` and would otherwise win. Without
+this, a partial clone whose promisor remote is `ext::<command>` runs that
+command as soon as git looks up a missing object (tested). The one exception
+is `protocol.file.allow=always` for the mirror clone itself.
 
 Gitleaks' git mode runs `git log -p` in the repository it is given, so it is
 never given the audited repository:
 
-1. `git rev-parse` (with the `--since` hardening above) finds the top level
-   of the repository and checks that the refs of the range exist.
+1. `git rev-parse` finds the top level of the repository and resolves each
+   ref of the range to a commit id. The copy is scanned with those ids,
+   never with names; an id that the copy does not have (a pseudo-ref such as
+   `ORIG_HEAD`, or a ref outside `refs/`) makes the history scan `failed`.
 2. `git clone --mirror --no-local --no-hardlinks --template=` copies every
    ref and object into a new private temporary directory (mode 0700). The
    copy's configuration is written by git: it has none of the original's
    filter, textconv or diff drivers, fsmonitor, hooks path, aliases or
    attributes file, and `--template=` copies no hooks. `--no-local` makes
    git read the objects through `upload-pack` instead of copying the object
-   directory, whose files a symbolic link could point anywhere. The
-   hardening's `protocol.allow=never` is relaxed to
-   `protocol.file.allow=always` for this one clone (the local transport is
-   how `--no-local` reads a path). `upload-pack` runs for the audited
-   repository with that repository's configuration; git ignores
-   `uploadpack.packObjectsHook` there, and code-audit starts it as
-   `git -c core.fsmonitor=false -c core.hooksPath=/dev/null
-   -c uploadpack.hideRefs=!refs -c transfer.hideRefs=!refs upload-pack`
-   (a fixed string), so a `hideRefs` entry of the repository cannot keep
-   commits out of the scan. `--mirror` copies every ref, including
-   `refs/remotes/`, `refs/stash` and other namespaces.
-3. Gitleaks runs on the copy: `gitleaks git <copy> --log-opts
-   "--full-history --max-count=N <range|--all>" --report-format json
-   --report-path <tmp>/report.json --redact --no-banner --exit-code 0
+   directory, whose files a symbolic link could point anywhere.
+   `upload-pack` runs for the audited repository with that repository's
+   configuration, and the local transport drops the clone's `-c` options and
+   `GIT_NO_*` variables on the way, so code-audit starts it as the fixed
+   string `git --no-lazy-fetch --no-replace-objects -c core.fsmonitor=false
+   -c core.hooksPath=/dev/null -c uploadpack.hideRefs=!refs
+   -c transfer.hideRefs=!refs -c protocol.allow=never -c
+   protocol.<name>.allow=never ... upload-pack`: a `hideRefs` entry of the
+   repository cannot keep commits out of the scan. git ignores
+   `uploadpack.packObjectsHook` in repository configuration. `--mirror`
+   copies every ref, including `refs/remotes/`, `refs/stash` and other
+   namespaces.
+3. Replace refs (`refs/replace/*`) are deleted from the copy and
+   `info/grafts` is removed, so that `git replace` cannot swap the commit
+   that added a secret for a clean one (tested; the run warns when the
+   repository had replace refs).
+4. `git rev-list --count` and `git rev-list --topo-order` give the number of
+   commits and their order. A failure is `failed`, never `ok`.
+5. Gitleaks runs on the copy: `gitleaks git <copy> --log-opts
+   "--full-history --max-count=N <ids|--all>" --report-format json
+   --report-path <tmp>/report.json --no-banner --no-color --exit-code 0
    --gitleaks-ignore-path <empty dir>`, with `GIT_CONFIG_NOSYSTEM=1`,
-   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and, through
+   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`,
+   `GIT_NO_LAZY_FETCH=1`, `GIT_NO_REPLACE_OBJECTS=1` and, through
    `GIT_CONFIG_COUNT`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
    `core.pager=cat`, `core.attributesFile=/dev/null`, `diff.external=`,
-   `log.showSignature=false` and `protocol.allow=never` for the git it
-   starts. With `--untrusted` it also gets `--ignore-gitleaks-allow` and no
-   configuration (the copy has no working tree, so Gitleaks uses its default
-   rules); otherwise the root's own `.gitleaks.toml` and `.gitleaksignore`
-   (regular files inside the root) are passed, as the working-tree scan
-   reads them.
-4. For each result the file at that commit is read from the copy with
-   `git cat-file blob` (which runs no filter) to recover the value in
-   memory: it decides deduplication, the placeholder check and
-   `stillPresent`, and is discarded. At most 2,000 files are read back.
-5. The temporary directory is removed when the scan ends, also on error or
-   timeout.
+   `log.showSignature=false` and the protocol settings above. With
+   `--untrusted` it also gets `--ignore-gitleaks-allow` and no configuration
+   (the copy has no working tree, so Gitleaks uses its default rules);
+   otherwise the root's own `.gitleaks.toml` and `.gitleaksignore` (regular
+   files inside the root) are passed, as the working-tree scan reads them.
+   Gitleaks exits 0 with `--exit-code 0` even when its `git log` failed; an
+   error-level line in its output therefore makes the history scan `failed`.
+6. **Gitleaks runs without `--redact`.** Its report, inside the private
+   temporary directory, carries each secret: code-audit reads it into
+   memory, deletes the report file at once, and uses the values only to
+   hash, deduplicate, recognise placeholders and decide `stillPresent`.
+   The values are never written anywhere else, never quoted in a warning
+   (a JSON parse error is reported without the parser's message, which can
+   quote the input), and evidence is the first line of Gitleaks' match with
+   every string literal and every occurrence of the secret (and of each of
+   its lines) masked. Nothing is read back from the copy, so deduplication
+   has no per-file budget.
+7. The temporary directory is removed when the scan ends, also on error and
+   timeout. While a history scan runs, handlers for `SIGINT`, `SIGTERM`,
+   `SIGHUP` and process exit kill Gitleaks and the git processes it was
+   started with and remove the directory synchronously; then the signal's
+   default action proceeds (the handlers are removed when no history scan
+   runs). A `SIGKILL` of the code-audit process cannot be handled: the
+   directory (mode 0700) is left in the system temporary directory.
 
-Limits: `--max-count=10000` (`CODE_AUDIT_HISTORY_MAX_COMMITS`) and five
-minutes for the whole history scan; when either is hit the history status is
-`partial` and the run says why.
+Limits: `--max-count=10000` (`CODE_AUDIT_HISTORY_MAX_COMMITS`), one
+five-minute budget for clone, `rev-list`, Gitleaks and fingerprinting, at
+most 5,000 results and a 64 MB report. When a limit is hit the history
+status is `partial`, the run says why, and the report cover and the CLI
+print a `WARNING` line (also for `failed`).
 
 Output. A history result is a finding of the Gitleaks rule
 (`gitleaks-<rule>`, same severity and confidence mapping as the working-tree
 scan) with `provenance.engine: "gitleaks-history"` and `history: { commit,
-date, stillPresent, occurrences }`: the earliest commit (by date) that added
-it, and how many results were folded into it. One finding per rule, file
-and secret. A secret that the current scan reports is not reported twice:
-the current finding gets the `history` instead (`stillPresent: true`) when
-the working-tree Gitleaks scan reports the same rule for the same value in
-the same file, or else when the value is still in that file on a line where
-any engine reports a secret. `stillPresent` is also true for a history
-finding whose value the file still contains although no current finding
-covers it (the working-tree scan was not selected, or the value is
-allowlisted there). Author names, e-mail addresses
-and commit messages from the report are never stored or shown. The secret
-never leaves memory: its SHA-256 is used to recognise it, and the
-fingerprint of a history finding is `sha256(rule, file, scrypt(sha256
-(secret)))`, so a fingerprint in a report or baseline cannot be used to test
-guesses of a short password quickly. The remediation says to rotate the
-credential: deleting the file or rewriting the history is not enough.
+date, stillPresent, occurrences }`: the earliest commit that added it - the
+oldest in `git rev-list --topo-order` order, by date only for a commit not
+in that list - and how many results were folded into it. One finding per
+rule, file and secret. A secret that the current scan reports is not
+reported twice: the current finding gets the `history` instead
+(`stillPresent: true`), and its remediation gets the sentence "This secret
+is also in the git history: rotate it; deleting the file or rewriting the
+history is not enough." (in Chinese in a Chinese report), when the
+working-tree Gitleaks scan reports the same rule for the same value in the
+same file, or else when the value is still in that file on a line where any
+engine reports a secret. Author names, e-mail addresses and commit messages
+from the report are never stored or shown. The fingerprint of a history
+finding is `sha256(rule, file, scrypt(sha256(secret)))` with scrypt `N=2^9,
+r=8, p=1` (salt `code-audit-history-v2`, rule and file; about 0.7 ms of CPU
+and 512 KiB per secret, roughly 2,000 times one SHA-256), computed two at a
+time inside the time budget: 5,000 distinct secrets take under 5 s of CPU,
+and a fingerprint in a report or baseline cannot be used to test guesses of
+a short password at hash speed. The remediation of a history finding says
+to rotate the credential: deleting the file or rewriting the history is not
+enough.
 
-Not covered: submodules (their history is in another repository), objects
-reachable from no ref (reflog, dangling commits), and the alternates of the
-audited repository are read as the repository's own objects.
+Documented limits:
+
+- Submodules (their history is in another repository) and objects reachable
+  from no ref (reflog, dangling commits) are not scanned.
+- A `.git` file or symbolic link that points at another repository on the
+  machine, or `objects/info/alternates`, makes `upload-pack` serve that
+  repository's objects: its secrets are reported (masked) as history of the
+  audited root. The same holds for `--since`. It is not refused, because
+  linked worktrees legitimately keep their git directory outside the root.
+- `--history` on a directory that is not in a git work tree, or with an
+  unknown ref, is an error (exit code 2, like `--since`); without gitleaks
+  the history scan is skipped instead. A `failed` or `partial` history scan
+  is reported (coverage, warnings, `WARNING` line) but does not change the
+  exit code.
+- `stillPresent` is broader than "the current scan reports the same rule for
+  the same value": it is also true for a history finding whose value the
+  file in the working tree still contains although no current finding
+  covers it (the working-tree Gitleaks scan was not selected, or the value
+  is allowlisted there). It is never false for a value still in the file.
+- Commit dates come from the commits and can be forged; the order of
+  `rev-list --topo-order` decides first.
 
 ## Run directories are not trusted
 

@@ -79,6 +79,7 @@ import {
 import { listChangedFiles } from "./git.js";
 import {
   HISTORY_ENGINE,
+  withHistoryNote,
   crossEngineDedupe,
   defaultOpengrepRulesDir,
   findTool,
@@ -852,10 +853,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           for (const index of indexes) {
             const current = externalSastSecrets[index];
             if (!current) continue;
-            externalSastSecrets[index] = {
-              ...current,
-              history: { ...candidate.history, stillPresent: true },
-            };
+            externalSastSecrets[index] = withHistoryNote(current, candidate.history);
           }
           annotated += 1;
           continue;
@@ -1007,7 +1005,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
             return finding;
           }
           matched = true;
-          return { ...finding, history: { ...candidate.history, stillPresent: true } };
+          return withHistoryNote(finding, candidate.history);
         });
       }
       if (matched) historyLineMatches += 1;

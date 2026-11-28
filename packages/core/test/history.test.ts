@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_HISTORY_MAX_COMMITS,
@@ -27,7 +27,10 @@ import {
   FAKE_KEY_2,
   GIT_TEST_ENV,
   commitAll,
+  git,
+  makeExtPromisorRepository,
   makeHostileRepository as makeHostile,
+  makeReplacedRepository,
   newRepo as newRepoIn,
   write,
 } from "./historyRepo.js";
@@ -115,23 +118,18 @@ describe("--history range validation", () => {
 });
 
 describe("history report parsing and deduplication (recorded report)", () => {
+  // The recorded report has placeholders where Gitleaks (run without
+  // --redact) puts the secret; the synthetic keys are filled in here.
   const document = JSON.parse(
-    fs.readFileSync(path.join(RECORDED, "gitleaks-history.json"), "utf8"),
+    fs
+      .readFileSync(path.join(RECORDED, "gitleaks-history.json"), "utf8")
+      .replaceAll("__FAKE_KEY_1__", FAKE_KEY_1)
+      .replaceAll("__FAKE_KEY_2__", FAKE_KEY_2),
   ) as unknown;
-  const blobs: Record<string, string> = {
-    "1111111111111111111111111111111111111111:app/config.py": `x = 1\naws_key = "${FAKE_KEY_1}"\n`,
-    "3333333333333333333333333333333333333333:app/config.py": `x = 1\naws_key = "${FAKE_KEY_1}"\n`,
-    "2222222222222222222222222222222222222222:app/config.py": `a\nb\nc\nd\naws_key = "${FAKE_KEY_1}"\n`,
-    "2222222222222222222222222222222222222222:app/other.py": `k = "${FAKE_KEY_2}"\n`,
-  };
   const parse = () =>
     historyCandidatesFromReport(document, {
       prefix: "app/",
       version: "8.30.1",
-      readBlob: async (commit, repoPath) => {
-        const text = blobs[`${commit}:${repoPath}`];
-        return text === undefined ? undefined : text.split("\n");
-      },
       readWorkingFile: (file) => (file === "other.py" ? `k = "${FAKE_KEY_2}"\n` : undefined),
     });
 
@@ -166,8 +164,8 @@ describe("history report parsing and deduplication (recorded report)", () => {
   });
 
   it("never carries the secret, its hash, the author or the commit message", async () => {
-    const { candidates } = await parse();
-    const text = JSON.stringify(candidates.map((candidate) => candidate.finding));
+    const { candidates, warnings } = await parse();
+    const text = JSON.stringify([candidates.map((candidate) => candidate.finding), warnings]);
     expect(text).not.toContain(FAKE_KEY_1);
     expect(text).not.toContain(FAKE_KEY_2);
     expect(text).not.toContain("Recorded Author");
@@ -176,9 +174,9 @@ describe("history report parsing and deduplication (recorded report)", () => {
     const crypto = await import("node:crypto");
     const hash = crypto.createHash("sha256").update(FAKE_KEY_1).digest("hex");
     expect(text).not.toContain(hash);
-    // The evidence is the line of that commit, masked.
+    // The evidence is the match, masked.
     const config = candidates.find((candidate) => candidate.finding.file === "config.py");
-    expect(config?.finding.evidence).toMatch(/^aws_key = "AKIA\*+BN"$/);
+    expect(config?.finding.evidence).toMatch(/^AKIA\*+BN$/);
   });
 
   it("uses a stable fingerprint of rule, file and secret", async () => {
@@ -196,24 +194,24 @@ describe("history report parsing and deduplication (recorded report)", () => {
     expect(config?.finding.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("keeps results apart when the file cannot be read back", async () => {
-    const { candidates } = await historyCandidatesFromReport(document, {
+  it("keeps results apart only when the report carries no value", async () => {
+    const redacted = (document as Array<Record<string, unknown>>).map((entry) => ({
+      ...entry,
+      Secret: "REDACTED",
+      Match: "REDACTED",
+    }));
+    const { candidates, warnings } = await historyCandidatesFromReport(redacted, {
       prefix: "app/",
-      readBlob: async () => undefined,
       readWorkingFile: () => undefined,
     });
-    // Without the value, results are not merged: one per commit and line.
     expect(candidates.filter((candidate) => candidate.finding.file === "config.py")).toHaveLength(3);
-    for (const candidate of candidates) {
-      expect(candidate.matchKey).toBeUndefined();
-      expect(candidate.finding.history?.stillPresent).toBe(false);
-    }
+    expect(warnings.join("\n")).toContain("carried no value");
+    for (const candidate of candidates) expect(candidate.matchKey).toBeUndefined();
   });
 
   it("caps the number of results it processes", async () => {
     const result = await historyCandidatesFromReport(document, {
       prefix: "app/",
-      readBlob: async () => undefined,
       readWorkingFile: () => undefined,
       maxResults: 2,
     });
@@ -223,15 +221,82 @@ describe("history report parsing and deduplication (recorded report)", () => {
     expect(result.warnings.join("\n")).toContain("only the first 2");
   });
 
-  it("caps the read-back of files", async () => {
-    const { warnings } = await historyCandidatesFromReport(document, {
-      prefix: "app/",
-      readBlob: async () => ["x"],
+  it("deduplicates thousands of results of one secret without any read-back (M2)", async () => {
+    const entries = Array.from({ length: 2600 }, (_, index) => ({
+      RuleID: "aws-access-token",
+      StartLine: 1,
+      EndLine: 1,
+      Match: FAKE_KEY_1,
+      Secret: FAKE_KEY_1,
+      File: "cfg.py",
+      // Newest first, as Gitleaks reports them.
+      Commit: (2600 - index).toString(16).padStart(40, "0"),
+      Date: new Date(Date.UTC(2024, 0, 1) + (2600 - index) * 60_000).toISOString(),
+    }));
+    const { candidates } = await historyCandidatesFromReport(entries, {
+      prefix: "",
       readWorkingFile: () => undefined,
-      maxBlobLookups: 1,
     });
-    expect(warnings.join("\n")).toContain("not read back");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.history.occurrences).toBe(2600);
+    expect(candidates[0]?.history.commit).toBe((1).toString(16).padStart(40, "0"));
   });
+
+  it("takes the earliest commit from the rev-list order, not the commit id (L2)", async () => {
+    const older = "f".repeat(40);
+    const newer = "0".repeat(40);
+    const sameDate = "2025-01-01T00:00:00Z";
+    const entry = (commit: string) => ({
+      RuleID: "aws-access-token",
+      StartLine: 1,
+      Match: FAKE_KEY_1,
+      Secret: FAKE_KEY_1,
+      File: "a.py",
+      Commit: commit,
+      Date: sameDate,
+    });
+    const { candidates } = await historyCandidatesFromReport([entry(newer), entry(older)], {
+      prefix: "",
+      readWorkingFile: () => undefined,
+      commitOrder: [newer, "1".repeat(40), older],
+    });
+    expect(candidates[0]?.history.commit).toBe(older);
+    // Without an order, the report order (newest first) decides a date tie.
+    const unordered = await historyCandidatesFromReport([entry(newer), entry(older)], {
+      prefix: "",
+      readWorkingFile: () => undefined,
+    });
+    expect(unordered.candidates[0]?.history.commit).toBe(older);
+  });
+
+  it("fingerprints 5000 distinct secrets within a few seconds and honours the deadline (L3)", async () => {
+    const entries = Array.from({ length: 5000 }, (_, index) => {
+      const key = `${["AKIA", "SYNTH"].join("")}${index.toString().padStart(11, "0")}`;
+      return {
+        RuleID: "aws-access-token",
+        StartLine: index + 1,
+        Match: key,
+        Secret: key,
+        File: "many.py",
+        Commit: "a".repeat(40),
+        Date: "2025-01-01T00:00:00Z",
+      };
+    });
+    const started = Date.now();
+    const result = await historyCandidatesFromReport(entries, {
+      prefix: "",
+      readWorkingFile: () => undefined,
+    });
+    expect(result.candidates).toHaveLength(5000);
+    expect(Date.now() - started).toBeLessThan(30_000);
+    const late = await historyCandidatesFromReport(entries.slice(0, 50), {
+      prefix: "",
+      readWorkingFile: () => undefined,
+      deadline: Date.now() - 1,
+    });
+    expect(late.outOfTime).toBe(true);
+    expect(late.candidates.length).toBeLessThan(50);
+  }, 60_000);
 
   it("lowers a placeholder value and honours the prefix of the audit root", async () => {
     const placeholderKey = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
@@ -241,20 +306,14 @@ describe("history report parsing and deduplication (recorded report)", () => {
           RuleID: "aws-access-token",
           StartLine: 1,
           EndLine: 1,
-          StartColumn: 7,
-          EndColumn: 26,
-          Match: "REDACTED",
-          Secret: "REDACTED",
+          Match: placeholderKey,
+          Secret: placeholderKey,
           File: "docs.py",
           Commit: "4".repeat(40),
           Date: "2024-01-01T00:00:00Z",
         },
       ],
-      {
-        prefix: "",
-        readBlob: async () => [`k = "${placeholderKey}"`],
-        readWorkingFile: () => undefined,
-      },
+      { prefix: "", readWorkingFile: () => undefined },
     );
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.finding.confidence).toBe("low");
@@ -266,7 +325,14 @@ describe("history report parsing and deduplication (recorded report)", () => {
 // Pipeline with a fake gitleaks
 
 interface FakeLog {
-  calls: Array<{ args: string[]; env: Record<string, string | undefined>; cwd: string; refs?: string }>;
+  calls: Array<{
+    args: string[];
+    env: Record<string, string | undefined>;
+    cwd: string;
+    refs?: string;
+    pid: number;
+    logHasKey?: boolean;
+  }>;
 }
 
 /**
@@ -291,21 +357,28 @@ function installFakeGitleaks(name: string): { dir: string; log: string } {
       "if (args[0] === 'version') { process.stdout.write('8.30.1\\n'); process.exit(0); }",
       `const log = ${JSON.stringify(log)};`,
       "const entries = fs.existsSync(log) ? JSON.parse(fs.readFileSync(log, 'utf8')) : { calls: [] };",
-      "const call = { args, env: { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM: process.env.GIT_ATTR_NOSYSTEM, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0 }, cwd: process.cwd() };",
+      "const e = process.env;",
+      "const call = { args, pid: process.pid, env: { GIT_CONFIG_GLOBAL: e.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: e.GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM: e.GIT_ATTR_NOSYSTEM, GIT_CONFIG_COUNT: e.GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0: e.GIT_CONFIG_KEY_0, GIT_NO_LAZY_FETCH: e.GIT_NO_LAZY_FETCH, GIT_NO_REPLACE_OBJECTS: e.GIT_NO_REPLACE_OBJECTS }, cwd: process.cwd() };",
       "const out = args[args.indexOf('--report-path') + 1];",
+      "const keyFile = path.join(__dirname, 'key.txt');",
       "if (args[0] === 'git') {",
       "  const repo = args[1];",
+      "  fs.copyFileSync(path.join(__dirname, 'history.json'), out);",
       "  call.refs = cp.spawnSync('git', ['-C', repo, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' }).stdout;",
       "  const opts = args[args.indexOf('--log-opts') + 1].split(' ');",
-      "  cp.spawnSync('git', ['-C', repo, 'log', '-p', '-U0', ...opts], { encoding: 'utf8' });",
+      "  const logged = cp.spawnSync('git', ['-C', repo, 'log', '-p', '-U0', ...opts], { encoding: 'utf8', maxBuffer: 1 << 26 }).stdout || '';",
+      "  if (fs.existsSync(keyFile)) call.logHasKey = logged.includes(fs.readFileSync(keyFile, 'utf8'));",
       "  cp.spawnSync('git', ['-C', repo, 'log', '-p', '--textconv', '--ext-diff', '-1', '--all'], { encoding: 'utf8' });",
-      "  fs.copyFileSync(path.join(__dirname, 'history.json'), out);",
       "} else {",
       "  const current = path.join(__dirname, 'current.json');",
       "  fs.writeFileSync(out, fs.existsSync(current) ? fs.readFileSync(current) : '[]');",
       "}",
       "entries.calls.push(call);",
       "fs.writeFileSync(log, JSON.stringify(entries));",
+      "const stderrFile = path.join(__dirname, 'stderr.txt');",
+      "if (args[0] === 'git' && fs.existsSync(stderrFile)) process.stderr.write(fs.readFileSync(stderrFile, 'utf8'));",
+      "const sleepFile = path.join(__dirname, 'sleep.txt');",
+      "if (args[0] === 'git' && fs.existsSync(sleepFile)) { setTimeout(() => process.exit(0), Number(fs.readFileSync(sleepFile, 'utf8'))); }",
     ].join("\n"),
   );
   const launcher = path.join(dir, "gitleaks");
@@ -319,7 +392,14 @@ function readFakeLog(log: string): FakeLog {
   return fs.existsSync(log) ? (JSON.parse(fs.readFileSync(log, "utf8")) as FakeLog) : { calls: [] };
 }
 
-function historyEntry(commit: string, file: string, line: number, column: number, date: string) {
+function historyEntry(
+  commit: string,
+  file: string,
+  line: number,
+  column: number,
+  date: string,
+  secret: string = FAKE_KEY_1,
+) {
   return {
     RuleID: "aws-access-token",
     Description: "Identified a pattern that may indicate AWS credentials.",
@@ -327,8 +407,8 @@ function historyEntry(commit: string, file: string, line: number, column: number
     EndLine: line,
     StartColumn: column,
     EndColumn: column + 19,
-    Match: "REDACTED",
-    Secret: "REDACTED",
+    Match: secret,
+    Secret: secret,
     File: file,
     Commit: commit,
     Author: "Synthetic Author",
@@ -386,7 +466,10 @@ describe("history scan pipeline (fake gitleaks)", () => {
     expect(call.args[call.args.indexOf("--log-opts") + 1]).toBe(
       "--full-history --max-count=10000 --all",
     );
-    expect(call.args).toContain("--redact");
+    // Without --redact (the value is needed in memory); the report is gone.
+    expect(call.args).not.toContain("--redact");
+    expect(call.env.GIT_NO_LAZY_FETCH).toBe("1");
+    expect(call.env.GIT_NO_REPLACE_OBJECTS).toBe("1");
     expect(call.args).toContain("--no-banner");
     expect(call.args[call.args.indexOf("--exit-code") + 1]).toBe("0");
     expect(call.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
@@ -421,12 +504,18 @@ describe("history scan pipeline (fake gitleaks)", () => {
     const fake = installFakeGitleaks("present");
     fs.writeFileSync(
       path.join(fake.dir, "history.json"),
-      JSON.stringify([historyEntry(added, "live.py", 1, 7, "2024-01-01T00:00:00Z")]),
+      JSON.stringify([historyEntry(added, "live.py", 1, 7, "2024-01-01T00:00:00Z", FAKE_KEY_2)]),
     );
     fs.writeFileSync(
       path.join(fake.dir, "current.json"),
       JSON.stringify([
-        { ...historyEntry("", "live.py", 1, 7, ""), Commit: "", Date: "" },
+        {
+          ...historyEntry("", "live.py", 1, 7, ""),
+          Match: "REDACTED",
+          Secret: "REDACTED",
+          Commit: "",
+          Date: "",
+        },
       ]),
     );
     const result = await scanProject({
@@ -455,7 +544,7 @@ describe("history scan pipeline (fake gitleaks)", () => {
     write(repo, "a.py", "print(1)\n");
     commitAll(repo, "two");
     write(repo, "b.py", "print(2)\n");
-    commitAll(repo, "three");
+    const head = commitAll(repo, "three");
     const fake = installFakeGitleaks("untrusted");
     const previous = process.env.CODE_AUDIT_HISTORY_MAX_COMMITS;
     process.env.CODE_AUDIT_HISTORY_MAX_COMMITS = "2";
@@ -490,7 +579,8 @@ describe("history scan pipeline (fake gitleaks)", () => {
     expect(calls).toHaveLength(2);
     const [untrustedCall, trustedCall] = calls as [FakeLog["calls"][0], FakeLog["calls"][0]];
     expect(untrustedCall.args[untrustedCall.args.indexOf("--log-opts") + 1]).toBe(
-      "--full-history --max-count=2 main",
+      // The ref is resolved in the audited repository: the copy gets the id.
+      `--full-history --max-count=2 ${head}`,
     );
     expect(untrustedCall.args).toContain("--ignore-gitleaks-allow");
     expect(untrustedCall.args).not.toContain("--config");
@@ -600,6 +690,182 @@ describe("history scan pipeline (fake gitleaks)", () => {
     expect(result.findings.filter((finding) => finding.provenance.engine === HISTORY_ENGINE)).toEqual([]);
     expect(result.coverage.history?.annotated).toBe(1);
   }, 60_000);
+});
+
+describe("history scan: fixes after review (fake gitleaks)", () => {
+  it("never fetches lazily from an ext:: promisor remote (H1)", async () => {
+    const promisor = makeExtPromisorRepository(temp, "ext-promisor");
+    const fake = installFakeGitleaks("ext-promisor");
+    // A ref to a missing object: rev-parse in the audited repository.
+    await expect(
+      scanProject({
+        root: promisor.repo,
+        out: path.join(temp, "out-ext-ref"),
+        offline: true,
+        formats: ["json"],
+        engines: ["builtin"],
+        pathEnv: pathWith(fake.dir),
+        history: "evil",
+        untrusted: true,
+      }),
+    ).rejects.toThrow(/unknown git ref/);
+    expect(fs.existsSync(promisor.marker)).toBe(false);
+    // Every reachable commit: the clone, upload-pack, rev-list, gitleaks.
+    const all = await scanProject({
+      root: promisor.repo,
+      out: path.join(temp, "out-ext-all"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+    });
+    expect(fs.existsSync(promisor.marker)).toBe(false);
+    expect(all.coverage.history?.status).not.toBe("ok");
+    // Control: plain git does fetch lazily and runs the command.
+    // (The marker program then waits on stdin; the timeout ends it.)
+    spawnSync("git", ["cat-file", "-p", promisor.missingBlob], {
+      cwd: promisor.repo,
+      env: GIT_TEST_ENV,
+      encoding: "utf8",
+      input: "",
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+    });
+    expect(fs.existsSync(promisor.marker)).toBe(true);
+  }, 60_000);
+
+  it("scans the commits that replace refs hide (H2)", async () => {
+    const replaced = makeReplacedRepository(temp, "replaced");
+    const fake = installFakeGitleaks("replaced");
+    fs.writeFileSync(path.join(fake.dir, "key.txt"), FAKE_KEY_2);
+    const result = await scanProject({
+      root: replaced.repo,
+      out: path.join(temp, "out-replaced"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+    });
+    const call = readFakeLog(fake.log).calls.find((entry) => entry.args[0] === "git");
+    expect(call?.refs).not.toContain("refs/replace/");
+    expect(call?.env.GIT_NO_REPLACE_OBJECTS).toBe("1");
+    // `git log -p` in the copy shows the secret of the replaced commit.
+    expect(call?.logHasKey).toBe(true);
+    expect(result.warnings.join("\n")).toContain("replace ref");
+    // Control: in the audited repository, plain git log hides it.
+    const plain = spawnSync("git", ["log", "-p", "--all"], {
+      cwd: replaced.repo,
+      env: GIT_TEST_ENV,
+      encoding: "utf8",
+    });
+    expect(plain.stdout.includes(FAKE_KEY_2)).toBe(false);
+  }, 60_000);
+
+  it("fails, never ok, for a ref whose commit the copy does not have, or a git error inside gitleaks (M4)", async () => {
+    const repo = newRepo("pseudo-ref");
+    write(repo, "a.py", "print(1)\n");
+    commitAll(repo, "one");
+    write(repo, "b.py", "print(2)\n");
+    commitAll(repo, "two");
+    // ORIG_HEAD names a commit that no ref reaches any more.
+    git(["reset", "-q", "--hard", "HEAD~1"], repo);
+    const fake = installFakeGitleaks("pseudo-ref");
+    const pseudo = await scanProject({
+      root: repo,
+      out: path.join(temp, "out-pseudo"),
+      offline: true,
+      formats: ["json", "md"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: "ORIG_HEAD",
+    });
+    expect(pseudo.coverage.history?.status).toBe("failed");
+    expect(pseudo.coverage.history?.detail).toContain("not reachable");
+    const markdown = fs.readFileSync(path.join(pseudo.runDir, "report.md"), "utf8");
+    expect(markdown).toMatch(/\*\*WARNING:\*\* the git history scan is failed/);
+
+    fs.writeFileSync(path.join(fake.dir, "stderr.txt"), '5:41PM ERR error="stderr is not empty"\n');
+    const gitError = await scanProject({
+      root: repo,
+      out: path.join(temp, "out-gitleaks-err"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+    });
+    expect(gitError.coverage.history?.status).toBe("failed");
+    expect(gitError.coverage.history?.detail).toContain("gitleaks reported an error");
+  }, 60_000);
+
+  it("keeps deduplication and stillPresent right when the time runs out (M3)", async () => {
+    const repo = newRepo("timeout");
+    write(repo, "creds.txt", `aws_key = "${FAKE_KEY_1}"\n`);
+    const first = commitAll(repo, "add");
+    write(repo, "creds.txt", `x = 1\naws_key = "${FAKE_KEY_1}"\n`);
+    const second = commitAll(repo, "move");
+    const fake = installFakeGitleaks("timeout");
+    fs.writeFileSync(
+      path.join(fake.dir, "history.json"),
+      JSON.stringify([
+        historyEntry(second, "creds.txt", 2, 13, "2024-02-01T00:00:00Z"),
+        historyEntry(first, "creds.txt", 1, 13, "2024-01-01T00:00:00Z"),
+      ]),
+    );
+    fs.writeFileSync(path.join(fake.dir, "sleep.txt"), "30000");
+    const result = await scanProject({
+      root: repo,
+      out: path.join(temp, "out-timeout"),
+      offline: true,
+      formats: ["json", "md"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+      historyTimeoutMs: 6000,
+    });
+    expect(result.coverage.history?.status).toBe("partial");
+    expect(result.coverage.history?.detail).toContain("timed out");
+    const withHistory = result.findings.filter((finding) => finding.history);
+    expect(withHistory).toHaveLength(1);
+    expect(withHistory[0]?.history).toMatchObject({ commit: first, stillPresent: true, occurrences: 2 });
+    expect(withHistory[0]?.remediation).toContain("also in the git history");
+    const call = readFakeLog(fake.log).calls.find((entry) => entry.args[0] === "git");
+    expect(fs.existsSync(path.dirname(call?.args[1] as string))).toBe(false);
+    const markdown = fs.readFileSync(path.join(result.runDir, "report.md"), "utf8");
+    expect(markdown).toMatch(/\*\*WARNING:\*\* the git history scan is partial/);
+    expect(markdown).toContain("This secret is also in the git history");
+  }, 60_000);
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    it(`kills gitleaks and removes the copy on ${signal} (M1)`, async () => {
+      const repo = newRepo(`signal-${signal}`);
+      write(repo, "a.py", `aws_key = "${FAKE_KEY_1}"\n`);
+      commitAll(repo, "one");
+      const fake = installFakeGitleaks(`signal-${signal}`);
+      fs.writeFileSync(path.join(fake.dir, "sleep.txt"), "60000");
+      const child = spawn(
+        process.execPath,
+        [CLI, "scan", repo, "--history", "--offline", "--no-external", "--format", "json", "--out", path.join(temp, `out-signal-${signal}`)],
+        { env: { ...process.env, PATH: pathWith(fake.dir) }, stdio: "ignore" },
+      );
+      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      let call: FakeLog["calls"][0] | undefined;
+      for (let attempt = 0; attempt < 200 && !call; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        call = readFakeLog(fake.log).calls.find((entry) => entry.args[0] === "git");
+      }
+      expect(call).toBeDefined();
+      const tmp = path.dirname(call?.args[1] as string);
+      expect(fs.existsSync(tmp)).toBe(true);
+      child.kill(signal);
+      await exited;
+      expect(fs.existsSync(tmp)).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(() => process.kill(call?.pid as number, 0)).toThrow();
+    }, 60_000);
+  }
 });
 
 describe("history scan of a hostile repository (fake gitleaks)", () => {

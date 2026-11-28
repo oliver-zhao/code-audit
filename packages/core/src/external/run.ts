@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
 export interface RunToolOptions {
@@ -7,6 +7,8 @@ export interface RunToolOptions {
   maxOutputBytes?: number;
   /** Extra environment variables. Only PATH/HOME/LANG/TMPDIR are forwarded by default. */
   env?: Record<string, string | undefined>;
+  /** Called with the child process right after it was started. */
+  onSpawn?: (child: ChildProcess) => void;
 }
 
 export interface RunToolResult {
@@ -78,6 +80,7 @@ export function runTool(
         timeout: timeoutMs,
         env: minimalEnv(options.env),
       });
+      options.onSpawn?.(child);
     } catch (error) {
       resolve({
         exitCode: -1,

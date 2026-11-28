@@ -124,3 +124,55 @@ export function makeHostileRepository(temp: string, name: string): {
   fs.rmSync(marker, { force: true });
   return { repo, marker, program, hiddenCommit };
 }
+
+/**
+ * A partial clone whose promisor remote is an `ext::` command that creates a
+ * marker file, with `protocol.ext.allow=always` in its own configuration and
+ * a tag pointing at a blob it does not have: any lazy fetch runs the command.
+ */
+export function makeExtPromisorRepository(temp: string, name: string): {
+  repo: string;
+  marker: string;
+  missingBlob: string;
+} {
+  const source = newRepo(temp, `${name}-source`);
+  write(source, "a.py", `aws_key = "${FAKE_KEY_1}"\n`);
+  commitAll(source, "add");
+  const missingBlob = git(["rev-parse", "HEAD:a.py"], source).trim();
+  fs.rmSync(path.join(source, "a.py"));
+  write(source, "b.py", "print(1)\n");
+  commitAll(source, "remove");
+  git(["config", "uploadpack.allowFilter", "true"], source);
+  const repo = path.join(temp, name);
+  git(
+    ["-c", "protocol.file.allow=always", "clone", "-q", "--filter=blob:none", `file://${source}`, repo],
+    temp,
+  );
+  const { program, marker } = markerProgram(temp, `${name}-ext`);
+  git(["config", "remote.origin.url", `ext::${program}`], repo);
+  git(["config", "protocol.ext.allow", "always"], repo);
+  fs.writeFileSync(path.join(repo, ".git", "refs", "tags", "evil"), `${missingBlob}\n`);
+  fs.rmSync(marker, { force: true });
+  return { repo, marker, missingBlob };
+}
+
+/**
+ * A repository where the commit that added a secret is replaced (`git
+ * replace`) by a clean commit, so that a plain `git log` never shows it.
+ */
+export function makeReplacedRepository(temp: string, name: string): {
+  repo: string;
+  secretCommit: string;
+} {
+  const repo = newRepo(temp, name);
+  write(repo, "base.txt", "x\n");
+  const base = commitAll(repo, "base");
+  write(repo, "a.py", `k = "${FAKE_KEY_2}"\n`);
+  const secretCommit = commitAll(repo, "secret");
+  fs.rmSync(path.join(repo, "a.py"));
+  commitAll(repo, "rm");
+  const baseTree = git(["rev-parse", `${base}^{tree}`], repo).trim();
+  const clean = git(["commit-tree", baseTree, "-p", base, "-m", "clean"], repo).trim();
+  git(["replace", secretCommit, clean], repo);
+  return { repo, secretCommit };
+}

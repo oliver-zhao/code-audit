@@ -24,7 +24,9 @@ import {
   FAKE_KEY_2,
   GIT_TEST_ENV,
   commitAll,
+  makeExtPromisorRepository,
   makeHostileRepository,
+  makeReplacedRepository,
   newRepo as newHistoryRepo,
   write,
 } from "./historyRepo.js";
@@ -324,6 +326,48 @@ describe.skipIf(!gitleaks)("real gitleaks: git history scan", () => {
     expect(onLive).toHaveLength(1);
     expect(onLive[0]?.history).toMatchObject({ commit: added, stillPresent: true });
     expect(result.coverage.history?.annotated).toBe(1);
+  }, 120_000);
+
+  it("finds a secret whose commit a replace ref hides, and never fetches from an ext:: promisor", async () => {
+    const replaced = makeReplacedRepository(temp, "history-replaced");
+    const result = await scanProject({
+      root: replaced.repo,
+      out: path.join(temp, "history-replaced-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv,
+      history: true,
+      untrusted: true,
+    });
+    expect(result.coverage.history?.status).toBe("ok");
+    const found = result.findings.filter((finding) => finding.history?.commit === replaced.secretCommit);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.file).toBe("a.py");
+
+    const promisor = makeExtPromisorRepository(temp, "history-ext");
+    await expect(
+      scanProject({
+        root: promisor.repo,
+        out: path.join(temp, "history-ext-ref-out"),
+        offline: true,
+        formats: ["json"],
+        engines: ["builtin", "gitleaks"],
+        pathEnv,
+        history: "evil",
+      }),
+    ).rejects.toThrow(/unknown git ref/);
+    const all = await scanProject({
+      root: promisor.repo,
+      out: path.join(temp, "history-ext-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin", "gitleaks"],
+      pathEnv,
+      history: true,
+    });
+    expect(fs.existsSync(promisor.marker)).toBe(false);
+    expect(all.coverage.history?.status).not.toBe("ok");
   }, 120_000);
 
   it("runs no program of a hostile repository and scans refs it hides", async () => {

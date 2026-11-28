@@ -480,6 +480,11 @@ async function runScan(args: string[]): Promise<number> {
         ...(result.coverage.history
           ? [
               `Git history: ${result.coverage.history.status} (${result.coverage.history.range ?? "all refs"}): ${result.coverage.history.detail}`,
+              ...(result.coverage.history.status === "failed" || result.coverage.history.status === "partial"
+                ? [
+                    `WARNING: the git history scan is ${result.coverage.history.status}; secrets in the history may be missing from this result`,
+                  ]
+                : []),
             ]
           : []),
         ...renderRunScopeText({ baseline, scope }),

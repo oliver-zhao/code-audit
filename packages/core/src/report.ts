@@ -20,6 +20,8 @@ import {
   HISTORY_ENGINE,
   HISTORY_MESSAGE_ZH,
   HISTORY_REMEDIATION_ZH,
+  HISTORY_ROTATE_NOTE,
+  HISTORY_ROTATE_NOTE_ZH,
 } from "./external/gitleaksHistory.js";
 
 export type ReportLang = "zh" | "en";
@@ -102,6 +104,8 @@ const EN = {
   no: "no",
   scopeNote: "Scope",
   historyScan: "Git history",
+  historyIncomplete:
+    "the git history scan is {status} ({detail}); secrets in the history may be missing from this report",
   historyScanLine: "{status} ({range}): {detail}",
   historyAllRefs: "all refs",
   historyFinding:
@@ -345,6 +349,7 @@ const ZH: Labels = {
   no: "否",
   scopeNote: "范围",
   historyScan: "Git 历史",
+  historyIncomplete: "git 历史扫描结果为 {status}（{detail}）；本报告可能遗漏历史中的密钥",
   historyScanLine: "{status}（{range}）：{detail}",
   historyAllRefs: "所有引用",
   historyFinding:
@@ -2210,6 +2215,16 @@ export function renderMarkdown(input: ReportContext): string {
   const ruleText = (
     finding: Finding,
   ): { title: string; message: string; remediation: string } => {
+    const text = baseRuleText(finding);
+    // A current finding that is also in the git history: rotate.
+    if (!finding.history || finding.provenance.engine === HISTORY_ENGINE) return text;
+    const plain = text.remediation.replace(` ${HISTORY_ROTATE_NOTE}`, "").replace(HISTORY_ROTATE_NOTE, "");
+    const note = context.lang === "zh" ? HISTORY_ROTATE_NOTE_ZH : HISTORY_ROTATE_NOTE;
+    return { ...text, remediation: `${plain}${plain ? " " : ""}${note}` };
+  };
+  const baseRuleText = (
+    finding: Finding,
+  ): { title: string; message: string; remediation: string } => {
     const rule = ruleById.get(finding.ruleId);
     if (rule) return localizeRule(rule, context.lang);
     // A secret that only the history scan reported.
@@ -2313,6 +2328,16 @@ export function renderMarkdown(input: ReportContext): string {
   lines.push(
     ...renderHeadlineMarkdown(summary, context.lang, { reviewed: context.agentReviewed === true }),
   );
+  const incompleteHistory = context.coverage.history;
+  if (incompleteHistory && (incompleteHistory.status === "failed" || incompleteHistory.status === "partial")) {
+    lines.push(
+      `> **${l.warningWord}:** ${fmt(l.historyIncomplete, {
+        status: escapeMarkdown(incompleteHistory.status),
+        detail: escapeMarkdown(singleLineText(incompleteHistory.detail, 300)),
+      })}`,
+      "",
+    );
+  }
 
   // Top risks: one entry per rule or per vulnerable package.
   interface RiskItem {
