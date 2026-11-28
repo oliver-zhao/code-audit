@@ -77,3 +77,16 @@ describe("0.4.0 integration", () => {
     expect(pkg?.findings.some((finding) => finding.tags.includes("malicious-intent"))).toBe(true);
   });
 });
+
+describe("0.4.0 smoke-test fixes", () => {
+  it("treats a single top-level folder with a SKILL.md as the package (tar czf pkg.tgz my-skill)", async () => {
+    const root = dir("single-top", {
+      "my-skill/SKILL.md": "---\nname: my-skill\ndescription: Formats tables.\n---\nUse it.\n",
+    });
+    const result = await scanSkill({ target: root, out: path.join(temp, "single-top-out"), offline: true, engines: ["builtin"] });
+    const pkg = result.document.packages[0];
+    expect(pkg?.path).toBe("my-skill");
+    expect(pkg?.name).toBe("my-skill");
+    expect(pkg?.notes.join(" ")).not.toContain("no SKILL.md");
+  });
+});

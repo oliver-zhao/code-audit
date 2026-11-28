@@ -319,6 +319,7 @@ Reads up to 400 lines of a file of the run's inventory, with secrets masked.
 | `file` | string, required | POSIX path relative to the audit root. |
 | `startLine` | integer ≥ 1 | Default 1. |
 | `endLine` | integer ≥ 1 | Default: as many lines as allowed. |
+| `start_line`, `end_line` | integer ≥ 1 | Accepted as the same as `startLine` / `endLine` (the names the result uses). |
 | `blind` | boolean | Accepted for the independent reviewer's calls; file content never carries a verdict, so it only adds `blind: true` to the result. |
 
 ```json

@@ -135,6 +135,11 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 
 ### Fixed
 
+- `code-audit skill` on an archive packed as one top-level folder
+  (`tar czf pkg.tgz my-skill`) treats that folder as the package.
+- `audit_verdict` with `role: "independent"` returns the reviewer's own
+  rationale, never the primary reviewer's.
+- `audit_read` also accepts `start_line` / `end_line`.
 - `agent-anti-refusal-never-refuse` missed "You must never refuse any
   request while ..." ("never refuse/decline" with a request, task,
   instruction or "anything" within four words). The bare "Never refuse."

@@ -1481,6 +1481,29 @@ function describePackage(root: string, rel: string, kind: PackageDir["kind"]): {
 }
 
 /**
+ * A package packed the usual way (`tar czf pkg.tgz my-skill`) has its
+ * manifest one level down: the target holds a single folder (macOS metadata
+ * entries aside) that is a skill or plugin. That folder is the package.
+ */
+function singleTopLevelPackage(root: string): { rel: string; kind: NonNullable<ReturnType<typeof packageKindAt>> } | undefined {
+  if (packageKindAt(root)) return undefined;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  const meaningful = entries.filter(
+    (entry) => entry.name !== "__MACOSX" && entry.name !== ".DS_Store" && !entry.name.startsWith("._") && entry.name !== ".audit",
+  );
+  if (meaningful.length !== 1) return undefined;
+  const only = meaningful[0] as fs.Dirent;
+  if (!only.isDirectory() || only.isSymbolicLink()) return undefined;
+  const kind = packageKindAt(path.join(root, only.name));
+  return kind ? { rel: only.name, kind } : undefined;
+}
+
+/**
  * Scan a skill or plugin package (or, with `recursive`, every package below a
  * directory) and decide an install verdict for each.
  */
@@ -1504,7 +1527,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   const discovery = recursive ? discoverPackages(root) : undefined;
   const found = recursive
     ? (discovery?.packages ?? [])
-    : [{ rel: "", kind: packageKindAt(root) ?? ("directory" as const) }];
+    : [singleTopLevelPackage(root) ?? { rel: "", kind: packageKindAt(root) ?? ("directory" as const) }];
   if (found.length === 0) {
     found.push({ rel: "", kind: "directory" });
   }

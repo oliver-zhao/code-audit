@@ -878,9 +878,10 @@ function findingsTool(base: ServerBase, args: Record<string, unknown>): unknown 
 function readTool(base: ServerBase, args: Record<string, unknown>): unknown {
   const runId = String(args.run_id ?? "");
   const file = String(args.file ?? "");
-  const start = typeof args.startLine === "number" ? args.startLine : 1;
+  // start_line / end_line (the names the response uses) are accepted too.
+  const start = typeof args.startLine === "number" ? args.startLine : typeof args.start_line === "number" ? args.start_line : 1;
   const end =
-    typeof args.endLine === "number" ? args.endLine : undefined;
+    typeof args.endLine === "number" ? args.endLine : typeof args.end_line === "number" ? args.end_line : undefined;
   const snippet = readSnippet(
     runId,
     file,
@@ -961,7 +962,7 @@ function verdictTool(base: ServerBase, args: Record<string, unknown>): unknown {
   }
   // The structured fields are checked by the run store, which names the
   // field and says how to fill it.
-  return recordVerdict(
+  const result = recordVerdict(
     runId,
     String(args.finding ?? ""),
     {
@@ -987,6 +988,16 @@ function verdictTool(base: ServerBase, args: Record<string, unknown>): unknown {
     },
     lookupOptions(base, runId, args),
   );
+  if (role !== "independent") return result;
+  // An independent reviewer gets back what it recorded, not the primary
+  // reviewer's reasoning: a reviewer working through several findings would
+  // otherwise read the other side's rationale before its next decision.
+  const { rationale: _primaryRationale, disagreement: _disagreementText, ...rest } = result;
+  return {
+    ...rest,
+    rationale: String(args.rationale ?? ""),
+    ...(result.disagreement ? { disagreement: "your status differs from the recorded decision; the finding stays needs_review until another reviewer or a person settles it" } : {}),
+  };
 }
 
 function addFindingTool(base: ServerBase, args: Record<string, unknown>): unknown {
@@ -1329,6 +1340,8 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
         file: z.string().min(1).describe("POSIX path relative to the audit root."),
         startLine: z.number().int().min(1).optional(),
         endLine: z.number().int().min(1).optional(),
+        start_line: z.number().int().min(1).optional().describe("Same as startLine."),
+        end_line: z.number().int().min(1).optional().describe("Same as endLine."),
         blind: z
           .boolean()
           .optional()
