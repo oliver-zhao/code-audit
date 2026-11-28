@@ -64,8 +64,10 @@ document. A failed call has `isError: true` and the document
 `{"error": {"code": "...", "message": "..."}}`. Codes include
 `RUN_NOT_FOUND`, `RUN_NOT_READY` (the scan is still running or failed),
 `DUPLICATE_FINDING`, `OUTSIDE_BASE`, `ROOT_SENSITIVE`, `SEARCH_TIMEOUT`,
-`DISMISSAL_NEEDS_EVIDENCE` and `MCP_TOOL_ERROR` (anything without a specific
-code).
+`DISMISSAL_NEEDS_EVIDENCE`, the verdict evidence codes
+`INVALID_EVIDENCE`, `EVIDENCE_REQUIRED`, `EVIDENCE_LOCATION_INVALID` and
+`PRIMARY_VERDICT_REQUIRED` (see [`audit_verdict`](#audit_verdict)), and
+`MCP_TOOL_ERROR` (anything without a specific code).
 
 **Size.** A response is capped at 8,000 bytes. Lists (`items`, `matches`,
 `warnings`) are shortened from the end and report text is cut; the result then has
@@ -133,6 +135,7 @@ Starts a scan in the background and returns immediately.
 | `profile` | `quick` \| `standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups; `standard`: every installed engine (`--profile`). |
 | `since` | string | none | Only findings in files changed since this git ref (`--since`). |
 | `latestLink` | boolean | false | Also copy the reports to `<root>/.audit/latest/` (`--latest-link`). |
+| `strict_evidence` | boolean | false | Every `audit_verdict` of this run requires structured evidence (see [`audit_verdict`](#audit_verdict)). Stored in the run's `verdicts.json`; a later call cannot turn it off. No CLI flag. |
 
 Result:
 
@@ -144,6 +147,8 @@ Result:
   "status_hint": "Call audit_status with run_id until phase is complete or failed."
 }
 ```
+
+With `strict_evidence: true` the result also has `"strict_evidence": true`.
 
 ## `audit_status`
 
@@ -182,13 +187,33 @@ While the scan runs: `runId`, `runDir`, `root`, `phase: "running"`,
 full counting summary of the report cover (headline by severity and
 category, dependency counts by scope, reductions, the exit code and its
 explanation); see [reports.md](reports.md). The result also includes review
-progress (`reviewed`, `unreviewed`, `falsePositive`), the `warnings` of the
-run and `notices` about the run directory. `dismissedWarning` is present when
+progress (`reviewed`, `unreviewed`, `falsePositive`), the review ledger
+`triage` (below), the `warnings` of the run and `notices` about the run
+directory. `dismissedWarning` is present when
 findings at severity ≥ the run's `failOn` were marked false positive
 (`"WARNING: 3 finding(s) at severity ≥ high were marked false positive by
 <reviewers> ..."`, the sentence on the report cover): relay it to the user. A long `warnings` list is
 shortened to fit the response cap (`truncated: true`); the complete list is
 in `run.json`.
+
+`triage` says how much of the run has been looked at. Suppressed records are
+left out of it.
+
+```json
+"triage": {
+  "findings": { "total": 12, "reviewed": 3, "unreviewed": 9, "unreviewedByRule": { "py-sql-injection": 4, "js-eval": 2 } },
+  "hotspots": { "total": 30, "reviewed": 0, "unreviewed": 30, "unreviewedByRule": { "py-subprocess-api": 11 }, "moreRules": 6 },
+  "open": 1,
+  "independentlyReviewed": 2,
+  "proofGaps": [{ "id": "AUD-2026-0004", "location": "src/admin.py:40", "missing": "whether /admin/export can be reached without the admin role" }]
+}
+```
+
+`unreviewedByRule` lists at most 10 rules per kind (most unreviewed first;
+`moreRules` counts the rest), `proofGaps` at most 5 (`moreProofGaps`).
+`open` counts records whose verdict is `needs_review` or `proof_gap`. The
+Markdown report has the complete tables. While anything is unreviewed, do not
+describe the run as free of issues.
 
 ## `audit_findings`
 
@@ -233,7 +258,10 @@ Lists findings and hotspots, at most 20 per page.
 }
 ```
 
-`evidence` is cut at 240 characters and `message` at 300. `next_cursor` is
+`evidence` is cut at 240 characters and `message` at 300. An item with a
+verdict also has `independently_reviewed` (boolean) and, for `proof_gap`,
+`missing` (cut at 200 characters and wrapped like repository content: a
+reviewer wrote it after reading the repository). `next_cursor` is
 absent or null on the last page. Cursors are opaque so that an agent does not
 compute the next offset itself: when a page is shortened to fit the size cap,
 a computed cursor would skip the items left out.
@@ -322,10 +350,18 @@ fingerprint is the current one; earlier ones stay in `verdicts.json`.
 | Argument | Type | Meaning |
 |---|---|---|
 | `finding` | string, required | Finding id (`AUD-...`, `HOT-...`) or fingerprint. |
-| `status` | `confirmed` \| `likely` \| `needs_review` \| `false_positive`, required | The decision. |
+| `status` | `confirmed` \| `likely` \| `needs_review` \| `false_positive` \| `proof_gap`, required | The decision. `proof_gap`: neither proved nor refuted; `missing` names the fact. |
 | `rationale` | string, required, not empty | Why: the source-to-sink reasoning and the lines checked. |
 | `evidenceLines` | list of strings | Lines of code that support the verdict (secrets in them are masked). Needed to dismiss a `high` or `critical` finding, see below. |
 | `reviewer` | string | Reviewer label, for example the model name. |
+| `role` | `primary` \| `independent` | Default `primary`. See [independent review](#independent-review). |
+| `trace` | list of `{file, line, role, note?}`, at most 20 | Source-to-sink path; `role` is `source`, `propagation` or `sink`. |
+| `conditions` | `{auth?, userInteraction?, note?}` | What an attack needs: `auth` is `none`, `user`, `admin` or `unknown`; `userInteraction` whether a victim must act. |
+| `control` | `{file, line, note}` | The code that makes a `false_positive` safe. |
+| `missing` | string, at least 20 characters | For `proof_gap`: the fact that could not be established. |
+| `cwe` | string `CWE-<n>` | The weakness the reviewer sees. Recorded only. |
+| `severityOverride` | `{severity, reason}` | The reviewer's view of the severity. Shown in the report; the counted severity and the exit code do not change. |
+| `strict_evidence` | boolean | Require structured evidence for this verdict. Always on when the run was started with `strict_evidence`; `false` does not turn that off. |
 
 ```json
 {
@@ -335,6 +371,10 @@ fingerprint is the current one; earlier ones stay in `verdicts.json`.
   "findingId": "AUD-2026-0001",
   "status": "confirmed",
   "rationale": "username from request reaches the SQL text",
+  "role": "primary",
+  "requestedStatus": "confirmed",
+  "independentlyReviewed": false,
+  "strictEvidence": false,
   "history": 1,
   "reviewed": 1,
   "total": 3,
@@ -377,6 +417,57 @@ never just disappears:
 
 This makes a mass dismissal visible and a careless one fail; it does not make
 a dismissal correct. A person should read the section.
+
+### Structured evidence
+
+Every location given in `trace` or `control` is checked, whether or not
+strict evidence is on: the file must be in the run's inventory, named by its
+path relative to the audit root (an absolute path, a `..` that leaves the
+root or a symbolic link that leads out of it is refused), and the line must
+exist in it. Otherwise the call fails with `EVIDENCE_LOCATION_INVALID` and a
+message naming each bad item, for example `trace[1] (src/db.py:999): line 999
+is beyond the end of src/db.py (40 lines)`. Paths are stored relative to the
+root. A malformed field (a `trace` step without `role`, a `missing` shorter
+than 20 characters, a `cwe` that is not `CWE-<n>`) fails with
+`INVALID_EVIDENCE`, naming the field and how to fill it. Notes are redacted
+like evidence lines. A `control` counts as the evidence that dismissing a
+`high` or `critical` finding needs.
+
+With strict evidence (`strict_evidence` on the call or on `audit_start`):
+
+| Status | Required |
+|---|---|
+| `confirmed` | `trace` with at least one `source` and one `sink` step |
+| `false_positive` | `control` (and, for `high`/`critical`, the rationale rule above) |
+| `proof_gap` | `missing` |
+
+A missing piece fails with `EVIDENCE_REQUIRED` and an example of the field.
+
+`proof_gap` is counted like `needs_review`: the finding stays active and
+open, is listed under "Open proof gaps" in the Markdown report, and is never
+a SARIF suppression.
+
+### Independent review
+
+`role: "independent"` records a second review of the current verdict by a
+reviewer who did not see it (a fresh sub-agent given only the finding id, its
+location and the tools). A finding without a verdict refuses it with
+`PRIMARY_VERDICT_REQUIRED`. The independent review is added to the
+verdict's `reviewers` list and the evidence of the primary verdict is kept.
+When the statuses disagree - anything except equal statuses or `confirmed`
+with `likely`, so `confirmed` against `false_positive` and any `proof_gap` or
+`needs_review` against another status - the current status becomes
+`needs_review`, the rationale records both sides and the result has
+`disagreement`. An independent review alone can never dismiss a finding. A
+new `primary` verdict starts a new `reviewers` list. Reports, SARIF
+(`properties.review`) and `audit_findings` say whether each verdict was
+independently reviewed.
+
+`verdicts.json` is written with `schemaVersion: 2`; files with
+`schemaVersion: 1` are read as before (their entries count as primary
+verdicts). code-audit 0.3.0 refuses a version 2 file
+(`RUN_STORE_CORRUPT`), and a run with a `proof_gap` verdict, whose
+`findings.json` holds that status.
 
 ## `audit_add_finding`
 
@@ -472,7 +563,12 @@ were marked false positive (see [`audit_verdict`](#audit_verdict)). For `md`,
 is true for `md` and `json`, whose text contains repository-derived content.
 Markdown lists false positives separately under "Dismissed by review", JSON
 keeps them with their `review`, and SARIF records them as suppressions and
-reports hotspots at level `note`.
+reports hotspots at level `note`. The Markdown summary has "Review coverage"
+(records with and without a verdict, by kind and rule) and, when there are
+any, "Open proof gaps". While any finding or hotspot has no verdict, a line
+under the title says so and the report never says "No reportable issues
+found". The `summary` text carries the same ledger as `triage` and is sent
+as compact JSON.
 
 ## Trying the server by hand
 

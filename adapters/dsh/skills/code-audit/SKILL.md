@@ -78,19 +78,48 @@ your tool list whose name ends with the bare name.
    - `likely`: strong evidence but a runtime detail is unverified.
    - `needs_review`: plausible, but you could not decide with the available
      budget or context.
+   - `proof_gap`: you looked and could neither prove nor refute it; put the
+     one fact that would decide it in `missing` (at least 20 characters, e.g.
+     "whether /export is reachable without login").
    - `false_positive`: the code path is safe (constant input, binding,
      validation, unreachable, test-only, etc.).
-   A non-empty `rationale` is required. Include the source-to-sink reasoning and
-   the lines you checked. Never record `confirmed` from a pattern match alone.
+   A non-empty `rationale` is required. Never record `confirmed` from a
+   pattern match alone. Give the evidence as fields, not only prose:
+   - `trace`: the path as steps `{file, line, role, note}` with `role`
+     `source` (untrusted input enters), `propagation` or `sink` (the
+     dangerous call); at most 20 steps.
+   - `control`: for `false_positive`, `{file, line, note}` of the code that
+     makes it safe.
+   - `conditions`: `{auth: none|user|admin|unknown, userInteraction}`.
+   - `cwe`, and `severityOverride: {severity, reason}` if you think the
+     severity is wrong (it is shown, not counted).
+   Use `file` exactly as `audit_findings` / `audit_read` show it (relative to
+   the root) and a line that exists: every location is checked, and a bad one
+   is refused with `EVIDENCE_LOCATION_INVALID` naming the item. With
+   `strict_evidence` (on `audit_start` or the call) `confirmed` needs a trace
+   with a `source` and a `sink`, `false_positive` a `control`, `proof_gap` a
+   `missing`; the error (`EVIDENCE_REQUIRED`) shows the field to add.
    **Dismissals are shown to the human.** Every `false_positive` is listed in
    the report under "Dismissed by review" with its severity, location, your
    reviewer label and your rationale; SARIF records it as a suppression; and
    dismissed findings at or above the run's fail-on severity put a `WARNING`
    on the report cover. For a `high` or `critical` finding the verdict is
    refused (`DISMISSAL_NEEDS_EVIDENCE`) unless the rationale has at least 40
-   characters and you give evidence: `evidenceLines` quoting the code that
-   makes it safe, or a `file:line` reference in the rationale. If you cannot
-   point at that code, the verdict is `needs_review`, not `false_positive`.
+   characters and you give evidence: a `control`, `evidenceLines` quoting the
+   code that makes it safe, or a `file:line` reference in the rationale. If
+   you cannot point at that code, the verdict is `needs_review` or
+   `proof_gap`, not `false_positive`.
+   **Independent review.** For every `critical` or `high` finding you marked
+   `confirmed` or `false_positive`, get a second opinion that has not seen
+   yours. If your host can start sub-agents, you **must** start a fresh one
+   and give it only the run id, the finding id, its file and line, and these
+   tools - not your verdict, not your rationale. Ask it to try to refute the
+   finding's current reading and to record its own `audit_verdict` with
+   `role: "independent"` and its own `reviewer` label. Without sub-agents,
+   switch explicitly to a devil's-advocate pass in this session: argue the
+   opposite, re-read the code, and record `role: "independent"` with
+   `same-session` in the rationale. When the two disagree the finding
+   becomes `needs_review`; tell the user, do not overwrite it to win.
 
 6. **Add findings the static rules missed.** Before adding, check whether a
    finding or hotspot already covers that file and line: call `audit_findings`
@@ -113,7 +142,11 @@ your tool list whose name ends with the bare name.
    (and stay in JSON). When `audit_status` or `audit_report` returns
    `dismissedWarning` / `dismissed_warning`, repeat it to the user word for
    word and name the findings you dismissed. Report remaining `unreviewed`
-   items honestly; do not imply full coverage.
+   items honestly; do not imply full coverage. The summary's `triage` and
+   the report's "Review coverage" say how many findings and hotspots (by
+   rule) still have no verdict, and "Open proof gaps" lists each `proof_gap`
+   with its `missing` fact: give the user both. While anything is
+   unreviewed, never say the project has no issues.
 
 ## Hard rules
 

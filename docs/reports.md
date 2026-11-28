@@ -76,8 +76,24 @@ summary, MCP `audit_status` / `audit_report` and `run.summary` in
   code; review the section "Dismissed by review".` (`summary.reductions.
   dismissed` holds the counts and reviewer labels.) A verdict of
   `false_positive` on a `high` or `critical` finding is only accepted with a
-  rationale of at least 40 characters and evidence lines or a `file:line`
-  reference.
+  rationale of at least 40 characters and evidence lines, a checked `control`
+  location or a `file:line` reference. The reviewer column says when the
+  dismissal was independently reviewed, and the rationale shows the control.
+- **Review coverage** (under the run details): for findings and for hotspots,
+  how many records there are, how many have a verdict and how many nobody has
+  reviewed, with the rules that have the most unreviewed records; then the
+  records still open after review (`needs_review`, `proof_gap`), the
+  independently reviewed ones and the suppressed ones (not part of this
+  ledger). While any finding or hotspot has no verdict, a bold line under the
+  title says `Review incomplete: ...` and an empty section reads "Nothing to
+  list in this section. This is not a clean result: ..." instead of "No
+  reportable issues found." The summary JSON (`report --format summary`,
+  `status --json`, MCP) carries the same numbers as `triage`.
+- **Open proof gaps**: every record whose verdict is `proof_gap`, with the
+  fact the reviewer could not establish (`missing`). A proof gap counts like
+  `needs_review`: active, never a suppression. Finding details show the
+  verdict's structured evidence (trace, control, missing, a reviewer's
+  severity view) and whether it was independently reviewed.
 
 The Markdown report is ordered for reading: summary (the exit-code line, the
 count table, the top 10 risks), findings grouped by rule, dependencies,
@@ -90,7 +106,12 @@ each result carries `properties` (confidence, category, `pathContext`,
 `external` with the justification `Marked false positive by <reviewer>:
 <rationale>` for a `false_positive` verdict). In `findings.json` a record
 with a verdict has a `review` object (status, rationale, reviewer, time,
-evidence lines), always taken from `verdicts.json`.
+evidence lines, and from verdicts.json schemaVersion 2 `trace`, `control`,
+`conditions`, `missing`, `cwe`, `severityOverride`, `reviewers` and
+`independentlyReviewed`), always taken from `verdicts.json`. SARIF results
+with a verdict have `properties.review` (status, `independentlyReviewed`,
+`missing`), and the run has `properties.review` with the unreviewed and open
+counts.
 
 **Top risks** are ordered by severity first, with one entry per rule and one
 per vulnerable `package@version` (all its advisories together). At most 3 of

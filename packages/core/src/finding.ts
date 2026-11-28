@@ -27,6 +27,9 @@ export const FindingStatusSchema = z.enum([
   "needs_review",
   "false_positive",
   "suppressed",
+  // A reviewer could not prove or refute the finding and named the missing
+  // fact (`review.missing`). Counted like needs_review: open, not dismissed.
+  "proof_gap",
 ]);
 export type FindingStatus = z.infer<typeof FindingStatusSchema>;
 
@@ -159,6 +162,45 @@ export const FindingSchema = z
         actor: z.string().optional(),
         at: z.string().optional(),
         evidenceLines: z.array(z.string()).optional(),
+        // Structured evidence of verdicts.json schemaVersion 2.
+        trace: z
+          .array(
+            z.object({
+              file: z.string(),
+              line: z.number(),
+              role: z.string(),
+              note: z.string().optional(),
+            }),
+          )
+          .optional(),
+        conditions: z
+          .object({
+            auth: z.string().optional(),
+            userInteraction: z.boolean().optional(),
+            note: z.string().optional(),
+          })
+          .optional(),
+        control: z
+          .object({ file: z.string(), line: z.number(), note: z.string() })
+          .optional(),
+        missing: z.string().optional(),
+        cwe: z.string().optional(),
+        severityOverride: z
+          .object({ severity: z.string(), reason: z.string() })
+          .optional(),
+        reviewers: z
+          .array(
+            z.object({
+              reviewer: z.string(),
+              role: z.string(),
+              status: z.string(),
+              at: z.string(),
+              rationale: z.string().optional(),
+            }),
+          )
+          .optional(),
+        /** True when an independent reviewer has checked the current decision. */
+        independentlyReviewed: z.boolean().optional(),
       })
       .optional(),
   })

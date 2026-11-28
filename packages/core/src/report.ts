@@ -118,6 +118,29 @@ const EN = {
   dismissedUnnamed: "unnamed reviewer",
   dismissedNoVerdict: "no verdict record",
   dismissedMore: "… and {n} more; all of them are in findings.json (status false_positive) and verdicts.json.",
+  // Review ledger; see `triageCoverage`.
+  reviewIncomplete:
+    "Review incomplete: {findings} of {findingsTotal} finding(s) and {hotspots} of {hotspotsTotal} hotspot(s) have no verdict (see “Review coverage”). Do not describe this run as free of issues.",
+  triageHeading: "Review coverage",
+  triageLine: "{kind}: {total} · with a verdict {reviewed} · not reviewed {unreviewed}",
+  triageByRule: "not reviewed, by rule",
+  triageFindings: "Findings",
+  triageHotspots: "Hotspots",
+  triageOpen:
+    "Open after review (needs_review or proof_gap): {open} · independently reviewed: {independent} · suppressed, not part of this ledger: {suppressed}",
+  triageMoreRules: "+{n} more rule(s)",
+  proofGapsHeading: "Open proof gaps",
+  proofGapsNote:
+    "Records a reviewer could neither prove nor refute, with the fact that is missing. They stay open: counted like needs_review, never treated as dismissed.",
+  proofGapNotStated: "not stated",
+  proofGapMore: "… and {n} more; all of them are in findings.json (status proof_gap).",
+  noneUnreviewed:
+    "Nothing to list in this section. This is not a clean result: {n} finding(s) or hotspot(s) have no verdict yet (see “Review coverage”).",
+  independentlyReviewed: "independently reviewed",
+  traceLabel: "Trace",
+  controlLabel: "Control",
+  missingLabel: "Missing",
+  severityOverrideLabel: "Reviewer severity",
   warnDismissed:
     "{n} finding(s) at severity ≥ {failOn} were marked false positive by {reviewers} and do not count toward the exit code; review the section \"Dismissed by review\".",
   warnDismissedMore: "and {n} more",
@@ -352,6 +375,27 @@ const ZH: Labels = {
   dismissedUnnamed: "未署名的复核者",
   dismissedNoVerdict: "无裁决记录",
   dismissedMore: "……另有 {n} 条；全部记录在 findings.json（status 为 false_positive）和 verdicts.json 中。",
+  reviewIncomplete:
+    "复核未完成：{findingsTotal} 条发现中有 {findings} 条、{hotspotsTotal} 个热点中有 {hotspots} 个尚无裁定（见“复核覆盖”）。不要把本次结果描述为没有问题。",
+  triageHeading: "复核覆盖",
+  triageLine: "{kind}：共 {total} · 已有裁定 {reviewed} · 未复核 {unreviewed}",
+  triageByRule: "未复核（按规则）",
+  triageFindings: "发现",
+  triageHotspots: "热点",
+  triageOpen: "复核后仍未决（needs_review 或 proof_gap）：{open} · 经独立复核：{independent} · 被抑制、不计入本表：{suppressed}",
+  triageMoreRules: "另有 {n} 条规则",
+  proofGapsHeading: "未决的证明缺口",
+  proofGapsNote:
+    "复核者既无法证实也无法否定的记录，以及缺少的事实。它们仍是未决项：与 needs_review 同样计数，绝不视为已驳回。",
+  proofGapNotStated: "未说明",
+  proofGapMore: "……另有 {n} 条；全部记录在 findings.json（status 为 proof_gap）中。",
+  noneUnreviewed:
+    "本节没有可列出的条目。这不代表结果干净：仍有 {n} 条发现或热点尚无裁定（见“复核覆盖”）。",
+  independentlyReviewed: "已独立复核",
+  traceLabel: "调用链",
+  controlLabel: "防护点",
+  missingLabel: "缺少",
+  severityOverrideLabel: "复核者建议的严重性",
   warnDismissed:
     "{n} 条严重性 ≥ {failOn} 的发现被 {reviewers} 标记为误报，不计入退出码；请核对“复核中被驳回的发现”一节。",
   warnDismissedMore: "以及另外 {n} 个",
@@ -1088,6 +1132,110 @@ export function dismissedBy(finding: Finding): string | undefined {
   const review = finding.review;
   const label = reviewerLabel(review?.reviewer || review?.actor || "");
   return label === "" ? undefined : label;
+}
+
+export interface TriageRuleCount {
+  ruleId: string;
+  total: number;
+  reviewed: number;
+  unreviewed: number;
+}
+
+export interface TriageKindCount {
+  total: number;
+  reviewed: number;
+  unreviewed: number;
+  /** Rules with records of this kind, most unreviewed first. */
+  byRule: TriageRuleCount[];
+}
+
+export interface ProofGapItem {
+  id: string;
+  kind: string;
+  severity: Severity;
+  ruleId: string;
+  file: string;
+  line: number;
+  /** What the reviewer could not establish; absent when not stated. */
+  missing?: string;
+}
+
+/**
+ * The review ledger of a run: for findings and hotspots, how many records
+ * have a verdict and how many nobody has looked at, by rule. Suppressed
+ * records are left out (they are listed on their own). A record counts as
+ * reviewed when it carries a `review` (the run store adds it from
+ * verdicts.json); in a report written by the scan nothing is reviewed yet.
+ */
+export interface TriageCoverage {
+  findings: TriageKindCount;
+  hotspots: TriageKindCount;
+  /** Reviewed records whose status is still needs_review or proof_gap. */
+  open: number;
+  /** Records whose current decision an independent reviewer has checked. */
+  independentlyReviewed: number;
+  /** Suppressed records, not part of the ledger. */
+  suppressed: number;
+  proofGaps: ProofGapItem[];
+}
+
+function triageKind(records: readonly Finding[]): TriageKindCount {
+  const byRule = new Map<string, TriageRuleCount>();
+  let reviewed = 0;
+  for (const finding of records) {
+    const group = byRule.get(finding.ruleId) ?? { ruleId: finding.ruleId, total: 0, reviewed: 0, unreviewed: 0 };
+    group.total += 1;
+    if (finding.review) {
+      group.reviewed += 1;
+      reviewed += 1;
+    } else {
+      group.unreviewed += 1;
+    }
+    byRule.set(finding.ruleId, group);
+  }
+  return {
+    total: records.length,
+    reviewed,
+    unreviewed: records.length - reviewed,
+    byRule: [...byRule.values()].sort(
+      (a, b) => b.unreviewed - a.unreviewed || b.total - a.total || a.ruleId.localeCompare(b.ruleId),
+    ),
+  };
+}
+
+export function triageCoverage(
+  findings: readonly Finding[],
+  hotspots: readonly Finding[] = [],
+): TriageCoverage {
+  const counted = (finding: Finding): boolean => finding.status !== "suppressed";
+  const all = [...findings, ...hotspots];
+  const ledger = all.filter(counted);
+  return {
+    findings: triageKind(findings.filter(counted)),
+    hotspots: triageKind(hotspots.filter(counted)),
+    open: ledger.filter(
+      (finding) => finding.review && (finding.status === "needs_review" || finding.status === "proof_gap"),
+    ).length,
+    independentlyReviewed: ledger.filter((finding) => finding.review?.independentlyReviewed === true).length,
+    suppressed: all.length - ledger.length,
+    proofGaps: ledger
+      .filter((finding) => finding.status === "proof_gap")
+      .sort(
+        (a, b) =>
+          SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] ||
+          a.file.localeCompare(b.file) ||
+          a.startLine - b.startLine,
+      )
+      .map((finding) => ({
+        id: finding.id,
+        kind: finding.kind,
+        severity: finding.severity,
+        ruleId: finding.ruleId,
+        file: finding.file,
+        line: finding.startLine,
+        ...(finding.review?.missing ? { missing: finding.review.missing } : {}),
+      })),
+  };
 }
 
 function dismissedSummary(
@@ -2085,6 +2233,12 @@ const WARNINGS_SHOWN = 40;
 const FIXED_SHOWN = 100;
 /** Rows of the "Dismissed by review" table; the rest is counted. */
 const DISMISSED_SHOWN = 500;
+/** Rules named per kind in the review coverage lines. */
+const TRIAGE_RULE_ROWS = 8;
+/** Entries of "Open proof gaps"; the rest is counted. */
+const PROOF_GAPS_SHOWN = 100;
+/** Characters of a `missing` text shown there. */
+const PROOF_GAP_TEXT_MAX = 300;
 /** Characters of a verdict rationale shown in that table. */
 const DISMISSED_RATIONALE_MAX = 300;
 
@@ -2174,6 +2328,43 @@ function groupByRule(findings: Finding[]): RuleGroup[] {
 
 function oneLine(value: string, max: number): string {
   return truncate(value.replace(/\s+/g, " ").trim(), max);
+}
+
+/** Agent-written evidence text: one escaped, redacted line. */
+function reviewText(value: string, max = PROOF_GAP_TEXT_MAX): string {
+  return escapeMarkdown(redactText(singleLineText(value, max)), max + 200);
+}
+
+/** The structured evidence of a finding's verdict, as Markdown lines. */
+function reviewEvidenceLines(finding: Finding, l: Labels): string[] {
+  const review = finding.review;
+  if (!review) return [];
+  const out: string[] = [];
+  if (review.trace && review.trace.length > 0) {
+    const steps = review.trace.slice(0, 20).map(
+      (step) =>
+        `${escapeMarkdown(step.file, PATH_TEXT_MAX)}:${step.line} (${escapeMarkdown(step.role, 20)}` +
+        (step.note ? `: ${reviewText(step.note, 120)}` : "") +
+        ")",
+    );
+    out.push(`**${l.traceLabel}**: ${steps.join(" → ")}`, "");
+  }
+  if (review.control) {
+    out.push(
+      `**${l.controlLabel}**: ${escapeMarkdown(review.control.file, PATH_TEXT_MAX)}:${review.control.line} — ${reviewText(review.control.note)}`,
+      "",
+    );
+  }
+  if (review.missing) {
+    out.push(`**${l.missingLabel}**: ${reviewText(review.missing)}`, "");
+  }
+  if (review.severityOverride) {
+    out.push(
+      `**${l.severityOverrideLabel}**: ${escapeMarkdown(review.severityOverride.severity, 20)} — ${reviewText(review.severityOverride.reason)}`,
+      "",
+    );
+  }
+  return out;
 }
 
 export function renderMarkdown(input: ReportContext): string {
@@ -2278,6 +2469,21 @@ export function renderMarkdown(input: ReportContext): string {
       "",
     );
   }
+  // While anything has no verdict the report must not read as a clean bill.
+  const triage = triageCoverage(context.findings, allHotspots);
+  const unreviewedRecords = triage.findings.unreviewed + triage.hotspots.unreviewed;
+  if (unreviewedRecords > 0) {
+    lines.push(
+      `> **${fmt(l.reviewIncomplete, {
+        findings: triage.findings.unreviewed,
+        findingsTotal: triage.findings.total,
+        hotspots: triage.hotspots.unreviewed,
+        hotspotsTotal: triage.hotspots.total,
+      })}**`,
+      "",
+    );
+  }
+  const noneText = unreviewedRecords > 0 ? fmt(l.noneUnreviewed, { n: unreviewedRecords }) : l.none;
 
   // ---- 1. Executive summary --------------------------------------------
   section(l.summary);
@@ -2432,10 +2638,67 @@ export function renderMarkdown(input: ReportContext): string {
   }
   lines.push("");
 
+  // Review ledger: what has a verdict and what nobody looked at, by rule.
+  // Kept to a few lines; the summary JSON (`triage`) has the same numbers.
+  if (triage.findings.total + triage.hotspots.total > 0) {
+    heading(3, l.triageHeading);
+    for (const [kind, counts] of [
+      [l.triageFindings, triage.findings],
+      [l.triageHotspots, triage.hotspots],
+    ] as const) {
+      const pending = counts.byRule.filter((row) => row.unreviewed > 0);
+      const shown = pending
+        .slice(0, TRIAGE_RULE_ROWS)
+        .map((row) => `\`${escapeMarkdown(row.ruleId, 120)}\` ${row.unreviewed}`);
+      lines.push(
+        `- ${fmt(l.triageLine, {
+          kind,
+          total: counts.total,
+          reviewed: counts.reviewed,
+          unreviewed: counts.unreviewed,
+        })}` +
+          (shown.length > 0
+            ? ` — ${l.triageByRule}: ${shown.join(", ")}` +
+              (pending.length > shown.length
+                ? `, ${fmt(l.triageMoreRules, { n: pending.length - shown.length })}`
+                : "")
+            : ""),
+      );
+    }
+    if (triage.open + triage.independentlyReviewed + triage.suppressed > 0) {
+      lines.push(
+        `- ${fmt(l.triageOpen, {
+          open: triage.open,
+          independent: triage.independentlyReviewed,
+          suppressed: triage.suppressed,
+        })}`,
+      );
+    }
+    lines.push("");
+  }
+  if (triage.proofGaps.length > 0) {
+    heading(3, `${l.proofGapsHeading} (${triage.proofGaps.length})`);
+    lines.push(`> ${l.proofGapsNote}`, "");
+    for (const gap of triage.proofGaps.slice(0, PROOF_GAPS_SHOWN)) {
+      lines.push(
+        `- **${escapeMarkdown(gap.id)}** · ${gap.severity} · \`${escapeMarkdown(gap.ruleId)}\` · ` +
+          `${escapeMarkdown(gap.file, PATH_TEXT_MAX)}:${gap.line} — ${l.missingLabel}: ` +
+          escapeMarkdown(
+            gap.missing ? redactText(singleLineText(gap.missing, PROOF_GAP_TEXT_MAX)) : l.proofGapNotStated,
+            PROOF_GAP_TEXT_MAX + 200,
+          ),
+      );
+    }
+    if (triage.proofGaps.length > PROOF_GAPS_SHOWN) {
+      lines.push("", fmt(l.proofGapMore, { n: triage.proofGaps.length - PROOF_GAPS_SHOWN }));
+    }
+    lines.push("");
+  }
+
   // ---- 2. Code, secrets and configuration findings -----------------------
   section(l.findingsSection);
   if (headlineCode.length === 0) {
-    lines.push(l.none, "");
+    lines.push(noneText, "");
   }
   for (const group of groupByRule(headlineCode)) {
     const first = group.findings[0] as Finding;
@@ -2491,11 +2754,13 @@ export function renderMarkdown(input: ReportContext): string {
           ...(adjustments.length > 0
             ? [`${l.adjustments}: ${adjustments.map((entry) => escapeMarkdown(entry)).join(", ")}`]
             : []),
-          `${l.status}: ${escapeMarkdown(finding.status)}`,
+          `${l.status}: ${escapeMarkdown(finding.status)}` +
+            (finding.review?.independentlyReviewed ? ` (${l.independentlyReviewed})` : ""),
           `${l.engine}: ${escapeMarkdown(finding.provenance.engine)}`,
         ].join(" · "),
         "",
       );
+      lines.push(...reviewEvidenceLines(finding, l));
       // A finding without a bundled rule (agent-added, external engine) can
       // carry its own description.
       const ownMessage = hasRule ? "" : ruleText(finding).message;
@@ -2537,7 +2802,7 @@ export function renderMarkdown(input: ReportContext): string {
   section(l.dependencies);
   lines.push(`> ${l.scaNote}`, "");
   if (packages.length === 0) {
-    lines.push(l.none, "");
+    lines.push(noneText, "");
   } else {
     const packageTable = (rows: VulnerablePackage[]): void => {
       lines.push(
@@ -2804,10 +3069,13 @@ export function renderMarkdown(input: ReportContext): string {
           .map((line) => singleLineText(line, 120))
           .filter((line) => line.length > 0)
           .slice(0, 2);
+        const control = review?.control
+          ? ` (${l.controlLabel.toLowerCase()}: ${singleLineText(review.control.file, PATH_TEXT_MAX)}:${review.control.line} ${singleLineText(review.control.note, 200)})`
+          : "";
         const rationale = review
           ? `${redactText(singleLineText(review.rationale, DISMISSED_RATIONALE_MAX))}${
               evidence.length > 0 ? ` (${l.dismissedEvidence}: ${evidence.join(" / ")})` : ""
-            }`
+            }${redactText(control)}`
           : l.dismissedNoVerdict;
         lines.push(
           tableRow([
@@ -2817,7 +3085,8 @@ export function renderMarkdown(input: ReportContext): string {
             escapeMarkdown(finding.ruleId),
             `${escapeMarkdown(finding.file, PATH_TEXT_MAX)}${contextTag(finding)}`,
             String(finding.startLine),
-            escapeMarkdown(dismissedBy(finding) ?? l.dismissedUnnamed, 60),
+            escapeMarkdown(dismissedBy(finding) ?? l.dismissedUnnamed, 60) +
+              (review?.independentlyReviewed ? ` (${l.independentlyReviewed})` : ""),
             escapeMarkdown(rationale, DISMISSED_RATIONALE_MAX + 300),
           ]),
         );
@@ -3145,6 +3414,19 @@ export function renderSarif(input: ReportContext): string {
       ...(confidenceOriginal ? { confidenceOriginal } : {}),
       ...(adjustments.length > 0 ? { adjustments } : {}),
       countsTowardExitCode: countsTowardExitCode(finding, summary.thresholds),
+      // The review state of the result. A proof_gap or needs_review verdict
+      // is open, never a suppression.
+      ...(finding.review
+        ? {
+            review: {
+              status: finding.review.status,
+              independentlyReviewed: finding.review.independentlyReviewed === true,
+              ...(finding.review.missing
+                ? { missing: redactText(singleLineText(finding.review.missing, PROOF_GAP_TEXT_MAX)) }
+                : {}),
+            },
+          }
+        : {}),
     },
     // SARIF 3.27.23: an empty array states "not suppressed"; a suppressed
     // result names where the suppression lives and the reason given for it.
@@ -3213,6 +3495,16 @@ export function renderSarif(input: ReportContext): string {
           lowConfidenceCandidates: summary.lowConfidence.total,
           hotspots: summary.hotspots,
           exitCode: summary.exitCode,
+          review: (() => {
+            const triage = triageCoverage(context.findings, context.hotspots ?? []);
+            return {
+              findingsUnreviewed: triage.findings.unreviewed,
+              hotspotsUnreviewed: triage.hotspots.unreviewed,
+              open: triage.open,
+              proofGaps: triage.proofGaps.length,
+              independentlyReviewed: triage.independentlyReviewed,
+            };
+          })(),
         },
       },
     ],
