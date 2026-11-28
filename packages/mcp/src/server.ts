@@ -996,7 +996,11 @@ function verdictTool(base: ServerBase, args: Record<string, unknown>): unknown {
   return {
     ...rest,
     rationale: String(args.rationale ?? ""),
-    ...(result.disagreement ? { disagreement: "your status differs from the recorded decision; the finding stays needs_review until another reviewer or a person settles it" } : {}),
+    ...(result.disagreement
+      ? {
+          disagreement: `your status (${typeof args.reviewer === "string" && args.reviewer ? args.reviewer.slice(0, 80) : "independent reviewer"}: ${status}) differs from the recorded decision; the finding stays needs_review until another reviewer or a person settles it`,
+        }
+      : {}),
   };
 }
 
