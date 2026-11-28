@@ -10,12 +10,6 @@ export interface RunToolOptions {
   env?: Record<string, string | undefined>;
   /** Called with the child process right after it was started. */
   onSpawn?: (child: ChildProcess) => void;
-  /**
-   * Start the tool in its own process group (POSIX), so that a timeout (or a
-   * cleanup handler, see cleanup.ts) kills the tool and everything it
-   * started.
-   */
-  detached?: boolean;
 }
 
 /**
@@ -91,9 +85,10 @@ export function runTool(
         cwd: options.cwd,
         shell: false,
         windowsHide: true,
-        timeout: timeoutMs,
+        // No `timeout` here: the timer below kills the tool together with
+        // everything it started (a SIGTERM to the tool alone would orphan
+        // its children first).
         env: minimalEnv(options.env),
-        detached: options.detached === true,
       });
       options.onSpawn?.(child);
     } catch (error) {
@@ -152,7 +147,9 @@ export function runTool(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      killProcessTree(child, options.detached === true);
+      // The tool and its descendants (it stays in code-audit's process
+      // group, so a host that kills that group takes it down as well).
+      killProcessTree(child);
       // Do not wait for ever on pipes that another process still holds.
       const grace = setTimeout(() => {
         child.stdout?.destroy();

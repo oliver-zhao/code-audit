@@ -975,6 +975,35 @@ describe("history scan: fixes after re-review (fake gitleaks)", () => {
     expect(isAlive(call?.grandchild)).toBe(false);
   }, 60_000);
 
+  it("leaves no tool running when the host kills the scanner's process group with SIGKILL (N4)", async () => {
+    const repo = newRepo("group-kill");
+    write(repo, "a.py", `aws_key = "${FAKE_KEY_1}"\n`);
+    commitAll(repo, "one");
+    const fake = installFakeGitleaks("group-kill");
+    fs.writeFileSync(path.join(fake.dir, "sleep.txt"), "60000");
+    fs.writeFileSync(path.join(fake.dir, "detect-sleep.txt"), "60000");
+    fs.writeFileSync(path.join(fake.dir, "grandchild.txt"), "60");
+    // The CLI leads its own process group, like a server started by a host.
+    const child = spawn(
+      process.execPath,
+      [CLI, "scan", repo, "--history", "--offline", "--engines", "builtin,gitleaks", "--format", "json", "--out", path.join(temp, "out-group-kill")],
+      { env: { ...process.env, PATH: pathWith(fake.dir) }, stdio: "ignore", detached: true },
+    );
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    let calls: FakeLog["calls"] = [];
+    for (let attempt = 0; attempt < 200 && calls.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      calls = readFakeLog(fake.log).calls;
+    }
+    expect(calls.map((call) => call.args[0]).sort()).toEqual(["detect", "git"]);
+    const pids = calls.flatMap((call) => [call.pid, ...(call.grandchild ? [call.grandchild] : [])]);
+    for (const pid of pids) expect(isAlive(pid)).toBe(true);
+    process.kill(-(child.pid as number), "SIGKILL");
+    await exited;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    for (const pid of pids) expect(isAlive(pid), String(pid)).toBe(false);
+  }, 60_000);
+
   it("kills the working-tree gitleaks and removes its report on SIGTERM (N3)", async () => {
     const repo = newRepo("detect-signal");
     write(repo, "a.py", "print(1)\n");

@@ -244,12 +244,10 @@ export async function runGitleaks(options: {
   const warnings: string[] = [];
   const findings: Finding[] = [];
   const secretHashes = new Map<Finding, string>();
-  const reportPath = path.join(
-    os.tmpdir(),
-    `code-audit-gitleaks-${process.pid}-${Date.now()}-${Math.random()
-      .toString(16)
-      .slice(2)}.json`,
-  );
+  // The report goes into a private directory of its own (mode 0700), which
+  // a later run can recognise and sweep if this one is killed.
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-gitleaks-"));
+  const reportPath = path.join(reportDir, "report.json");
 
   const args = [
     "detect",
@@ -268,14 +266,13 @@ export async function runGitleaks(options: {
 
   // Killed (with everything it started) and its report removed on SIGINT,
   // SIGTERM, SIGHUP or exit while it runs.
-  const cleanup = registerCleanup([reportPath], { detached: true });
+  const cleanup = registerCleanup([reportDir]);
   let result: Awaited<ReturnType<typeof runTool>>;
   try {
     result = await runTool(options.toolPath, args, {
       cwd: options.root,
       timeoutMs: options.timeoutMs,
       maxOutputBytes: options.maxOutputBytes,
-      detached: true,
       onSpawn: cleanup.track,
     });
   } catch (error) {
@@ -302,11 +299,7 @@ export async function runGitleaks(options: {
     }
     document = [];
   } finally {
-    try {
-      fs.rmSync(reportPath, { force: true });
-    } catch {
-      // best effort cleanup
-    }
+    // Removes the report directory as well.
     cleanup.release();
   }
 

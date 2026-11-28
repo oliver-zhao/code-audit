@@ -79,6 +79,7 @@ import {
 import { listChangedFiles } from "./git.js";
 import {
   HISTORY_ENGINE,
+  sweepStaleTempEntries,
   withHistoryNote,
   crossEngineDedupe,
   defaultOpengrepRulesDir,
@@ -562,6 +563,15 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
     warnings.push(...outputWarnings);
+    // Temporary entries that killed Gitleaks / history runs left behind.
+    if (historyOption || selected.has("gitleaks")) {
+      const swept = sweepStaleTempEntries();
+      if (swept > 0) {
+        warnings.push(
+          `removed ${swept} stale temporary entr${swept === 1 ? "y" : "ies"} of earlier code-audit runs (code-audit-history-* / code-audit-gitleaks-*) from the system temporary directory`,
+        );
+      }
+    }
     if (ruleScan.suppressed.length > 0) {
       warnings.push(
         `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore comments in the audited repository; they are listed under suppressed findings (use --no-inline-ignore to report them as active)`,

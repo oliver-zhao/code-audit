@@ -314,7 +314,6 @@ function runHistoryGit(
       maxOutputBytes: options.maxOutputBytes,
       env: historyGitEnv(options.pathEnv),
       onSpawn: options.cleanup?.track,
-      detached: true,
     },
   );
 }
@@ -881,7 +880,7 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
   });
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-history-"));
-  const cleanup = registerCleanup([tmp], { detached: true });
+  const cleanup = registerCleanup([tmp]);
   try {
     fs.chmodSync(tmp, 0o700);
     const mirror = path.join(tmp, "repo.git");
@@ -1038,7 +1037,6 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
       timeoutMs: Math.max(1, remaining() - reserveMs),
       env: { ...historyGitEnv(options.pathEnv), ...configEnv },
       onSpawn: cleanup.track,
-      detached: true,
     });
 
     let document: unknown = [];

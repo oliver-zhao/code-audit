@@ -1,22 +1,26 @@
 /**
- * Cleanup of external-tool runs on SIGINT, SIGTERM, SIGHUP and process exit.
+ * Cleanup of external-tool runs: on SIGINT, SIGTERM, SIGHUP and process exit,
+ * on a timeout, and of what an earlier run that was killed left behind.
+ *
+ * Tools run in code-audit's own process group, so a host that kills that
+ * group (an MCP client, a CI runner on cancel, `timeout -s KILL`) takes them
+ * down too. To stop one tool without stopping code-audit, the tool and all
+ * its descendants are killed by walking the process tree (`ps -A -o
+ * pid=,ppid=`): leaves first, then once more for anything started meanwhile.
  *
  * A run registers the temporary paths it writes (a report, a repository
  * copy) and the child processes it starts. While at least one run is
- * registered, handlers kill those children - their whole process group when
- * they were started detached - and remove the paths synchronously; a signal
- * handler then re-raises the signal when no other listener is left, so the
- * default action (termination) still happens. The handlers are removed when
- * no run is registered, so a long-lived process (the MCP server) is not
- * affected between scans. A SIGKILL cannot be handled.
+ * registered, handlers kill those trees and remove the paths synchronously; a
+ * signal handler then re-raises the signal when no other listener is left, so
+ * the default action (termination) still happens. The handlers are removed
+ * when no run is registered, so a long-lived process (the MCP server) is not
+ * affected between scans. A SIGKILL cannot be handled: `sweepStaleTempEntries`
+ * removes what such a run left behind, at the start of a later one.
  */
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-
-interface TrackedChild {
-  child: ChildProcess;
-  detached: boolean;
-}
+import os from "node:os";
+import path from "node:path";
 
 export interface CleanupHandle {
   /** Pass as `runTool`'s `onSpawn` to have the child killed on a signal. */
@@ -27,24 +31,87 @@ export interface CleanupHandle {
 
 interface Registration {
   paths: string[];
-  children: Set<TrackedChild>;
-  detached: boolean;
+  children: Set<ChildProcess>;
 }
 
 const registrations = new Set<Registration>();
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const handlers = new Map<string, () => void>();
 
-/** Kill a child, and its process group when it leads one. */
-export function killProcessTree(child: ChildProcess, detached: boolean): void {
+function psExecutable(): string | undefined {
+  for (const candidate of ["/bin/ps", "/usr/bin/ps"]) {
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // not there
+    }
+  }
+  return undefined;
+}
+
+/** `pid -> parent pid` of every process, or undefined when `ps` fails. */
+function processTable(): Map<number, number> | undefined {
+  const ps = psExecutable();
+  if (!ps || process.platform === "win32") return undefined;
+  const result = spawnSync(ps, ["-A", "-o", "pid=,ppid="], {
+    encoding: "utf8",
+    timeout: 5000,
+    maxBuffer: 16 * 1024 * 1024,
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+  const table = new Map<number, number>();
+  for (const line of result.stdout.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match) table.set(Number(match[1]), Number(match[2]));
+  }
+  return table;
+}
+
+/** Descendants of `root`, deepest first (leaves before their parents). */
+export function descendantsOf(root: number, table: Map<number, number>): number[] {
+  const children = new Map<number, number[]>();
+  for (const [pid, ppid] of table) {
+    const list = children.get(ppid);
+    if (list) list.push(pid);
+    else children.set(ppid, [pid]);
+  }
+  const order: number[] = [];
+  const seen = new Set<number>([root]);
+  const queue = [root];
+  while (queue.length > 0) {
+    const current = queue.shift() as number;
+    for (const child of children.get(current) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      order.push(child);
+      queue.push(child);
+    }
+  }
+  return order.reverse();
+}
+
+function killPid(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Kill a child and all its descendants: a snapshot of the process tree and
+ * the descendants killed leaves first, the same once more for descendants
+ * started in between, and the child last - while it lives, what it started
+ * is still attached to it in the tree.
+ */
+export function killProcessTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) return;
-  if (detached && process.platform !== "win32") {
-    try {
-      process.kill(-pid, "SIGKILL");
-      return;
-    } catch {
-      // the group is gone; fall through to the child itself
+  if (child.exitCode === null && child.signalCode === null) {
+    for (let round = 0; round < 2; round += 1) {
+      const table = processTable();
+      if (table) for (const descendant of descendantsOf(pid, table)) killPid(descendant);
     }
   }
   try {
@@ -55,7 +122,7 @@ export function killProcessTree(child: ChildProcess, detached: boolean): void {
 }
 
 function cleanSync(registration: Registration): void {
-  for (const entry of registration.children) killProcessTree(entry.child, entry.detached);
+  for (const child of registration.children) killProcessTree(child);
   registration.children.clear();
   for (const target of registration.paths) {
     try {
@@ -98,23 +165,17 @@ function uninstall(): void {
 }
 
 /**
- * Register a run: `paths` are removed and tracked children killed on a
- * signal or exit, and when `release()` is called. `detached` says whether the
- * children are started in their own process group (`runTool`'s `detached`).
+ * Register a run: `paths` are removed and tracked children (with their
+ * descendants) killed on a signal or exit, and when `release()` is called.
  */
-export function registerCleanup(paths: string[], options: { detached?: boolean } = {}): CleanupHandle {
-  const registration: Registration = {
-    paths: [...paths],
-    children: new Set(),
-    detached: options.detached === true,
-  };
+export function registerCleanup(paths: string[]): CleanupHandle {
+  const registration: Registration = { paths: [...paths], children: new Set() };
   registrations.add(registration);
   install();
   return {
     track: (child) => {
-      const entry = { child, detached: registration.detached };
-      registration.children.add(entry);
-      child.once("close", () => registration.children.delete(entry));
+      registration.children.add(child);
+      child.once("close", () => registration.children.delete(child));
     },
     release: () => {
       cleanSync(registration);
@@ -127,4 +188,64 @@ export function registerCleanup(paths: string[], options: { detached?: boolean }
 /** Number of registered runs (testing). */
 export function activeCleanupCount(): number {
   return registrations.size;
+}
+
+/** Names of the temporary entries code-audit creates (and may sweep). */
+const SWEPT_DIRECTORY = /^code-audit-(?:history|gitleaks)-[A-Za-z0-9]+$/;
+const SWEPT_FILE = /^code-audit-gitleaks-[A-Za-z0-9-]+\.json$/;
+
+/** Entries untouched for longer than this are stale. */
+export const STALE_TEMP_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove what killed runs left in the temporary directory: entries named
+ * exactly like code-audit's own (`code-audit-history-*` and
+ * `code-audit-gitleaks-*` directories, `code-audit-gitleaks-*.json` report
+ * files of earlier versions), owned by the current user, not modified for
+ * more than an hour, and private (mode 0700 for a directory, 0600 for a
+ * file). A symbolic link is never followed or removed; nothing else is
+ * touched. Returns the number of entries removed.
+ */
+export function sweepStaleTempEntries(
+  options: { dir?: string; now?: number; maxAgeMs?: number } = {},
+): number {
+  const dir = options.dir ?? os.tmpdir();
+  const now = options.now ?? Date.now();
+  const maxAgeMs = options.maxAgeMs ?? STALE_TEMP_AGE_MS;
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid === undefined) return 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    const isDirName = SWEPT_DIRECTORY.test(name);
+    const isFileName = SWEPT_FILE.test(name);
+    if (!isDirName && !isFileName) continue;
+    const target = path.join(dir, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(target);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    if (stat.uid !== uid) continue;
+    if (now - stat.mtimeMs <= maxAgeMs) continue;
+    const mode = stat.mode & 0o777;
+    const eligible =
+      (isDirName && stat.isDirectory() && mode === 0o700) ||
+      (isFileName && stat.isFile() && mode === 0o600);
+    if (!eligible) continue;
+    try {
+      fs.rmSync(target, { recursive: stat.isDirectory(), force: true });
+      removed += 1;
+    } catch {
+      // best effort
+    }
+  }
+  return removed;
 }

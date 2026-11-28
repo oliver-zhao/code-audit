@@ -379,16 +379,29 @@ never given the audited repository:
    its lines) masked. Nothing is read back from the copy, so deduplication
    has no per-file budget.
 7. The temporary directory is removed when the scan ends, also on error and
-   timeout. Gitleaks and every git command are started in their own process
-   group; a timeout kills the whole group, and code-audit stops waiting for
-   the output pipes two seconds later, so that a grandchild holding them
-   cannot use up the time left for fingerprinting. While a history scan (or
-   the working-tree Gitleaks scan) runs, handlers for `SIGINT`, `SIGTERM`,
-   `SIGHUP` and process exit kill those process groups and remove the
-   temporary directory (and the working-tree report) synchronously; then the
-   signal's default action proceeds (the handlers are removed when nothing
-   is running). A `SIGKILL` of the code-audit process cannot be handled: the
-   directory (mode 0700) is left in the system temporary directory.
+   timeout. Gitleaks and git stay in code-audit's own process group, so a
+   host that kills that group (an MCP client, a CI runner cancelling a job,
+   `timeout -s KILL`, an OOM kill) takes them down with it. To stop one tool
+   - on a timeout, or from the handlers below - code-audit kills it and all
+   its descendants by walking the process tree (`ps -A -o pid=,ppid=`, the
+   leaves first, a second pass for processes started in between, the tool
+   last) and stops waiting for the output pipes two seconds later, so that a
+   grandchild holding them cannot use up the time left for fingerprinting.
+   While a history scan (or the working-tree Gitleaks scan) runs, handlers
+   for `SIGINT`, `SIGTERM`, `SIGHUP` and process exit kill those trees and
+   remove the temporary directory (and the working-tree report directory)
+   synchronously; then the signal's default action proceeds (the handlers
+   are removed when nothing is running). A `SIGKILL` of code-audit cannot be
+   handled: the tools die with the process group, but their temporary
+   directory (mode 0700, holding the plaintext history report) is left.
+   Therefore, when a `--history` or Gitleaks run is about to start,
+   code-audit removes stale entries of earlier runs from the system
+   temporary directory: only entries named `code-audit-history-*` or
+   `code-audit-gitleaks-*` (directories) and `code-audit-gitleaks-*.json`
+   (report files of earlier versions), owned by the current user, not
+   modified for more than one hour, with mode 0700 (directory) or 0600
+   (file). Symbolic links are never followed or removed and nothing else is
+   touched; the run warns with the number removed.
 
 Limits: `--max-count=10000` (`CODE_AUDIT_HISTORY_MAX_COMMITS`), one
 five-minute budget for clone, `rev-list`, Gitleaks and fingerprinting, at
