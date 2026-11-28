@@ -99,13 +99,13 @@ function hex(bytes: Uint8Array): string {
   return out;
 }
 
-/** The first 8 bytes of a file, or undefined when it cannot be read. */
-export function readMagic(absPath: string): Buffer | undefined {
+/** The first 8 bytes of a file (16 for the .pyc check), or undefined when it cannot be read. */
+export function readMagic(absPath: string, bytes = BINARY_MAGIC_BYTES): Buffer | undefined {
   let fd: number | undefined;
   try {
     fd = fs.openSync(absPath, "r");
-    const buffer = Buffer.alloc(BINARY_MAGIC_BYTES);
-    const read = fs.readSync(fd, buffer, 0, BINARY_MAGIC_BYTES, 0);
+    const buffer = Buffer.alloc(bytes);
+    const read = fs.readSync(fd, buffer, 0, bytes, 0);
     return buffer.subarray(0, read);
   } catch {
     return undefined;
@@ -294,7 +294,15 @@ export function scanBinaryRules(binaries: readonly BinaryFile[], ruleSet: RuleSe
     }
     const file = inventoryEntry(binary);
     for (const rule of [...ungrouped, ...best.values()]) {
-      hits.push({ rule, file, line: 1, evidence: `binary file (${binary.type}, ${binary.size} bytes)` });
+      const tags = new Set(rule.tags ?? []);
+      if (rule.group) for (const other of matched) if (other.group === rule.group) for (const tag of other.tags ?? []) tags.add(tag);
+      hits.push({
+        rule,
+        file,
+        line: 1,
+        evidence: `binary file (${binary.type}, ${binary.size} bytes)`,
+        ...(tags.size > 0 ? { tags: [...tags].sort() } : {}),
+      });
     }
   }
   return hits;

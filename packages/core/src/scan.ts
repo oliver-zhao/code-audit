@@ -474,6 +474,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           ...(hit.rule.owasp ? [hit.rule.owasp] : []),
         ],
         provenance: { engine: "builtin-rules", rule: hit.rule.id, version: TOOL_VERSION },
+        ...(hit.tags ?? hit.rule.tags ? { tags: hit.tags ?? hit.rule.tags } : {}),
       });
 
     const ruleFindings: Finding[] = [];

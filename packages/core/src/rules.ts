@@ -165,6 +165,12 @@ const RuleObjectSchema = z
      * are decoded and adjacent string literals joined with `+` are one text.
      */
     withinMcpDescriptions: z.boolean().optional(),
+    /**
+     * Like `withinMcpDescriptions`, but for every other string literal of the
+     * same files: constants, `dedent(...)` arguments, joined arrays, `__doc__`
+     * assignments, literals inside template holes. Comments are never read.
+     */
+    withinMcpStrings: z.boolean().optional(),
     message: z.string().min(1),
     message_zh: z.string().min(1).optional(),
     remediation: z.string().min(1),
@@ -200,6 +206,7 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
         "matchDeclarations",
         "inSkillTree",
         "withinMcpDescriptions",
+        "withinMcpStrings",
       ] as const) {
         if (rule[field] !== undefined) issue(`${field} is not supported for binary rules`, field);
       }
@@ -211,7 +218,10 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
     if (rule.fileMagic) issue("fileMagic is only supported for rules whose languages are [binary]", "fileMagic");
     if (rule.fileType) issue("fileType is only supported for rules whose languages are [binary]", "fileType");
     if (rule.sourcePresent !== undefined) issue("sourcePresent is only supported for rules whose languages are [binary]", "sourcePresent");
-    if (rule.withinMcpDescriptions) {
+    if (rule.withinMcpDescriptions && rule.withinMcpStrings) {
+      issue("withinMcpDescriptions and withinMcpStrings are mutually exclusive", "withinMcpStrings");
+    }
+    if (rule.withinMcpDescriptions || rule.withinMcpStrings) {
       if (!rule.languages.every((language) => language === "javascript" || language === "typescript" || language === "python")) {
         issue("withinMcpDescriptions is only supported for javascript, typescript and python", "withinMcpDescriptions");
       }
@@ -692,6 +702,11 @@ export interface RuleHit {
   evidence: string;
   /** Reason given by the inline `code-audit:ignore` comment that suppressed the hit. */
   suppressedBy?: string;
+  /**
+   * Tags of the result: the rule's own, or, for the hit a group kept, the
+   * union of the tags of every rule whose hit collapsed into it.
+   */
+  tags?: string[];
 }
 
 /**
@@ -1802,8 +1817,11 @@ export function isVisuallyEmptyLine(line: string): boolean {
   const rest = line
     .replace(/&(?:nbsp|ensp|emsp|thinsp|zwsp|zwnj|zwj|#160|#xa0|#8203|#x200b|#12288|#x3000);/gi, "")
     .replace(/<\/?(?:br|p|div|span)\s*\/?>/gi, "")
+    .replace(/<!--[\s\S]{0,200}?-->/g, "")
     .replace(INVISIBLE, "");
-  return rest.length === 0 || (rest.length === 1 && /[\p{P}\p{S}]/u.test(rest));
+  // Up to three faint marks (".", "..", "| |", "`") show as nothing; brackets,
+  // dashes and other code characters are visible (a lone "}" closes a block).
+  return rest.length === 0 || /^[.,'"`|_~:;\u00B7]{1,3}$/u.test(rest);
 }
 
 /**
@@ -1832,7 +1850,8 @@ function shellLogicalLines(lines: string[], overLong: number[], markdown: boolea
         fence = undefined;
         continue;
       }
-      joinable[index] = fence !== undefined && fenceShell;
+      // Fenced shell blocks, and indented (4 spaces or a tab) code blocks.
+      joinable[index] = fence !== undefined ? fenceShell : /^(?: {4}|\t)/.test(line);
     }
   }
   const joined: LogicalLine[] = [];
@@ -2099,7 +2118,7 @@ function literalScannerFor(ruleSet: RuleSet, language: string): LiteralScanner |
   if (byLanguage.has(language)) return byLanguage.get(language);
   const prefilters: LiteralPrefilter[] = [];
   for (const rule of ruleSet.rules) {
-    if (rule.compiled.prefilter && !rule.withinKeys && !rule.withinFrontmatter && !rule.withinMcpDescriptions && rule.languages.includes(language as never)) {
+    if (rule.compiled.prefilter && !rule.withinKeys && !rule.withinFrontmatter && !rule.withinMcpDescriptions && !rule.withinMcpStrings && rule.languages.includes(language as never)) {
       prefilters.push(rule.compiled.prefilter);
     }
   }
@@ -2238,7 +2257,7 @@ export function scanRules(
       const found = scanner ? scanner.scan(content) : undefined;
       const kept = fileRules.filter((rule) => {
         const prefilter = rule.compiled.prefilter;
-        if (!prefilter || rule.withinKeys || rule.withinFrontmatter || rule.withinMcpDescriptions || !found) return true;
+        if (!prefilter || rule.withinKeys || rule.withinFrontmatter || rule.withinMcpDescriptions || rule.withinMcpStrings || !found) return true;
         return passesFound(prefilter, found);
       });
       fileRules.length = 0;
@@ -2377,11 +2396,21 @@ export function scanRules(
     // descriptions (`mcpDescriptions.ts`).
     let mcpValues: YamlKeyValue[] | undefined;
     const mcpValuesOf = (): YamlKeyValue[] => {
-      mcpValues ??= mcpDescriptionValues(content, file.language).values;
+      if (mcpValues === undefined) {
+        try {
+          mcpValues = mcpDescriptionValues(content, file.language).values;
+        } catch (error) {
+          // Fail soft: the file is still matched by every other rule.
+          mcpValues = [];
+          warnings.push(
+            `${file.relPath}: MCP descriptions could not be read (${error instanceof Error ? error.name : "error"}); rules limited to them were not matched in this file`,
+          );
+        }
+      }
       return mcpValues;
     };
     const valuesOfRule = (rule: LoadedRule): YamlKeyValue[] =>
-      rule.withinMcpDescriptions
+      rule.withinMcpDescriptions || rule.withinMcpStrings
         ? mcpValuesOf()
         : rule.withinFrontmatter
           ? frontmatterValuesOf(rule.withinFrontmatter)
@@ -2389,6 +2418,7 @@ export function scanRules(
     const structuredRules = fileRules.filter(
       (rule) =>
         rule.withinMcpDescriptions === true ||
+        rule.withinMcpStrings === true ||
         rule.withinFrontmatter !== undefined ||
         (rule.withinKeys !== undefined && keyValuesOf(rule.withinKeys) !== undefined),
     );
@@ -2587,7 +2617,7 @@ export function scanRules(
     for (const rule of structuredRules) {
       if (outOfTime) break;
       const values = valuesOfRule(rule);
-      const keys = rule.withinMcpDescriptions ? ["description"] : ((rule.withinFrontmatter ?? rule.withinKeys) as string[]);
+      const keys = rule.withinMcpStrings ? ["string"] : rule.withinMcpDescriptions ? ["description"] : ((rule.withinFrontmatter ?? rule.withinKeys) as string[]);
       const compiled = rule.compiled;
       const locator = compiled.locator;
       if (!locator) continue;
@@ -2738,6 +2768,8 @@ export function scanRules(
     start: number;
     end: number;
     best: RuleHit;
+    /** Tags of every hit in the cluster. */
+    tags: Set<string>;
   }
   const score = (hit: RuleHit): number =>
     ((CONFIDENCE_ORDER[hit.rule.confidence] * 10 + severityRank(hit.rule.severity)) * 256 +
@@ -2755,7 +2787,12 @@ export function scanRules(
       list = [];
       clusters.set(key, list);
     }
-    let merged: Cluster = { start: placement.spanStart, end: placement.spanEnd, best: hit };
+    let merged: Cluster = {
+      start: placement.spanStart,
+      end: placement.spanEnd,
+      best: hit,
+      tags: new Set(hit.rule.tags ?? []),
+    };
     const remaining: Cluster[] = [];
     for (const cluster of list) {
       // Empty spans cannot overlap by the strict test; treat touching as overlap.
@@ -2764,6 +2801,7 @@ export function scanRules(
           start: Math.min(merged.start, cluster.start),
           end: Math.max(merged.end, cluster.end),
           best: score(merged.best) > score(cluster.best) ? merged.best : cluster.best,
+          tags: new Set([...merged.tags, ...cluster.tags]),
         };
       } else {
         remaining.push(cluster);
@@ -2777,7 +2815,11 @@ export function scanRules(
   for (const list of clusters.values()) {
     for (const cluster of list) {
       if (cluster.best.suppressedBy === undefined) winners.add(cluster.best);
+      if (cluster.tags.size > 0) cluster.best.tags = [...new Set([...(cluster.best.tags ?? []), ...cluster.tags])].sort();
     }
+  }
+  for (const hit of [...hits, ...suppressedHits]) {
+    if (hit.tags === undefined && hit.rule.tags) hit.tags = [...hit.rule.tags].sort();
   }
   const dedupedHits = hits.filter((hit) => !hit.rule.group || winners.has(hit));
 

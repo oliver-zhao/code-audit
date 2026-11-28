@@ -64,6 +64,8 @@ definitions:
   LOOKALIKE: '[\u0430\u0435\u043E\u0440\u0441\u0443\u0445\u0456\u0458\u0455\u04BB\u0501\u0410\u0412\u0415\u041A\u041C\u041D\u041E\u0420\u0421\u0422\u0425\u0405\u0406\u0408\u03BF\u0391\u0392\u0395\u0396\u0397\u0399\u039A\u039C\u039D\u039F\u03A1\u03A4\u03A5\u03A7]'
   # Blanks that render as nothing (padding rules).
   BLANK: '[ \t\u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u2800\u3000\u3164\uFEFF\uFFA0]'
+  # The home directory in shell, Python and JavaScript code.
+  HOME_CODE: '~|\$HOME\b|\$\{HOME\}|homedir\(\)|home\(\)|process\.env\.HOME\b|process\.env\[[\x22\x27]HOME[\x22\x27]\]|environ(?:\.get\(|\[)\s*[\x22\x27]HOME[\x22\x27]|getenv\(\s*[\x22\x27]HOME[\x22\x27]|expanduser\(\s*[rbuf]?[\x22\x27]~'
   TEST_PATH: '(?:^|/)(?:tests?|__tests__|spec|specs|testdata)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]+\.py$|_test\.py$|(?:^|/)conftest\.py$'
 rules:
   # ---- Anti-refusal and jailbreak instructions ----
@@ -229,7 +231,7 @@ rules:
     pathInclude: '{{SKILL_SCRIPT}}'
     inSkillTree: '{{TREE_SCRIPT}}'
     patterns:
-      - '[/\x22\x27\s]\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b|\.config[/\\]fish[/\\]config\.fish\b|(?:~|\$HOME|\$\{HOME\}|homedir\(\)|home\(\))[/\\\x22\x27,\s]{0,6}\.(?:claude|codex|gemini)[/\\\x22\x27,\s]{1,6}(?:settings(?:\.local)?\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md|config\.toml|skills|agents|commands|hooks|memory)\b|(?:~|\$HOME|\$\{HOME\}|homedir\(\)|home\(\))[/\\\x22\x27,\s]{0,6}\.claude\.json\b'
+      - '(?:{{HOME_CODE}})[^\n;]{0,80}?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b|(?:{{HOME_CODE}})[^\n;]{0,80}?\.config[/\\\x22\x27,\s]{1,6}fish[/\\\x22\x27,\s]{1,6}config\.fish\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.(?:claude|codex|gemini)[/\\\x22\x27,\s]{1,6}(?:settings(?:\.local)?\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md|config\.toml|skills|agents|commands|hooks|memory)\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.claude\.json\b'
       - '>>|(?<![>=-])>\s*[\x22\x27]?(?:~|\$HOME|\$\{HOME\})|\btee\s|\bsed\s+-i|\bopen\s*\([^\n]{0,300}[\x22\x27](?:a|w|a\+|w\+|ab|wb|r\+)[\x22\x27]|\b(?:appendFileSync|appendFile|writeFileSync|writeFile|createWriteStream|write_text|write_bytes|copyFileSync|copyfile|copytree|symlinkSync|symlink_to)\b|\.write\s*\(|\bcp\s|\bmv\s|\bln\s+-s'
     # cp/mv with the user's file as the source reads it (a test copies ~/.claude/CLAUDE.md into a sandbox).
     notPattern: '\bexport\s+PATH=|\bPATH=\$|[\x22\x27]export\s+PATH=|\b(?:cp|mv)\s+(?:-\w+\s+){0,3}[\x22\x27]?(?:~|\$HOME|\$\{HOME\})/\.(?:claude|codex|gemini|bashrc|zshrc|profile|bash_profile|zprofile)[^\s\x22\x27]{0,200}[\x22\x27]?\s+[\x22\x27]?(?!(?:~|\$HOME|\$\{HOME\})/)[^\s\x22\x27-]'
@@ -501,7 +503,8 @@ rules:
     cwe: CWE-506
     owasp: A08:2021
     languages: [binary]
-    pattern: '\.(?:jar|war|ear|whl|egg)$'
+    # Also a package with a second extension (run.jar.docx is still runnable with java -jar).
+    pattern: '\.(?:jar|war|ear|whl|egg)(?:\.[A-Za-z0-9]{1,8}){0,3}$'
     group: agent-bundled-binary
     message: A skill or plugin ships a .jar, .war, .whl or .egg, a packaged program or library whose code is not in the reviewed source and runs when the skill calls or installs it.
     message_zh: 技能或插件附带 .jar、.war、.whl 或 .egg，这是打包好的程序或库，其代码不在已审查的源码中，在技能调用或安装时运行。
@@ -589,7 +592,7 @@ rules:
     languages: [javascript, typescript, python]
     pathExclude: '{{TEST_PATH}}'
     withinMcpDescriptions: true
-    pattern: '{{IGNORE_PHRASE}}|\bbefore\s+(?:using|calling|running|invoking|executing)\s+(?:this|the|any)\s+(?:tool|function|server)\b[\s\S]{0,40}?\b(?:you\s+)?(?:(?:must|should|need\s+to|always|first)\s+){0,2}(?:read|cat|open|fetch|load|send|pass|include|provide|upload|attach|copy|get)\b[\s\S]{0,80}?(?:~/|\$HOME|\.ssh\b|\.aws\b|\.env\b|id_rsa|credentials|mcp\.json|secrets?\b|tokens?\b|api[_ -]?keys?\b|passwords?\b|private\s+keys?\b)|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert)\s+(?:the\s+)?user\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|show|disclose)\s+(?:this|it|that|anything)\s+to\s+(?:the\s+)?user\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?user\b|\bthe\s+user\s+(?:must|should|will|is|may)\s+not\s+(?:know|see|be\s+(?:told|informed|notified|aware))\b|<\s*/?\s*(?:IMPORTANT|SYSTEM|HIDDEN|SECRET)\s*>|\b(?:read|cat|include|pass|send|upload|attach)\s+(?:the\s+)?(?:(?:contents?|text)\s+of\s+)?(?:the\s+)?(?:user\x27?s\s+)?[\x60\x22\x27]?(?:~|\$HOME)/\.(?:ssh|aws|cursor/mcp\.json|claude|config/gh|netrc|git-credentials|kube)\b|(?:忽略|无视)(?:之前|先前|以上|上面|前面)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则)|不要(?:告诉|告知|通知|提醒)用户|(?:在)?(?:使用|调用)(?:此|本|该)工具(?:之前|前)[\s\S]{0,30}?(?:读取|发送|上传)'
+    pattern: '{{IGNORE_PHRASE}}|\bbefore\s+(?:using|calling|running|invoking|executing)\s+(?:this|the|any)\s+(?:tool|function|server)\b[\s\S]{0,40}?\b(?:you\s+)?(?:(?:must|should|need\s+to|always|first)\s+){0,2}(?:read|cat|open|fetch|load|send|pass|include|provide|upload|attach|copy|get)\b[\s\S]{0,80}?(?:~/|\$HOME|\.ssh\b|\.aws\b|\.env\b|id_rsa|credentials|mcp\.json|secrets?\b|tokens?\b|api[_ -]?keys?\b|passwords?\b|private\s+keys?\b)|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert)\s+(?:the\s+)?user\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|show|disclose)\s+(?:this|it|that|anything)\s+to\s+(?:the\s+)?user\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?user\b|\bthe\s+user\s+(?:must|should|will|is|may)\s+not\s+(?:know|see|be\s+(?:told|informed|notified|aware))\b|<\s*/?\s*(?:IMPORTANT|SYSTEM|HIDDEN)\s*>|\b(?:read|cat|include|pass|send|upload|attach)\s+(?:the\s+)?(?:(?:contents?|text)\s+of\s+)?(?:the\s+)?(?:user\x27?s\s+)?[\x60\x22\x27]?(?:~|\$HOME)/\.(?:ssh|aws|cursor/mcp\.json|claude|config/gh|netrc|git-credentials|kube)\b|(?:忽略|无视)(?:之前|先前|以上|上面|前面)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则)|不要(?:告诉|告知|通知|提醒)用户|(?:在)?(?:使用|调用)(?:此|本|该)工具(?:之前|前)[\s\S]{0,30}?(?:读取|发送|上传)'
     notPattern: '\b(?:detect\w*|flag(?:s|ged)?|block(?:s|ed)?|scan\w*|regex\w*|patterns?|such\s+as|e\.g\.|for\s+example|examples?|attacks?|injections?|malicious|phrases?)\b'
     group: mcp-tool-poisoning
     tags: [malicious-intent]
@@ -639,6 +642,74 @@ rules:
     tags: [malicious-intent]
     message: A word in an MCP tool name or description mixes Latin letters with Cyrillic or Greek letters that look the same (written as characters or escapes), which makes it read differently to the model than to a reviewer, or impersonate another tool.
     message_zh: MCP 工具名称或描述中的单词把拉丁字母与外形相同的西里尔或希腊字母混写（直接写出或以转义写出），使其在模型与审阅者眼中含义不同，或冒充其他工具。
+    remediation: Replace the look-alike letters with the intended ones and review why they were there.
+    remediation_zh: 把形似字母替换为本应使用的字母，并查明其来源。
+    references:
+      - OWASP LLM01 Prompt Injection
+  # Every other string literal of a gated MCP file (withinMcpStrings): the
+  # same patterns, confidence medium; only the invisible-character variant
+  # keeps the tag, since prose in a constant can be a message to the user.
+  - id: mcp-tool-poisoning-string-instruction
+    title: MCP tool description tells the model to ignore instructions, read secrets or hide actions (string outside a description)
+    title_zh: MCP 工具描述要求模型忽略指令、读取密钥或隐瞒操作（描述之外的字符串）
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    pattern: '{{IGNORE_PHRASE}}|\bbefore\s+(?:using|calling|running|invoking|executing)\s+(?:this|the|any)\s+(?:tool|function|server)\b[\s\S]{0,40}?\b(?:you\s+)?(?:(?:must|should|need\s+to|always|first)\s+){0,2}(?:read|cat|open|fetch|load|send|pass|include|provide|upload|attach|copy|get)\b[\s\S]{0,80}?(?:~/|\$HOME|\.ssh\b|\.aws\b|\.env\b|id_rsa|credentials|mcp\.json|secrets?\b|tokens?\b|api[_ -]?keys?\b|passwords?\b|private\s+keys?\b)|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert)\s+(?:the\s+)?user\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|show|disclose)\s+(?:this|it|that|anything)\s+to\s+(?:the\s+)?user\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?user\b|\bthe\s+user\s+(?:must|should|will|is|may)\s+not\s+(?:know|see|be\s+(?:told|informed|notified|aware))\b|\b(?:read|cat|include|pass|send|upload|attach)\s+(?:the\s+)?(?:(?:contents?|text)\s+of\s+)?(?:the\s+)?(?:user\x27?s\s+)?[\x60\x22\x27]?(?:~|\$HOME)/\.(?:ssh|aws|cursor/mcp\.json|claude|config/gh|netrc|git-credentials|kube)\b|(?:忽略|无视)(?:之前|先前|以上|上面|前面)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则)|不要(?:告诉|告知|通知|提醒)用户|(?:在)?(?:使用|调用)(?:此|本|该)工具(?:之前|前)[\s\S]{0,30}?(?:读取|发送|上传)'
+    notPattern: '\b(?:detect\w*|flag(?:s|ged)?|block(?:s|ed)?|scan\w*|regex\w*|patterns?|such\s+as|e\.g\.|for\s+example|examples?|attacks?|injections?|malicious|phrases?)\b'
+    group: mcp-tool-poisoning
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description tells the model to ignore earlier instructions, to read secrets before using the tool, or to keep something from the user; the model reads tool descriptions, the user rarely does.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述要求模型忽略之前的指令、在使用工具前读取密钥，或对用户隐瞒；模型会读取工具描述，而用户很少看到。
+    remediation: Do not install or run the server; remove the text and review every tool description of the server.
+    remediation_zh: 不要安装或运行该服务器；删除该文本并审查服务器的全部工具描述。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-string-hidden-unicode
+    title: Invisible or bidirectional control characters in an MCP tool description (string outside a description)
+    title_zh: MCP 工具描述中含不可见或双向控制字符（描述之外的字符串）
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    flags: ''
+    # Always: zero-width space, word joiner and invisible operators, BOM,
+    # bidi embeddings, overrides and isolates, tag characters. ZWNJ, ZWJ, LRM
+    # and RLM only between ASCII characters: in Arabic, Persian, Hebrew or
+    # Indic text and in emoji sequences they are legitimate.
+    # Outside a description, only invisible characters next to other text:
+    # a literal that is just the character ("\ufeff" to strip a BOM, a list
+    # of bidi controls to remove) is code, not hidden text. No BOM.
+    pattern: '(?<=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]|[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]+(?=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])|\uDB40[\uDC00-\uDC7F]\uDB40[\uDC00-\uDC7F]|(?<=[\x21-\x7E])[\u200C-\u200F]+(?=[\x21-\x7E])'
+    group: mcp-tool-poisoning
+    tags: [malicious-intent]
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description holds zero-width, tag or bidirectional control characters (written as characters or as escape sequences), which editors and diffs do not show but the model reads.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述包含零宽、标签或双向控制字符（直接写出或以转义序列写出），编辑器和 diff 不显示，但模型会读取。
+    remediation: Remove the characters and review the text around them.
+    remediation_zh: 删除这些字符并审查其周围的文本。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-string-homoglyph
+    title: Tool name or description mixes Latin with look-alike Cyrillic or Greek letters (string outside a description)
+    title_zh: 工具名称或描述把拉丁字母与形似的西里尔或希腊字母混写（描述之外的字符串）
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    flags: ''
+    pattern: '[A-Za-z]{{LOOKALIKE}}|{{LOOKALIKE}}[A-Za-z]'
+    group: mcp-tool-poisoning
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. A word in an MCP tool name or description mixes Latin letters with Cyrillic or Greek letters that look the same (written as characters or escapes), which makes it read differently to the model than to a reviewer, or impersonate another tool.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具名称或描述中的单词把拉丁字母与外形相同的西里尔或希腊字母混写（直接写出或以转义写出），使其在模型与审阅者眼中含义不同，或冒充其他工具。
     remediation: Replace the look-alike letters with the intended ones and review why they were there.
     remediation_zh: 把形似字母替换为本应使用的字母，并查明其来源。
     references:

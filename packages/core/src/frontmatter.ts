@@ -20,50 +20,65 @@ export type FrontmatterValuesResult =
 /** Front matter longer than this many lines is not read. */
 export const FRONTMATTER_MAX_LINES = 2000;
 
-const KEY_LINE = /^([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:(?:[ \t]+(.*))?$/;
+/** `key: value`, also indented, with a quoted key or a fullwidth colon. */
+const KEY_LINE = /^([ \t]*)(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\2[ \t]*[:\uFF1A](?:[ \t]*(.*))?$/;
+
+function valueOf(lines: Array<{ text: string; line: number }>, key: string): YamlKeyValue {
+  const starts: number[] = [];
+  let text = "";
+  for (const part of lines) {
+    if (text) text += "\n";
+    starts.push(text.length);
+    text += part.text;
+  }
+  return {
+    key,
+    text,
+    lineAt: (offset) => {
+      let at = 0;
+      for (let part = 0; part < starts.length; part += 1) if ((starts[part] as number) <= offset) at = part;
+      return (lines[at] as { line: number }).line;
+    },
+  };
+}
+
+const unquote = (text: string): string => text.trim().replace(/^(["'])([\s\S]*)\1$/, "$2");
 
 /** Line-based reading of `keys` in the block (`blockLines`, file line of the first = `firstLine`). */
 function lineValues(blockLines: readonly string[], firstLine: number, keys: readonly string[]): YamlKeyValue[] {
   const values: YamlKeyValue[] = [];
   for (let index = 0; index < blockLines.length; index += 1) {
-    const match = KEY_LINE.exec(blockLines[index] as string);
-    if (!match || !keys.includes(match[1] as string)) continue;
-    const parts: string[] = [];
-    const lineOfPart: number[] = [];
-    let first = (match[2] ?? "").trim();
+    const line = blockLines[index] as string;
+    // A flow mapping on one line: {description: "...", name: x}.
+    if (/^[ \t]*\{/.test(line)) {
+      for (const key of keys) {
+        const flow = new RegExp(
+          `[{,][ \\t]*(["']?)${key.replace(/[.]/g, "\\.")}\\1[ \\t]*[:\\uFF1A][ \\t]*("(?:[^"\\\\]|\\\\.){0,10000}"|'[^']{0,10000}'|[^,}]{0,10000})`,
+        ).exec(line);
+        if (flow && unquote(flow[2] as string)) values.push(valueOf([{ text: unquote(flow[2] as string), line: firstLine + index }], key));
+      }
+      continue;
+    }
+    const match = KEY_LINE.exec(line);
+    if (!match || !keys.includes(match[3] as string)) continue;
+    const indent = (match[1] as string).length;
+    const parts: Array<{ text: string; line: number }> = [];
+    let first = (match[4] ?? "").trim();
     // Block scalar indicators and surrounding quotes are not part of the text.
     if (/^[|>][+-]?\d?$/.test(first)) first = "";
-    first = first.replace(/^(["'])(.*)\1$/, "$2");
-    if (first) {
-      parts.push(first);
-      lineOfPart.push(firstLine + index);
-    }
+    first = unquote(first);
+    if (first) parts.push({ text: first, line: firstLine + index });
     let next = index + 1;
-    while (next < blockLines.length && /^(?:[ \t]|$)/.test(blockLines[next] as string)) {
-      const text = (blockLines[next] as string).trim();
-      if (text) {
-        parts.push(text);
-        lineOfPart.push(firstLine + next);
-      }
+    // Continuation lines are indented deeper than the key (or empty).
+    while (next < blockLines.length) {
+      const candidate = blockLines[next] as string;
+      const depth = (/^[ \t]*/.exec(candidate) as RegExpExecArray)[0].length;
+      if (candidate.trim() !== "" && depth <= indent) break;
+      const text = candidate.trim();
+      if (text) parts.push({ text, line: firstLine + next });
       next += 1;
     }
-    if (parts.length === 0) continue;
-    const starts: number[] = [];
-    let text = "";
-    for (const part of parts) {
-      if (text) text += "\n";
-      starts.push(text.length);
-      text += part;
-    }
-    values.push({
-      key: match[1] as string,
-      text,
-      lineAt: (offset) => {
-        let at = 0;
-        for (let part = 0; part < starts.length; part += 1) if ((starts[part] as number) <= offset) at = part;
-        return lineOfPart[at] as number;
-      },
-    });
+    if (parts.length > 0) values.push(valueOf(parts, match[3] as string));
   }
   return values;
 }

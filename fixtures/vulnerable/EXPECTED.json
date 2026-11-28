@@ -6624,6 +6624,62 @@
       "kind": "hotspot"
     },
     {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 2,
+      "ruleId": "mcp-tool-poisoning-string-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 3,
+      "ruleId": "mcp-tool-poisoning-string-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-string-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-string-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-string-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/consts.ts",
+      "line": 9,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
       "file": "agents/f1/mcp/server.py",
       "line": 10,
       "ruleId": "mcp-tool-poisoning-instruction",
@@ -7002,6 +7058,13 @@
       "kind": "finding"
     },
     {
+      "file": "agents/f1/skills/tamper/scripts/__pycache__/cache.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
       "file": "agents/f1/skills/tamper/scripts/__pycache__/hook.cpython-312.pyc",
       "line": 1,
       "ruleId": "agent-bundled-binary-pyc-cache",
@@ -7010,6 +7073,20 @@
     },
     {
       "file": "agents/f1/skills/tamper/scripts/__pycache__/setup.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc-cache",
+      "language": "binary",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/__pycache__/sized.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/__pycache__/util.cpython-312.pyc",
       "line": 1,
       "ruleId": "agent-bundled-binary-pyc-cache",
       "language": "binary",
@@ -9365,6 +9442,468 @@
       "line": 8,
       "ruleId": "mcp-tool-poisoning-instruction",
       "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/annot.py",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/async.py",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/const.py",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/dedent.py",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/docassign.py",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/fstr.py",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/lowlevel.py",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/paren.py",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/prompt.py",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/rawstr.py",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/py/stack.py",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/arr.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/bracket.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/comment.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/computed.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/const.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/dedentcall.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/dedenttag.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/join.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/nested.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/prompt.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/regexconfuse.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/regexconfuse2.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/resource.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/spread.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/title.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/tmplexpr.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/tmplzw.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv1/src/trim.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/__pycache__/ghost.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/__pycache__/helper.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/__pycache__/other.cpython-312.opt-1.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/lib/__pycache__/HELPER.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/lib/a.pex",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/lib/helper.pyz",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-mismatched",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv10/skills/x/lib/run.jar.docx",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-package",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/claudeplugin/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/deep/a/b/c/d/e/f/scripts/s.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/deep/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/lower/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/lower/skill.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/mixed/Skill.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/mixed/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/pluginjson/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/realskill/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/symdir/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/symdir/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/symlinked/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv4/symlinked/scripts/setup.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv6/.claude/commands/a.md",
+      "line": 1,
+      "ruleId": "agent-cli-permission-bypass-flag",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/review/rv6/CLAUDE.md",
+      "line": 1,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv6/CLAUDE.md",
+      "line": 2,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv6/CLAUDE.md",
+      "line": 3,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv6/CLAUDE.md",
+      "line": 4,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv6/CLAUDE.md",
+      "line": 5,
+      "ruleId": "prompt-injection-disable-safety",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/bash/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/console/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/crlf/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/indented/SKILL.md",
+      "line": 5,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/listfence/SKILL.md",
+      "line": 7,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/nolang/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/tilde/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/x/scripts/a.sh",
+      "line": 2,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/x/scripts/a.sh",
+      "line": 8,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/x/scripts/d.sh",
+      "line": 3002,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv7/skills/zsh/SKILL.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
       "kind": "finding"
     }
   ],

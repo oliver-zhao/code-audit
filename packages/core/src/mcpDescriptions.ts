@@ -38,7 +38,12 @@ interface StringToken {
   /** Source offset of each character of `value`. */
   source: number[];
   start: number;
+  /** String literals written inside the `${...}` holes of a template literal. */
+  inner?: StringToken[];
 }
+
+/** Longest description (or other string) text that is examined, in characters. */
+export const MCP_MAX_TEXT = 1024 * 1024;
 interface OtherToken {
   kind: "id" | "punct";
   text: string;
@@ -102,11 +107,15 @@ function readString(
 ): { token: StringToken; next: number } {
   const token: StringToken = { kind: "string", value: "", source: [], start: at };
   let index = at + (options.triple ? 3 : 1);
+  let full = false;
   const push = (text: string, offset: number): void => {
+    if (full) return;
     for (const ch of text) {
       token.value += ch;
       for (let unit = 0; unit < ch.length; unit += 1) token.source.push(offset);
     }
+    // The rest of a very long literal is skipped, not decoded.
+    if (token.value.length >= MCP_MAX_TEXT) full = true;
   };
   while (index < content.length) {
     const ch = content[index] as string;
@@ -121,20 +130,40 @@ function readString(
       continue;
     }
     if (quote === "`" && ch === "$" && content[index + 1] === "{") {
-      // Skip the expression; nested braces and simple strings are balanced.
+      // The expression of a hole: the string literals in it are kept
+      // (`inner`), and a hole that is only a string literal is part of the
+      // text (`${"\u200b"}`); anything else reads as a blank.
       let depth = 1;
+      const holeStart = index + 2;
       index += 2;
+      const literals: StringToken[] = [];
       while (index < content.length && depth > 0) {
         const inner = content[index] as string;
         if (inner === "{") depth += 1;
         else if (inner === "}") depth -= 1;
-        else if (inner === '"' || inner === "'") {
-          const close = content.indexOf(inner, index + 1);
-          if (close > 0) index = close;
+        else if (inner === '"' || inner === "'" || inner === "`") {
+          const read = readString(content, index, inner, { python: false, raw: false, triple: false });
+          literals.push(read.token);
+          index = read.next;
+          continue;
         }
         index += 1;
       }
-      push(" ", index - 1);
+      const holeEnd = index - 1;
+      const only = literals.length === 1 ? (literals[0] as StringToken) : undefined;
+      const between = only ? content.slice(holeStart, only.start).trim() + content.slice(only.start, holeEnd).replace(/^(["'`])[\s\S]*\1/, "").trim() : "x";
+      if (only && between === "") {
+        for (let at = 0; at < only.value.length && !full; at += 1) {
+          token.value += only.value[at];
+          token.source.push(only.source[at] as number);
+        }
+      } else {
+        push(" ", holeEnd);
+      }
+      if (literals.length > 0 && !(only && between === "")) {
+        token.inner ??= [];
+        for (const literal of literals) token.inner.push(literal);
+      }
       continue;
     }
     push(ch, index);
@@ -314,19 +343,25 @@ export function mcpDescriptionValues(content: string, language: string): McpDesc
   const starts = lineStarts(text);
   const values: YamlKeyValue[] = [];
   const seen = new Set<number>();
-  const emit = (parts: StringToken[]): void => {
+  const emit = (parts: StringToken[], key = "description"): void => {
     if (parts.length === 0 || seen.has(parts[0]?.start as number)) return;
-    seen.add(parts[0]?.start as number);
+    for (const part of parts) seen.add(part.start);
     let value = "";
-    const source: number[] = [];
+    // No spread: a part can hold a million characters.
+    let source: number[] = [];
     for (const part of parts) {
+      if (value.length >= MCP_MAX_TEXT) break;
       value += part.value;
-      source.push(...part.source);
+      source = source.concat(part.source);
+    }
+    if (value.length > MCP_MAX_TEXT) {
+      value = value.slice(0, MCP_MAX_TEXT);
+      source = source.slice(0, MCP_MAX_TEXT);
     }
     if (value.length === 0) return;
     const fallbackLine = lineOf(starts, parts[0]?.start as number);
     values.push({
-      key: "description",
+      key,
       text: value,
       lineAt: (offset) => {
         const at = source[Math.min(offset, source.length - 1)];
@@ -411,6 +446,23 @@ export function mcpDescriptionValues(content: string, language: string): McpDesc
       }
       if (isId(token, "class")) toolDecorator = false;
     }
+  }
+  // Every other string literal of the file (key "string"): constants,
+  // dedent(...) arguments, joined arrays, __doc__ assignments, the literals
+  // inside template holes. Import specifiers are left out.
+  const isImportSpecifier = (index: number): boolean => {
+    const previous = tokens[index - 1];
+    if (previous?.kind === "id" && (previous.text === "from" || previous.text === "import")) return true;
+    return isPunct(previous, "(") && (isId(tokens[index - 2], "require") || isId(tokens[index - 2], "import"));
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as Token;
+    if (token.kind !== "string") continue;
+    if (!seen.has(token.start) && !isImportSpecifier(index)) {
+      const expression = stringExpression(tokens, index, python);
+      emit(expression.parts, "string");
+    }
+    for (const inner of token.inner ?? []) emit([inner], "string");
   }
   return { applicable: true, values };
 }

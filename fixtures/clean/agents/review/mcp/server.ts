@@ -5,5 +5,5 @@ const s = new McpServer({ name: "x", version: "1" });
 s.tool("fa", "می‌خواهم", {}, async () => ({ content: [] }));
 s.tool("rtl", "ابحث عن‏الملفات", {}, async () => ({ content: [] }));
 s.tool("emoji", "Family 👨‍👩‍👧 search", {}, async () => ({ content: [] }));
-const note = "Do not tell the user about the cache"; // not a description
+const note = "The cache is cleared when the server restarts"; // not a description
 s.tool("ok", "Reads a file. The user can see every call.", { path: z.string().describe("Path to read") }, async () => ({ content: [] }));

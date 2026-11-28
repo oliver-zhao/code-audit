@@ -613,7 +613,8 @@ export function inventory(
   const binaries: BinaryFile[] = [];
   let binariesTruncated = false;
   const incompleteTrees = new Set<string>();
-  const sourceFiles = new Set<string>();
+  /** .py files by relative path, with their size (for the .pyc source check). */
+  const sourceFiles = new Map<string, number>();
   const addBinary = (binary: BinaryFile, treeKey: string): void => {
     if (binaries.length >= MAX_BINARY_FILES) {
       binariesTruncated = true;
@@ -675,13 +676,13 @@ export function inventory(
       }
       if (!entry.isFile()) continue;
       const rel = toPosixRelative(root, abs);
-      if (rel.endsWith(".py")) sourceFiles.add(rel);
       let size = 0;
       try {
         size = fs.statSync(abs).size;
       } catch {
         size = 0;
       }
+      if (rel.endsWith(".py")) sourceFiles.set(rel, size);
       const header = readMagic(abs);
       const binaryName = BINARY_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
       if (binaryName || /(?:^|\/)__pycache__\//.test(rel) || (header && looksExecutableHeader(header))) {
@@ -718,6 +719,27 @@ export function inventory(
     }
   };
 
+  let realRoot = root;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
+  /** The target of a symbolic link, when it is a readable text file inside the audit root. */
+  const readLinkedInstructionFile = (link: string): { target: string; size: number; loc: number } | undefined => {
+    try {
+      const target = fs.realpathSync(link);
+      if (target !== realRoot && !target.startsWith(`${realRoot}${path.sep}`)) return undefined;
+      const stat = fs.statSync(target);
+      if (!stat.isFile() || stat.size > maxFileSize) return undefined;
+      const buffer = fs.readFileSync(target);
+      if (looksBinary(buffer)) return undefined;
+      return { target, size: stat.size, loc: countLines(buffer.toString("utf8")) };
+    } catch {
+      return undefined;
+    }
+  };
+
   const walk = (dir: string, parentInPackage: boolean, parentTreeRoot: string | undefined): void => {
     let entries: fs.Dirent[];
     try {
@@ -738,13 +760,16 @@ export function inventory(
       parentInPackage ||
       entries.some(
         (entry) =>
-          (entry.isFile() && entry.name.toLowerCase() === "skill.md") ||
+          ((entry.isFile() || entry.isSymbolicLink()) && entry.name.toLowerCase() === "skill.md") ||
           (entry.isDirectory() && entry.name === ".claude-plugin"),
       );
     // The nearest skill or plugin tree root (rules with `inSkillTree`).
     const isTreeRoot = entries.some(
       (entry) =>
-        (entry.isFile() && (entry.name === "SKILL.md" || entry.name === "plugin.json")) ||
+        // SKILL.md in any case, and also as a symbolic link: hosts open it
+        // with a plain read, which follows the link.
+        ((entry.isFile() || entry.isSymbolicLink()) &&
+          (entry.name.toLowerCase() === "skill.md" || entry.name === "plugin.json")) ||
         (entry.isDirectory() &&
           entry.name === ".claude-plugin" &&
           fs.existsSync(path.join(dir, entry.name, "plugin.json"))),
@@ -772,6 +797,33 @@ export function inventory(
       const rel = toPosixRelative(root, abs);
 
       if (entry.isSymbolicLink()) {
+        // A SKILL.md that is a link is read through the link when its target
+        // is a file inside the audit root (it is the skill's instruction
+        // file); a link that leaves the root is not read and is reported.
+        if (entry.name.toLowerCase() === "skill.md") {
+          const linked = readLinkedInstructionFile(abs);
+          if (linked) {
+            files.push({
+              relPath: rel,
+              absPath: linked.target,
+              language: detectLanguage(rel),
+              size: linked.size,
+              loc: linked.loc,
+              kind: "doc",
+              scannable: true,
+              isLockfile: false,
+              ...(treeRoot !== undefined ? { skillTreeRoot: treeRoot } : {}),
+            });
+            totalLoc += linked.loc;
+            warnings.push(
+              `${rel} is a symbolic link to ${toPosixRelative(root, linked.target)}; it was read through the link as the skill's instruction file`,
+            );
+            continue;
+          }
+          warnings.push(
+            `${rel} is a symbolic link to a file outside the audit root or to something that is not a text file; it was not read, but its directory is treated as a skill tree`,
+          );
+        }
         skipped.push({
           relPath: rel,
           reason: "symbolic link (skipped to avoid escape or loops)",
@@ -857,7 +909,7 @@ export function inventory(
 
       const packaged = inPackage || isAgentPackagePath(rel);
       const treeKey = treeRoot ?? path.posix.dirname(rel);
-      if (rel.endsWith(".py")) sourceFiles.add(rel);
+      if (rel.endsWith(".py")) sourceFiles.set(rel, stat.size);
       const ext = path.extname(entry.name).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) {
         skipped.push({ relPath: rel, reason: "binary extension" });
@@ -964,7 +1016,16 @@ export function inventory(
     const parent = binary.relPath.slice(0, at);
     const module = binary.relPath.slice(at + "__pycache__/".length).split(".")[0] as string;
     if (module.includes("/")) continue;
-    binary.sourcePresent = sourceFiles.has(`${parent}${module}.py`);
+    // The cache stands for its source only when it is a timestamp-based
+    // .pyc (flags word 0, PEP 552) that records the size of that very
+    // source. A hash-based .pyc (flags 1 or 3) may be loaded without any
+    // check against the source, and a size mismatch means it was not
+    // compiled from it: both stay bundled bytecode.
+    const sourceSize = sourceFiles.get(`${parent}${module}.py`);
+    const header = readMagic(binary.absPath, 16);
+    const flags = header && header.length >= 16 ? header.readUInt32LE(4) : undefined;
+    const recordedSize = header && header.length >= 16 ? header.readUInt32LE(12) : undefined;
+    binary.sourcePresent = sourceSize !== undefined && flags === 0 && recordedSize === sourceSize >>> 0;
   }
   if (binariesTruncated) {
     warnings.push(
