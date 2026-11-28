@@ -98,9 +98,14 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   conversion - under the same hardening as every other call (no lazy
   fetch, every transport refused, no replace refs or grafts). The working
   file is read by code-audit, and the line diff (Myers, `lineDiff.ts`) is
-  computed in-process with the scanner's own line model (`\r\n`, a lone
-  `\r` and `\n` each end a line), so a finding's line number is the line
-  the diff looked at. A file over 20,000 lines, over 16 MiB, with more than
+  computed in-process on lines split at `\n` (`\r\n` is the same as `\n`).
+  The engines do not number lines the same way when other line breaks are
+  present: the regex engine also ends a line at a lone `\r`, the YAML engine
+  counts `\n` only, and external engines such as Opengrep or Semgrep number
+  lines themselves. So a file whose old or new text contains a lone `\r`,
+  U+2028, U+2029, U+0085, `\v` or `\f` counts as changed in full
+  (`ambiguous-line-breaks` in the warning) instead of risking a finding on
+  a line the diff thinks is unchanged. A file over 20,000 lines, over 16 MiB, with more than
   5,000 changed lines, or that cannot be read counts as changed in full; the
   new lines next to a pure deletion count as changed. The marker tests
   above are repeated for `--diff-lines` (filters, textconv, fsmonitor,
@@ -313,7 +318,20 @@ is one work tree) - relative, absolute, or through a symbolic link that
 resolves there - is not applied, and the scan warns. An applied file is
 always named: a `WARNING:` line in the terminal summary, a warning in
 `run.json` (and in the CI annotations and step summary), and
-`args.operatorIgnoreFile` / `args.operatorBaseline` in `run.json`. MCP `audit_start` has no ignore-file argument and
+`args.operatorIgnoreFile` / `args.operatorBaseline` in `run.json`.
+
+Paths are compared in canonical form (the real path with the file system's
+own spelling, Unicode NFC). Whether the file system ignores letter case is
+detected by looking (the same path with its case swapped names the same
+file), not assumed from the platform; on such a file system the comparison
+ignores case. When the root, or a directory between it and the work tree's
+top level, has a `.git` **file** (a gitfile: a linked worktree, a
+submodule, or a pointer to any other repository), the repository boundary
+cannot be known and operator files are refused with a warning that names
+that file. When the root is not inside a git work tree at all (an extracted
+archive, a plain directory), only the root itself is the boundary: an
+operator file in a parent directory is applied. Keep operator files outside
+any copy of the code you scan (the Action uses `$RUNNER_TEMP`). MCP `audit_start` has no ignore-file argument and
 accepts a baseline only inside the root, so neither applies there under
 `untrusted`.
 

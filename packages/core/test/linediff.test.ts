@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changedLines, splitDiffLines } from "../src/lineDiff.js";
+import { changedLines, hasAmbiguousLineBreaks, splitDiffLines } from "../src/lineDiff.js";
 
 function text(lines: string[]): string {
   return lines.map((line) => `${line}\n`).join("");
@@ -36,10 +36,18 @@ describe("splitDiffLines", () => {
     expect(splitDiffLines("a\n\n")).toEqual(["a", ""]);
   });
 
-  it("numbers lines like the scanner: a lone CR ends a line too", () => {
-    expect(splitDiffLines("a\rb\rc")).toEqual(["a", "b", "c"]);
-    expect(splitDiffLines("a\r\r\nb")).toEqual(["a", "", "b"]);
-    expect(splitDiffLines("a\n\rb\r")).toEqual(["a", "", "b"]);
+  it("splits on LF only; CRLF is the same as LF", () => {
+    expect(splitDiffLines("a\r\nb\r\n")).toEqual(["a", "b"]);
+    expect(splitDiffLines("a\nb")).toEqual(["a", "b"]);
+  });
+
+  it("detects line breaks the engines disagree on", () => {
+    for (const text of ["a\rb", "a\r\r\nb", "a\u2028b", "a\u2029b", "a\u0085b", "a\u000bb", "a\u000cb", "a\r"]) {
+      expect(hasAmbiguousLineBreaks(text), JSON.stringify(text)).toBe(true);
+    }
+    for (const text of ["a\nb", "a\r\nb\r\n", "", "plain"]) {
+      expect(hasAmbiguousLineBreaks(text), JSON.stringify(text)).toBe(false);
+    }
   });
 });
 
@@ -88,27 +96,16 @@ describe("Myers line diff", () => {
     if (!result.whole) expect([...result.changed]).toEqual([1, 2, 3]);
   });
 
-  it("puts a finding after lone CRs on the line the scanner reports", () => {
-    // Line 1 gains three lone CRs (three more lines); the added sink is then
-    // line 5 for the scanner, and must be a changed line here.
+  it("counts a file with ambiguous line breaks as changed in full (old, new, both, new file)", () => {
     const old = "const a = 1;\nfunction ok() {}\n";
     const edited = "const a = 1; //\r//\r//\rx\neval(req.query.code);\nfunction ok() {}\n";
-    const result = changedLines(old, edited);
-    expect(result.whole).toBe(false);
-    if (!result.whole) {
-      const scannerLines = edited.split(/\r\n|\r|\n/);
-      const sink = scannerLines.findIndex((line) => line.startsWith("eval")) + 1;
-      expect(sink).toBe(5);
-      expect(result.changed.has(sink)).toBe(true);
-      expect(result.changed.has(6)).toBe(false);
-    }
-    // \r\r\n in the old, the new and both.
-    const both = changedLines("a\r\r\nb\n", "a\r\r\nb\nc\n");
-    expect(both.whole ? [] : [...both.changed]).toEqual([4]);
-    const inNew = changedLines("a\nb\n", "a\r\r\nb\n");
-    expect(inNew.whole ? [] : [...inNew.changed]).toEqual([2]);
-    const inOld = changedLines("a\r\r\nb\n", "a\nb\nX\n", { markDeletions: false });
-    expect(inOld.whole ? [] : [...inOld.changed]).toEqual([3]);
+    expect(changedLines(old, edited)).toMatchObject({ whole: true, reason: "ambiguous-line-breaks" });
+    expect(changedLines(edited, old)).toMatchObject({ whole: true, reason: "ambiguous-line-breaks" });
+    expect(changedLines("a\r\r\nb\n", "a\r\r\nb\nc\n")).toMatchObject({ whole: true });
+    expect(changedLines("a\nb\n", "a\u2028b\n")).toMatchObject({ whole: true });
+    expect(changedLines(undefined, "a\rb\n")).toMatchObject({ whole: true, reason: "ambiguous-line-breaks" });
+    // CRLF alone is not ambiguous.
+    expect(changedLines("a\nb\n", "a\r\nb\r\nc\r\n")).toMatchObject({ whole: false });
   });
 
   it("ignores a change of line endings alone (CRLF <-> LF)", () => {

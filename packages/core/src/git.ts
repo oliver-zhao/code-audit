@@ -69,7 +69,7 @@ const GIT_HARDENING_ARGS = [
   // `protocol.<name>.allow` wins over `protocol.allow`, and the repository
   // config can set it (`protocol.ext.allow=always`): override every one on
   // the command line, which wins over the repository config for the same key.
-  ...["ext", "file", "fd", "ssh", "git", "http", "https"].flatMap((name) => [
+  ...["ext", "file", "fd", "ssh", "git", "http", "https", "ftp", "ftps"].flatMap((name) => [
     "-c",
     `protocol.${name}.allow=never`,
   ]),
@@ -90,8 +90,8 @@ const GIT_ENV: Record<string, string> = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_OPTIONAL_LOCKS: "0",
   // A partial clone would fetch a missing tree or blob from its promisor
-  // remote (any command, `ls-tree` included): never (git >= 2.44; older git
-  // is held by the protocol overrides above).
+  // remote (any command, `ls-tree` included): never (git >= 2.44; on older
+  // git the protocol overrides above refuse every transport git knows).
   GIT_NO_LAZY_FETCH: "1",
   // `refs/replace/*` and `info/grafts` would let the repository swap the
   // object behind an id (an old blob, a commit or tree of the ref).
@@ -600,6 +600,7 @@ export type WholeFileReason =
   | "new-file"
   | "too-many-lines"
   | "edit-distance"
+  | "ambiguous-line-breaks"
   | "too-large"
   | "not-a-regular-file"
   | "unreadable";
@@ -705,6 +706,7 @@ export async function listChangedLines(
     ([, change]) =>
       change.whole === "too-many-lines" ||
       change.whole === "edit-distance" ||
+      change.whole === "ambiguous-line-breaks" ||
       change.whole === "too-large",
   );
   if (degraded.length > 0) {

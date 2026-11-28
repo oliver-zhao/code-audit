@@ -547,6 +547,74 @@ describe("review fixes", () => {
     expect((gone.run as { baseline?: { fixed: number } }).baseline?.fixed).toBe(first.findings.length);
   });
 
+  it("N1: lone CRs in a workflow file cannot hide YAML-rule findings", async () => {
+    const W = ".github/workflows/ci.yml";
+    const base = "name: ci\non: pull_request_target\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n";
+    const added =
+      "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n" +
+      '      - run: echo "${{ github.event.pull_request.title }}"\n';
+    const repo = makeRepo("n1-yaml", { [W]: base });
+    const expected = ["gha-untrusted-checkout", "gha-script-injection"];
+    // Control: plain new lines.
+    write(repo, W, base + added);
+    const control = await scan(repo, "n1-control", { since: "HEAD", diffLines: true, untrusted: true });
+    for (const rule of expected) expect(control.findings.some((f) => f.ruleId === rule), rule).toBe(true);
+    // Attack: line 1 holds lone CRs; the YAML engine counts \n only.
+    write(repo, W, (base + added).replace("name: ci\n", "name: ci #\r#\r#\r#\r#\r#\r#\n"));
+    const attack = await scan(repo, "n1-attack", { since: "HEAD", diffLines: true, untrusted: true });
+    for (const rule of expected) expect(attack.findings.some((f) => f.ruleId === rule), rule).toBe(true);
+    expect((attack.run.scope as { diffLinesFiltered: number }).diffLinesFiltered).toBe(0);
+    expect(attack.warnings.join("\n")).toMatch(/ambiguous-line-breaks/);
+  });
+
+  it("N2: a case variant of the work tree path and a gitfile are refused", async () => {
+    const repo = makeRepo("n2-case", {
+      "app/app.py": OLD_APP,
+      ".code-audit-ignore": 'version: 1\nignore:\n  - paths: ["**"]\n    reason: "hide"\n',
+    });
+    const root = path.join(repo, "app");
+    const probe = path.join(temp, "N2-Probe");
+    fs.mkdirSync(probe, { recursive: true });
+    const insensitive = fs.existsSync(path.join(temp, "n2-probe"));
+    if (insensitive) {
+      const variant = path.join(path.dirname(repo), path.basename(repo).toUpperCase(), ".code-audit-ignore");
+      expect(fs.existsSync(variant)).toBe(true);
+      const result = await scan(repo, "n2-variant", { root, untrusted: true, ignoreFile: variant } as Record<string, unknown>);
+      expect(result.findings.some((f) => f.suppression?.source === "ignore-file")).toBe(false);
+      expect(result.warnings.join("\n")).toMatch(/--ignore-file is not applied with --untrusted/);
+    }
+    // A gitfile in the root: the boundary is unknown, operator files are refused.
+    const other = makeRepo("n2-other", { "x.txt": "x\n" });
+    const gitfileRoot = path.join(temp, "n2-gitfile");
+    fs.mkdirSync(gitfileRoot, { recursive: true });
+    fs.writeFileSync(path.join(gitfileRoot, "app.py"), OLD_APP);
+    fs.writeFileSync(path.join(gitfileRoot, ".git"), `gitdir: ${path.join(other, ".git")}\n`);
+    const outside = path.join(temp, "n2-operator.yml");
+    fs.writeFileSync(outside, 'version: 1\nignore:\n  - paths: ["**"]\n    reason: "operator"\n');
+    const refused = await scan(gitfileRoot, "n2-gitfile", { untrusted: true, ignoreFile: outside });
+    expect(refused.findings.some((f) => f.suppression?.source === "ignore-file")).toBe(false);
+    expect(refused.warnings.join("\n")).toMatch(/is a file \(a gitfile\)/);
+  });
+
+  it("N3: every git call carries the full protocol deny list and the env hardening", async () => {
+    const repo = makeRepo("n3-args", { "a.py": "x\n" });
+    const bin = path.join(temp, "n3-bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const log = path.join(temp, "n3-git.log");
+    fs.writeFileSync(
+      path.join(bin, "git"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" "LAZY=$GIT_NO_LAZY_FETCH REPLACE=$GIT_NO_REPLACE_OBJECTS GRAFT=$GIT_GRAFT_FILE" >> ${JSON.stringify(log)}\nexit 1\n`,
+    );
+    fs.chmodSync(path.join(bin, "git"), 0o755);
+    await expect(listChangedFiles(repo, "HEAD", { pathEnv: bin })).rejects.toThrow();
+    const text = fs.readFileSync(log, "utf8");
+    for (const name of ["ext", "file", "fd", "ssh", "git", "http", "https", "ftp", "ftps"]) {
+      expect(text).toContain(`protocol.${name}.allow=never`);
+    }
+    expect(text).toContain("core.useReplaceRefs=false");
+    expect(text).toMatch(/LAZY=1 REPLACE=1 GRAFT=\/dev\/null/);
+  });
+
   it("LOW 1: deleting a guard line puts its neighbour in scope", async () => {
     const repo = makeRepo("l1-delete", {
       "a.txt": "one\nguard()\nsink()\nend\n",

@@ -108,8 +108,10 @@ changed line (Myers line diff against the blob of the merge base; a change
 of line endings alone does not count). Dependency advisories and secrets are
 kept for the whole changed file. When a pull request only deletes lines
 (a guard or sanitizer, say), the new lines on either side of the deletion
-count as changed. Lines are numbered like the scanner numbers them (a lone
-CR ends a line too). Files over 20,000 lines or with more than
+count as changed. A file whose old or new text contains line breaks the
+engines number differently (a lone CR, U+2028, U+2029, U+0085, `\v`, `\f`)
+counts as changed in full; external engines such as Opengrep number lines
+themselves, so this keeps their findings in scope too. Files over 20,000 lines or with more than
 5,000 changed lines count as changed in full (a warning names them). The
 number of results left out is `scope.diffLinesFiltered` in `run.json` and
 `findings.json`, and is printed in the summary.

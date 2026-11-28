@@ -191,6 +191,78 @@ function isInsideRoot(root: string, file: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/** Real path with the file system's own spelling (case), or the resolved path. */
+function canonicalPath(file: string): string {
+  try {
+    return fs.realpathSync.native(file);
+  } catch {
+    // A missing file: canonicalise the nearest existing parent.
+    const parent = path.dirname(path.resolve(file));
+    if (parent === path.resolve(file)) return path.resolve(file);
+    return path.join(canonicalPath(parent), path.basename(file));
+  }
+}
+
+/** True when `file` is `tree` or lies below it, compared canonically. */
+function isInsideTree(tree: string, file: string, caseInsensitive: boolean): boolean {
+  const fold = (value: string): string => {
+    const normalized = value.normalize("NFC");
+    return caseInsensitive ? normalized.toLowerCase() : normalized;
+  };
+  const relative = path.relative(fold(canonicalPath(tree)), fold(canonicalPath(file)));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Whether the file system that holds `dir` ignores letter case: the same
+ * path with its case swapped names the same file. Decided by looking, not by
+ * platform; when it cannot be decided (no letter in the path) the answer is
+ * "insensitive", which only ever refuses more operator files.
+ */
+function isCaseInsensitiveFileSystem(dir: string): boolean {
+  let real: string;
+  try {
+    real = fs.realpathSync.native(dir);
+  } catch {
+    return true;
+  }
+  const swapped = [...real]
+    .map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()))
+    .join("");
+  if (swapped === real) return true;
+  try {
+    const a = fs.statSync(real);
+    const b = fs.statSync(swapped);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first `.git` that is a file (not a directory) in `root` or a parent of
+ * it up to `top` (inclusive); `undefined` when there is none. Without a work
+ * tree only `root` itself is checked.
+ */
+function gitFileBetween(root: string, top: string | undefined): string | undefined {
+  let dir = canonicalPath(root);
+  const stop = top === undefined ? dir : canonicalPath(top);
+  for (let depth = 0; depth < 256; depth += 1) {
+    const candidate = path.join(dir, ".git");
+    try {
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isDirectory()) return candidate;
+    } catch {
+      // no .git here
+    }
+    if (dir === stop) return undefined;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
+}
+
 /**
  * Configuration files of the external engines. Each engine reads its own from
  * the directory it scans, so the audited repository can narrow what that
@@ -401,14 +473,34 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     options.noBaseline !== true && typeof options.baseline === "string" && options.baseline !== ""
       ? options.baseline
       : undefined;
+  const operatorFileNotes: string[] = [];
   const workTree =
     untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
       ? await gitWorkTreeRoot(validated.root, { pathEnv: options.pathEnv })
       : undefined;
+  // A `.git` FILE (a gitfile: linked worktree, submodule, or one pointing at
+  // any other repository) between the root and its work tree's top level
+  // makes the repository boundary unknowable: refuse operator files.
+  const gitFileAt =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? gitFileBetween(validated.root, workTree)
+      : undefined;
+  if (gitFileAt !== undefined) {
+    operatorFileNotes.push(
+      `--ignore-file and --baseline are not applied with --untrusted: ${gitFileAt} is a file (a gitfile), not a directory, so the boundary of the audited repository cannot be determined`,
+    );
+  }
+  // Paths are compared in canonical form (real path with the file system's
+  // spelling); on a case-insensitive file system also without case.
+  const caseInsensitive =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? isCaseInsensitiveFileSystem(validated.root)
+      : false;
   const outsideRepository = (file: string): boolean =>
+    gitFileAt === undefined &&
     path.isAbsolute(file) &&
-    !isInsideRoot(validated.root, file) &&
-    (workTree === undefined || !isInsideRoot(workTree, file));
+    !isInsideTree(validated.root, file, caseInsensitive) &&
+    (workTree === undefined || !isInsideTree(workTree, file, caseInsensitive));
   const operatorIgnoreFile =
     untrusted && explicitIgnoreFile !== undefined && outsideRepository(explicitIgnoreFile);
   const refusedIgnoreFile = untrusted && explicitIgnoreFile !== undefined && !operatorIgnoreFile;
@@ -927,6 +1019,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       noIgnoreFile,
     });
     let ignoreEntries: IgnoreEntry[] = [];
+    for (const note of operatorFileNotes) warnings.push(note);
     if (refusedBaseline) {
       warnings.push(
         "--baseline is not applied with --untrusted: it is inside the audited directory or its git work tree, or not an absolute path (name a file outside the repository)",

@@ -15,8 +15,6 @@
  * (fail open: more lines in scope, never fewer).
  */
 
-import { splitLines } from "./redact.js";
-
 export const DEFAULT_DIFF_MAX_LINES = 20_000;
 export const DEFAULT_DIFF_MAX_EDIT_DISTANCE = 5_000;
 
@@ -46,24 +44,38 @@ export type LineDiffResult =
   | {
       /** Not computed: every line of the new text counts as changed. */
       whole: true;
-      reason: "too-many-lines" | "edit-distance";
+      reason: "too-many-lines" | "edit-distance" | "ambiguous-line-breaks";
       newLineCount: number;
     };
 
 /**
- * Split a text into lines exactly the way the scanner numbers them
- * (`splitLines` in redact.ts): `\r\n`, a lone `\r` and `\n` each end a line.
- * Line N here is line N of every finding, so a lone CR cannot shift a finding
- * onto a line the diff considers unchanged. The terminator is not part of a
- * line's content, so a change of line endings alone (CRLF <-> LF) does not
- * make a line "changed", and a final line break is not an extra empty line
- * ("a\nb" and "a\nb\n" both have two lines).
+ * Split a text into lines on `\n`; a `\r` before it is not part of the line,
+ * so a change of line endings alone (CRLF <-> LF) does not make a line
+ * "changed", and a final line break is not an extra empty line ("a\nb" and
+ * "a\nb\n" both have two lines). Texts with other line breaks never get here
+ * (see `hasAmbiguousLineBreaks`).
  */
 export function splitDiffLines(text: string): string[] {
   if (text === "") return [];
-  const lines = splitLines(text);
+  const lines = text.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    if (line.endsWith("\r")) lines[index] = line.slice(0, -1);
+  }
   return lines;
+}
+
+/**
+ * True when the text contains a character that some engine may count as a
+ * line break besides `\n` and `\r\n`: a lone `\r` (the regex engine and
+ * Python), U+2028, U+2029, U+0085 (NEL), `\v` or `\f`. The engines do not
+ * agree on these (the regex engine splits on a lone CR, the YAML engine and
+ * external engines such as Opengrep count `\n` only), so no single line
+ * numbering can match every finding: such a file counts as changed in full.
+ */
+export function hasAmbiguousLineBreaks(text: string): boolean {
+  return /\r(?!\n)|[\u2028\u2029\u0085\u000b\u000c]/.test(text);
 }
 
 /** Map each distinct line to a small integer so comparisons are cheap. */
@@ -285,6 +297,9 @@ export function changedLines(
   const maxLines = options.maxLines ?? DEFAULT_DIFF_MAX_LINES;
   const maxEditDistance = options.maxEditDistance ?? DEFAULT_DIFF_MAX_EDIT_DISTANCE;
   const newLines = splitDiffLines(newText);
+  if (hasAmbiguousLineBreaks(newText) || (oldText !== undefined && hasAmbiguousLineBreaks(oldText))) {
+    return { whole: true, reason: "ambiguous-line-breaks", newLineCount: newLines.length };
+  }
   if (oldText === undefined) {
     const changed = new Set<number>();
     for (let line = 1; line <= newLines.length; line += 1) changed.add(line);
