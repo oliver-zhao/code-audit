@@ -2423,15 +2423,57 @@ function independentText(review: Finding["review"], l: Labels): string {
   );
 }
 
+/** Writing systems told apart in reviewer labels; Japanese scripts count as one. */
+const LABEL_SCRIPTS: Array<[string, RegExp]> = [
+  ["Latin", /\p{Script=Latin}/u],
+  ["Cyrillic", /\p{Script=Cyrillic}/u],
+  ["Greek", /\p{Script=Greek}/u],
+  ["CJK", /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u],
+  ["Hangul", /\p{Script=Hangul}/u],
+  ["Arabic", /\p{Script=Arabic}/u],
+  ["Hebrew", /\p{Script=Hebrew}/u],
+  ["Devanagari", /\p{Script=Devanagari}/u],
+  ["Thai", /\p{Script=Thai}/u],
+];
+
+/** Cyrillic and Greek letters that look like Latin ones. */
+const LATIN_LOOKALIKES = /^[аеорсухѕіјԁԛԝАВЕКМНОРСТУХЅІЈαοριυνκΑΒΕΖΗΙΚΜΝΟΡΤΥΧ]$/u;
+
 /**
- * A reviewer label for report.md: plain characters only (others become
- * `?`), and marked when the label had any, so a look-alike label (a
- * Cyrillic `р` for a Latin `p`) is visible to the reader.
+ * Whether a label could pass for another one: letters of more than one
+ * script (a Cyrillic `а` inside a Latin name), or Cyrillic or Greek letters
+ * that all look like Latin ones (`р` for `p`). A name in one script - Chinese,
+ * Russian, Greek, ... - is not.
+ */
+export function isConfusableLabel(label: string): boolean {
+  const scripts = new Set<string>();
+  const letters: string[] = [];
+  for (const char of label) {
+    if (!/\p{L}/u.test(char)) continue;
+    letters.push(char);
+    const script = LABEL_SCRIPTS.find(([, pattern]) => pattern.test(char))?.[0] ?? "Other";
+    scripts.add(script);
+  }
+  if (scripts.size > 1) return true;
+  if (scripts.has("Cyrillic") || scripts.has("Greek")) return letters.every((char) => LATIN_LOOKALIKES.test(char));
+  return false;
+}
+
+/**
+ * A reviewer label for report.md. An ASCII label, or one in a single script
+ * made of letters, digits, spaces and `._@:/+()-` (a Chinese name), is shown
+ * as written; a confusable one (`isConfusableLabel`) or one with other
+ * characters shows them as `?` and is marked `[non-ASCII label]`, so a
+ * look-alike of another reviewer's label is visible to the reader.
  */
 function labelText(label: string): string {
-  const shown = reviewText(reviewerLabel(label), 60);
   // eslint-disable-next-line no-control-regex
-  return /[^\x00-\x7f]/.test(label) ? `${shown} [non-ASCII label]` : shown;
+  if (!/[^\x00-\x7f]/.test(label)) return reviewText(reviewerLabel(label), 60);
+  const plain = /^[\p{L}\p{N} ._@:/+()-]+$/u.test(label.trim());
+  if (plain && !isConfusableLabel(label)) {
+    return reviewText(redactText(label).replace(/\s+/g, " ").trim().slice(0, 48), 60);
+  }
+  return `${reviewText(reviewerLabel(label), 60)} [non-ASCII label]`;
 }
 
 /** "decided by a person (<label>)" for a human decision. */

@@ -536,11 +536,21 @@ always). Before recording it, the CLI requires:
 - that stdin and stdout are both terminals;
 - that the person types the finding id back at the prompt.
 
-Otherwise it fails with `HUMAN_DECISION_REFUSED` and records nothing. These
+Otherwise it fails with `HUMAN_DECISION_REFUSED` and records nothing. The
+first two checks live in the core library: `recordVerdict` runs them
+whenever it records a human decision, so a script calling the exported API
+is refused like the CLI. On reading, a `role: "human"` entry of
+verdicts.json counts only if it has a reviewer label, the `replace` flag the
+tool records with every human decision, and - for a dismissal of a `high` or
+`critical` finding - the evidence that rule requires; any other is ignored,
+and `audit_status` / `code-audit status` (`warnings`, `notices`) and the
+report's warnings say "ignored an invalid human decision entry". These
 checks are a speed bump, not a proof: they stop an agent that runs the
 command from its own shell tool, not one that drives a pseudo-terminal, runs
 in a host that sets none of these variables, or a person who types for an
-agent. `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`,
+agent. Nothing is signed: whoever can write to the run directory can forge
+any record in it, a human decision included, as long as it has the fields
+above. `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`,
 whose message points to `code-audit verdict --help` without spelling out the
 command. A human decision becomes the current status, closes any dispute and
 is shown as "decided by a person (<name>)" next to the dissent history,
@@ -567,8 +577,13 @@ with its own server, both keep their verdicts; a writer that waits more than
 refreshes the lock's modification time every 10 seconds, so a slow write is
 never taken over; a lock not refreshed for two minutes was left by a writer
 that died. To take one over, a writer first creates `verdicts.json.lock.takeover`
-exclusively (only one takeover at a time; one older than 30 seconds is
-cleared), checks again under it that the lock is still stale, and moves it to
+exclusively (only one takeover at a time; a takeover takes milliseconds, so
+one older than 5 seconds was left by a writer that died and is cleared;
+while another exists, the writer waits with the same backoff as for the
+lock, without using the CPU, and fails with `RUN_LOCKED` after 15 seconds;
+a takeover path that is a directory, a symbolic link or any other non-file
+fails at once with `RUN_LOCK_INVALID`, naming it), checks again under it
+that the lock is still stale, and moves it to
 a name unique to itself (`verdicts.json.lock.stale.<token>`): only one move
 can succeed, and the lock path is never renamed over. The moved file must
 hold the token read before the move (otherwise it is put back with `link`,
@@ -591,8 +606,12 @@ the host's sub-agent isolation, and blind mode only hides what a cooperating
 reviewer asks not to see. Labels are normalised (NFKC, invisible characters,
 case) but look-alike letters from other scripts are not: a Cyrillic `р` and a
 Latin `p` are different reviewers. The report therefore names the
-independent reviewer ("independently reviewed by <label>"), shows characters
-outside plain ASCII as `?` and marks such a label `[non-ASCII label]`.
+independent reviewer ("independently reviewed by <label>"). A label written
+in one script (a Chinese, Russian or Greek name, with digits, spaces and
+`._@:/+()-`) is shown as written. A label that mixes scripts (a Cyrillic `а`
+in a Latin name), or whose Cyrillic or Greek letters all look like Latin ones
+(`р`), or that has other characters, is shown with those characters as `?`
+and marked `[non-ASCII label]`.
 
 `verdicts.json` is written with `schemaVersion: 2`; files with
 `schemaVersion: 1` are read as before (their entries count as primary

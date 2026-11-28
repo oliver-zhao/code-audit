@@ -11,6 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFinding, type Finding } from "../src/finding.js";
 import {
+  isConfusableLabel,
   neutralizeLinks,
   renderMarkdown,
   renderSarif,
@@ -38,9 +39,14 @@ import {
 import { scanProject } from "../src/scan.js";
 import {
   AGENT_ENVIRONMENT_VARIABLES,
+  assertHumanContext,
   confirmHumanDecision,
+  readTerminalLine,
   type HumanGateInput,
-} from "../../cli/src/humanGate.js";
+} from "../src/humanGate.js";
+
+/** Test-only: the registered symbol runstore checks to skip the terminal checks. */
+const TEST_HUMAN = { human: true, [Symbol.for("code-audit.test-only.skip-human-gate")]: true } as const;
 import { CLI, REPO_ROOT, VULNERABLE, cleanup, makeTempDir, writeFile } from "./helpers.js";
 
 const temp = makeTempDir("verdict-evidence");
@@ -734,7 +740,7 @@ describe("round 2: labels, replacing a decision, human decisions, the lock", () 
     ctx = await freshRun("round2");
   });
   const human = (finding: Finding, input: RecordVerdictInput) =>
-    recordVerdict(ctx.runId, finding.id, input, ctx.options, { human: true });
+    recordVerdict(ctx.runId, finding.id, input, ctx.options, TEST_HUMAN);
 
   it("compares reviewer labels normalised and stores them as given (L-n2)", () => {
     const finding = ctx.pick("medium")[0] as Finding;
@@ -901,7 +907,7 @@ describe("round 2: the CLI records structured, independent and human verdicts (L
       first.id,
       { status: "false_positive", rationale: SAFE, reviewer: "alice", role: "human", replace: true, control: { file: APP, line: 3, note: "constant" } },
       { cwd: project },
-      { human: true, cli: true },
+      { ...TEST_HUMAN, cli: true },
     );
     const current = loadRun(runId, { cwd: project }).verdicts[first.fingerprint];
     expect(current?.status).toBe("false_positive");
@@ -1037,7 +1043,7 @@ describe("round 3: the human gate, the lock race, labels in the report", () => {
       two.id,
       { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "alice", role: "human", replace: true },
       ctx.options,
-      { human: true, cli: true },
+      { ...TEST_HUMAN, cli: true },
     );
     const md = renderRunReport(ctx.runId, "md", ctx.options).text;
     expect(md).toMatch(new RegExp(`\\| ${one.id} \\|[^\\n]*\\(independently reviewed by \\? \\[non-ASCII label\\]: subagent\\)`));
@@ -1048,5 +1054,163 @@ describe("round 3: the human gate, the lock race, labels in the report", () => {
     const error = ctx.refused(one, { status: "confirmed", rationale: "x", reviewer: "q", trace: [SOURCE, SINK] });
     expect(error.message).toContain("call again with replace: true");
     expect(error.message).not.toContain("--replace");
+  });
+});
+
+describe("round 4: takeover mutex, the gate in core, invalid human entries, labels", () => {
+  let ctx: Ctx;
+  beforeAll(async () => {
+    ctx = await freshRun("round4");
+  });
+  const staleLock = (): string => {
+    const lock = path.join(ctx.runDir, "verdicts.json.lock");
+    fs.writeFileSync(lock, "1\n");
+    const old = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(lock, old, old);
+    return lock;
+  };
+
+  it("waits for a takeover left by a crashed writer without spinning, then records (M-f1)", () => {
+    const finding = ctx.pick("medium")[0] as Finding;
+    const lock = staleLock();
+    // A fresh takeover file: what a writer that died during a takeover leaves.
+    fs.writeFileSync(`${lock}.takeover`, "9999:dead\n");
+    const cpu = process.cpuUsage();
+    const started = Date.now();
+    expect(ctx.verdict(finding, { status: "needs_review", rationale: "after a crashed takeover" }).status).toBe("needs_review");
+    const wall = Date.now() - started;
+    const used = process.cpuUsage(cpu);
+    expect(wall).toBeLessThan(15_000);
+    expect(wall).toBeGreaterThan(3_000);
+    // Waiting, not spinning: far less CPU time than wall time.
+    expect((used.user + used.system) / 1000).toBeLessThan(wall / 3);
+    expect(fs.readdirSync(ctx.runDir).filter((name) => name.includes(".lock"))).toEqual([]);
+  }, 30_000);
+
+  it("refuses a takeover path that is a directory or a symbolic link at once (M-f1)", () => {
+    const finding = ctx.pick("medium")[1] as Finding;
+    for (const plant of ["directory", "symlink"] as const) {
+      const lock = staleLock();
+      const mutex = `${lock}.takeover`;
+      if (plant === "directory") fs.mkdirSync(mutex);
+      else fs.symlinkSync(path.join(outside, "nowhere"), mutex);
+      const started = Date.now();
+      const error = ctx.refused(finding, { status: "needs_review", rationale: "x" });
+      expect(error.code, plant).toBe("RUN_LOCK_INVALID");
+      expect(error.message).toContain(mutex);
+      expect(error.message).toContain(plant === "directory" ? "a directory" : "a symbolic link");
+      expect(Date.now() - started).toBeLessThan(2000);
+      fs.rmSync(mutex, { recursive: true, force: true });
+      fs.rmSync(lock, { force: true });
+    }
+  });
+
+  it("gates the exported API like the CLI (L-f1)", () => {
+    const finding = ctx.pick("high")[0] as Finding;
+    let caught: unknown;
+    try {
+      recordVerdict(
+        ctx.runId,
+        finding.id,
+        { status: "confirmed", rationale: "x", reviewer: "bob", role: "human", replace: true, trace: [SOURCE, SINK] },
+        ctx.options,
+        { human: true },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as RunStoreError).code).toBe("HUMAN_DECISION_REFUSED");
+    // Under vitest stdin is not a terminal, or an agent variable is set.
+    expect((caught as RunStoreError).message).toMatch(/coding agent|interactive terminal/);
+    expect(ctx.current(finding)?.review?.decidedByPerson).toBeUndefined();
+    const checks = (context: Partial<Parameters<typeof assertHumanContext>[0]>) => {
+      try {
+        assertHumanContext({ env: {}, stdinIsTTY: true, stdoutIsTTY: true, ...context });
+        return "ok";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    expect(checks({})).toBe("ok");
+    expect(checks({ env: { AI_AGENT: "x" } })).toMatch(/AI_AGENT set/);
+    expect(checks({ stdoutIsTTY: false })).toMatch(/interactive terminal/);
+  });
+
+  it("ignores hand-written human entries that this tool would not write (L-f1)", () => {
+    const [high, other] = ctx.pick("high").slice(1) as [Finding, Finding];
+    ctx.verdict(high, { status: "confirmed", rationale: "real", reviewer: "p", trace: [SOURCE, SINK] });
+    const file = path.join(ctx.runDir, "verdicts.json");
+    const document = JSON.parse(fs.readFileSync(file, "utf8"));
+    const forged = (fields: Record<string, unknown>) => ({
+      fingerprint: high.fingerprint,
+      findingId: high.id,
+      status: "false_positive",
+      rationale: "hand edit",
+      at: "2026-11-28T00:00:00.000Z",
+      role: "human",
+      ...fields,
+    });
+    document.entries.push(
+      forged({ reviewer: "carol" }),
+      forged({ replace: true }),
+      forged({ reviewer: "carol", replace: true }),
+      { ...forged({ reviewer: "dave", replace: true, rationale: SAFE, control: CONTROL }), fingerprint: other.fingerprint, findingId: other.id },
+    );
+    fs.writeFileSync(file, `${JSON.stringify(document, null, 2)}\n`);
+    const run = loadRun(ctx.runId, ctx.options);
+    // The three invalid entries are ignored: the decision stays confirmed.
+    expect(run.verdicts[high.fingerprint]?.status).toBe("confirmed");
+    expect(run.verdicts[high.fingerprint]?.decidedByPerson).toBeUndefined();
+    // A complete one (label, replace, evidence) is read as a human decision.
+    expect(run.verdicts[other.fingerprint]?.decidedByPerson?.reviewer).toBe("dave");
+    const status = runStatus(ctx.runId, ctx.options);
+    const warnings = status.warnings.filter((line: string) => line.startsWith("ignored an invalid human decision entry"));
+    expect(warnings).toHaveLength(3);
+    expect(warnings.join(" ")).toMatch(/no replace flag/);
+    expect(warnings.join(" ")).toMatch(/no reviewer label/);
+    expect(warnings.join(" ")).toMatch(/high or critical dismissal without the required evidence/);
+    expect(status.notices.join(" ")).toContain("ignored an invalid human decision entry");
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toContain(`ignored an invalid human decision entry for ${high.id}`);
+    expect(md).not.toContain("decided by a person (carol)");
+    // The file keeps every entry: it is append-only.
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).entries).toHaveLength(document.entries.length);
+  });
+
+  it("shows single-script names as written and marks confusable ones (L-f3)", () => {
+    expect(isConfusableLabel("张三")).toBe(false);
+    expect(isConfusableLabel("山田 太郎")).toBe(false);
+    expect(isConfusableLabel("Иван")).toBe(false);
+    expect(isConfusableLabel("Ελένη")).toBe(false);
+    expect(isConfusableLabel("р")).toBe(true);
+    expect(isConfusableLabel("pаypal")).toBe(true);
+    expect(isConfusableLabel("alice")).toBe(false);
+    const [one, two] = ctx.pick("critical") as [Finding, Finding];
+    ctx.verdict(one, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    ctx.verdict(one, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "张三", ...SUB });
+    ctx.verdict(two, { status: "false_positive", rationale: SAFE, control: CONTROL, reviewer: "p" });
+    ctx.verdict(two, { status: "false_positive", rationale: `${SAFE} python/app.py:3`, reviewer: "pаypal", ...SUB });
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toContain("independently reviewed by 张三: subagent");
+    expect(md).toContain("independently reviewed by p?ypal [non-ASCII label]: subagent");
+  });
+
+  it("reads a typed line from a descriptor without spinning (L-f4)", () => {
+    const file = path.join(temp, "typed.txt");
+    fs.writeFileSync(file, "AUD-2026-0001\r\nrest\n");
+    const fd = fs.openSync(file, "r");
+    try {
+      expect(readTerminalLine(fd)).toBe("AUD-2026-0001");
+    } finally {
+      fs.closeSync(fd);
+    }
+    const empty = path.join(temp, "empty.txt");
+    fs.writeFileSync(empty, "");
+    const fd2 = fs.openSync(empty, "r");
+    try {
+      expect(readTerminalLine(fd2)).toBeUndefined();
+    } finally {
+      fs.closeSync(fd2);
+    }
   });
 });

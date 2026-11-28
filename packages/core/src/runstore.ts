@@ -57,6 +57,7 @@ import {
   type RuleSet,
 } from "./rules.js";
 import { compileGlob } from "./glob.js";
+import { HumanDecisionError, assertHumanContext, processHumanContext } from "./humanGate.js";
 import { InterruptedError, runInterruptible } from "./interrupt.js";
 import {
   LINE_MASK_ALL,
@@ -286,6 +287,8 @@ export interface LoadedRun {
   verdictsDocument: VerdictsDocument;
   /** Things the user should see about this run (printed as warnings). */
   notices: string[];
+  /** Invalid entries of verdicts.json that were ignored; also in `notices`. */
+  verdictWarnings?: string[];
   /** Shared across copies of this object; holds what is loaded on demand. */
   session: RunSession;
 }
@@ -918,10 +921,57 @@ function foldVerdicts(entries: readonly VerdictRecord[]): CurrentVerdict {
   };
 }
 
-export function currentVerdicts(document: VerdictsDocument): CurrentVerdicts {
+/**
+ * Why a stored `role: "human"` entry is not a decision this tool wrote, or
+ * undefined when it is one: it must have a reviewer label, the replace flag
+ * recorded at write time, and - dismissing a high or critical finding - the
+ * evidence `assertDismissalJustified` requires. verdicts.json lives in the
+ * run directory; whoever can edit it can still forge any other record.
+ */
+function invalidHumanEntry(entry: VerdictRecord, finding: Finding | undefined): string | undefined {
+  if (entry.role !== "human") return undefined;
+  if (!entry.reviewer?.trim()) return "no reviewer label";
+  if (entry.replace !== true) return "no replace flag";
+  if (
+    finding &&
+    entry.status === "false_positive" &&
+    finding.kind !== "hotspot" &&
+    severityAtLeast(finding.severity, DISMISSAL_EVIDENCE_SEVERITY)
+  ) {
+    const longEnough = entry.rationale.replace(/\s+/g, " ").length >= DISMISSAL_MIN_RATIONALE;
+    const evidence =
+      entry.control !== undefined ||
+      (entry.evidenceLines ?? []).some((line) => line.trim().length >= 3) ||
+      LOCATION_REFERENCE.test(entry.rationale);
+    if (!longEnough || !evidence) return "a high or critical dismissal without the required evidence";
+  }
+  return undefined;
+}
+
+/** Human entries of a document that are not valid, with the reason. */
+export function invalidHumanEntries(
+  document: VerdictsDocument,
+  findings: readonly Finding[] = [],
+): Array<{ index: number; findingId?: string; reason: string }> {
+  const byFingerprint = new Map(findings.map((finding) => [finding.fingerprint, finding]));
+  const result: Array<{ index: number; findingId?: string; reason: string }> = [];
+  document.entries.forEach((entry, index) => {
+    const reason = invalidHumanEntry(entry, byFingerprint.get(entry.fingerprint));
+    if (reason) result.push({ index, ...(entry.findingId ? { findingId: entry.findingId } : {}), reason });
+  });
+  return result;
+}
+
+/**
+ * The current decision of every fingerprint. With `findings`, a human entry
+ * that `invalidHumanEntry` rejects is left out (and reported by `loadRun`).
+ */
+export function currentVerdicts(document: VerdictsDocument, findings?: readonly Finding[]): CurrentVerdicts {
+  const ignored = new Set(invalidHumanEntries(document, findings ?? []).map((item) => item.index));
   // No prototype: a fingerprint is a key chosen by a file in the repository.
   const grouped = new Map<string, VerdictRecord[]>();
-  for (const entry of document.entries) {
+  for (const [index, entry] of document.entries.entries()) {
+    if (ignored.has(index)) continue;
     const list = grouped.get(entry.fingerprint);
     if (list) list.push(entry);
     else grouped.set(entry.fingerprint, [entry]);
@@ -1202,6 +1252,13 @@ export function loadRun(
   const state = readRunState(runDir);
   const verdictsDocument = readVerdicts(runDir);
   const runId = typeof run.runId === "string" ? run.runId : path.basename(runDir);
+  const allRecords = [...findings, ...hotspots];
+  const verdictWarnings = invalidHumanEntries(verdictsDocument, allRecords).map(
+    (item) =>
+      `ignored an invalid human decision entry${item.findingId ? ` for ${printable(item.findingId, 40)}` : ""} ` +
+      `in verdicts.json (${item.reason}); a person's decision is written only by the CLI`,
+  );
+  notices.push(...verdictWarnings);
   return {
     runDir,
     runId,
@@ -1211,9 +1268,10 @@ export function loadRun(
     hotspots,
     coverage,
     state,
-    verdicts: currentVerdicts(verdictsDocument),
+    verdicts: currentVerdicts(verdictsDocument, allRecords),
     verdictsDocument,
     notices,
+    verdictWarnings,
     session,
   };
 }
@@ -1791,8 +1849,9 @@ export function withRunLock<T>(runDir: string, fn: () => T): T {
     if (stat.isDirectory()) invalid("a directory");
     if (!stat.isFile()) invalid("not a regular file");
     if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-      takeOverStaleLock(lock, token, tokenIn);
-      continue;
+      // Retry at once only when this writer removed the stale lock; when
+      // another writer is taking over, wait like any other writer.
+      if (takeOverStaleLock(lock, token, tokenIn)) continue;
     }
     if (Date.now() > deadline) {
       throw new RunStoreError(
@@ -1823,7 +1882,7 @@ export function withRunLock<T>(runDir: string, fn: () => T): T {
 }
 
 /** A takeover mutex older than this was left by a writer that died during a takeover. */
-const TAKEOVER_STALE_MS = 30_000;
+const TAKEOVER_STALE_MS = 5_000;
 
 /**
  * Remove a lock that nobody refreshed for LOCK_STALE_MS (its writer died),
@@ -1841,7 +1900,7 @@ function takeOverStaleLock(
   lock: string,
   token: string,
   tokenIn: (file: string) => string | undefined,
-): void {
+): boolean {
   const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
   const mutex = `${lock}.takeover`;
   let fd: number | undefined;
@@ -1852,31 +1911,43 @@ function takeOverStaleLock(
     fd = undefined;
   } catch (error) {
     if (fd !== undefined) fs.closeSync(fd);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      // Another writer is taking over; a mutex left by a crash is cleared.
-      try {
-        const stat = fs.lstatSync(mutex);
-        if (stat.isFile() && Date.now() - stat.mtimeMs > TAKEOVER_STALE_MS) fs.rmSync(mutex, { force: true });
-      } catch {
-        // Gone already.
-      }
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw new RunStoreError(`cannot create the lock takeover file ${mutex}: ${(error as Error).message}`, "RUN_STORE_WRITE");
     }
-    return;
+    // Another writer is taking over, or one died doing so.
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.lstatSync(mutex);
+    } catch {
+      return false; // Gone already.
+    }
+    if (!stat.isFile()) {
+      const what = stat.isSymbolicLink() ? "a symbolic link" : stat.isDirectory() ? "a directory" : "not a regular file";
+      throw new RunStoreError(
+        `the lock takeover file ${mutex} is ${what}, not one this tool wrote; nothing was recorded. ` +
+          "Remove it (a person, not an agent: check first that it is not yours) and record the verdict again",
+        "RUN_LOCK_INVALID",
+      );
+    }
+    // A takeover takes milliseconds: one older than TAKEOVER_STALE_MS was
+    // left by a writer that died during it.
+    if (Date.now() - stat.mtimeMs > TAKEOVER_STALE_MS) fs.rmSync(mutex, { force: true });
+    return false;
   }
   try {
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(lock);
     } catch {
-      return; // Released meanwhile.
+      return true; // Released meanwhile: try to create it now.
     }
-    if (!stat.isFile() || Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return;
+    if (!stat.isFile() || Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return false;
     const stale = tokenIn(lock);
     const moved = `${lock}.stale.${token.replace(/[^A-Za-z0-9]/g, "")}`;
     try {
       fs.renameSync(lock, moved);
     } catch {
-      return; // Released meanwhile.
+      return true; // Released meanwhile.
     }
     if (tokenIn(moved) !== stale) {
       try {
@@ -1886,6 +1957,7 @@ function takeOverStaleLock(
       }
     }
     fs.rmSync(moved, { force: true });
+    return true;
   } finally {
     if (tokenIn(mutex) === token) fs.rmSync(mutex, { force: true });
   }
@@ -1963,6 +2035,12 @@ function assertStorable(name: string, text: string): void {
  * The run directory is locked (`withRunLock`) from reading the verdicts to
  * writing them; a write the reader could not load is refused.
  */
+/**
+ * Test-only: skips the terminal and environment checks of a human decision.
+ * Not exported; tests use the same registered symbol.
+ */
+const HUMAN_GATE_TEST_BYPASS = Symbol.for("code-audit.test-only.skip-human-gate");
+
 export interface RecordVerdictAccess {
   /**
    * A person at a terminal confirmed the decision (the CLI's checks in
@@ -2005,6 +2083,15 @@ export function recordVerdict(
   const reviewerInput = input.reviewer?.trim() ? redactText(input.reviewer.trim()).slice(0, 200) : undefined;
   const actorInput = input.actor?.trim() ? redactText(input.actor.trim()).slice(0, 200) : undefined;
   if (role === "human") {
+    // The same checks as the CLI: not in an agent's shell, and at a terminal.
+    if ((access as Record<symbol, unknown>)[HUMAN_GATE_TEST_BYPASS] !== true) {
+      try {
+        assertHumanContext(processHumanContext());
+      } catch (error) {
+        if (error instanceof HumanDecisionError) throw new RunStoreError(error.message, error.code);
+        throw error;
+      }
+    }
     if (!reviewerInput) {
       throw new RunStoreError("a human decision needs --reviewer <your name>; it is shown as \"decided by a person (<name>)\"", "INVALID_VERDICT");
     }
@@ -2122,7 +2209,7 @@ export function recordVerdict(
       ...(reviewerInput ? { reviewer: reviewerInput } : {}),
       role,
       ...(role === "independent" ? { independence: input.independence as Independence } : {}),
-      ...(role !== "independent" && input.replace === true && previous ? { replace: true } : {}),
+      ...((role === "primary" && input.replace === true && previous) || role === "human" ? { replace: true } : {}),
       ...evidence,
     };
     const document: VerdictsDocument = {
@@ -2131,7 +2218,7 @@ export function recordVerdict(
       ...(run.verdictsDocument.strictEvidence ? { strictEvidence: true } : {}),
       entries: [...run.verdictsDocument.entries, entry],
     };
-    const current = currentVerdicts(document);
+    const current = currentVerdicts(document, [...run.findings, ...run.hotspots]);
     const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
     // Every file is rendered and measured before anything is written, so a
     // run that cannot be rendered, or would not load again, is left as it was.
@@ -3075,7 +3162,13 @@ function reportContextOf(run: LoadedRun): ReportContext {
     reviewers.length > 0 ||
     run.verdictsDocument.entries.length > 0 ||
     run.findings.some((finding) => finding.provenance.engine === "agent");
-  return buildReportContext(run.run, {
+  const runRecord = run.verdictWarnings?.length
+    ? {
+        ...run.run,
+        warnings: [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...run.verdictWarnings],
+      }
+    : run.run;
+  return buildReportContext(runRecord, {
     findings: effectiveFindings(run),
     hotspots: effectiveHotspots(run),
     coverage: requireCoverage(run),
@@ -3179,7 +3272,7 @@ export function renderRunReport(
 ): RunReportResult {
   const run = loadRun(ref, options);
   const stats = reviewStats(run);
-  const warnings = Array.isArray(run.run.warnings) ? run.run.warnings : [];
+  const warnings = [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...(run.verdictWarnings ?? [])];
 
   let text: string;
   let outputPath: string | undefined;
@@ -3270,7 +3363,7 @@ export function runStatus(ref: string, options: ResolveRunOptions = {}) {
     ...dismissedFields(run),
     ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
     ...(runRecord.scope ? { scope: runRecord.scope } : {}),
-    warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],
+    warnings: [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...(run.verdictWarnings ?? [])],
     notices: run.notices,
   };
 }

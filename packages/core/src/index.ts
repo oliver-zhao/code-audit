@@ -18,6 +18,7 @@ export * from "./report.js";
 export * from "./safeFs.js";
 export * from "./runSchemas.js";
 export * from "./runstore.js";
+export * from "./humanGate.js";
 export * from "./ignore.js";
 export * from "./baseline.js";
 export * from "./git.js";

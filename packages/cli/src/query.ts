@@ -1,5 +1,7 @@
-import { HumanDecisionError, confirmHumanDecision, readTerminalLine } from "./humanGate.js";
 import {
+  HumanDecisionError,
+  confirmHumanDecision,
+  readTerminalLine,
   CONFIDENCES,
   SEVERITIES,
   VERDICT_STATUSES,
