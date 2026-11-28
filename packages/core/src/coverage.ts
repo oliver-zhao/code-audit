@@ -54,6 +54,24 @@ export interface CoverageReport {
     lowering: boolean;
     files: Record<"test" | "docs" | "example" | "vendored" | "generated", number>;
   };
+  /** Present when --history asked for a secret scan of the git history. */
+  history?: {
+    /** `skipped`: gitleaks is not installed; `partial`: a limit was hit. */
+    status: "ok" | "partial" | "skipped" | "failed";
+    /** The revision range; null for every commit reachable from any ref. */
+    range: string | null;
+    detail: string;
+    /** Commits in the range. */
+    commits: number;
+    /** Commits Gitleaks was asked to scan at most. */
+    maxCommits: number;
+    /** Gitleaks results before deduplication. */
+    results: number;
+    /** History findings reported on their own (the secret is gone or changed place). */
+    findings: number;
+    /** Current findings that the history scan found in older commits too. */
+    annotated: number;
+  };
   /** Present when --since limited the report to changed files. */
   scope?: {
     since: string | null;

@@ -81,6 +81,29 @@ export const ProvenanceSchema = z
   })
   .passthrough();
 
+/**
+ * Where a secret was found in the git history (`scan --history`). Only the
+ * commit id and its date: never the author's name or e-mail address, nor the
+ * commit message.
+ */
+export const FindingHistorySchema = z
+  .object({
+    /** Earliest commit (by date) in which the secret was added. */
+    commit: z.string(),
+    /** Date of that commit (ISO 8601, as Gitleaks reports it). */
+    date: z.string(),
+    /**
+     * True when the secret is still in the working tree: the current scan
+     * reported the same rule for the same value in the same file, or the
+     * file there still contains the value.
+     */
+    stillPresent: z.boolean(),
+    /** Number of history results folded into this finding (at least 1). */
+    occurrences: z.number().int().positive(),
+  })
+  .passthrough();
+export type FindingHistory = z.infer<typeof FindingHistorySchema>;
+
 export const FindingSchema = z
   .object({
     id: z.string().min(1),
@@ -151,6 +174,7 @@ export const FindingSchema = z
      * recomputed from verdicts.json every time). Reports list who dismissed
      * a finding and why from it.
      */
+    history: FindingHistorySchema.optional(),
     review: z
       .object({
         status: z.string(),
@@ -204,6 +228,7 @@ export interface FindingInit {
   pathContext?: PathContext;
   confidenceOriginal?: Confidence;
   adjustments?: string[];
+  history?: FindingHistory;
 }
 
 /**

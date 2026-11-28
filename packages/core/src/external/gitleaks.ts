@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,55 @@ export interface GitleaksResult {
   findings: Finding[];
   warnings: string[];
   outcome: ExternalRunOutcome;
+  /**
+   * SHA-256 (hex) of the secret behind each finding whose value could be
+   * read back from the file (see `secretIdentityOf`). In memory only: never
+   * written to a report. The history scan uses it to recognise the same
+   * secret in an old commit.
+   */
+  secretHashes: Map<Finding, string>;
+}
+
+/** SHA-256 (hex) of a secret value; in memory only. */
+export function secretHash(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * The value that identifies the secret of a report entry: the raw secret
+ * when it can be located exactly (`rawSecretOf`), else the text of the
+ * reported lines (a multi-line private key, for example). Undefined when the
+ * lines are not in `fileLines`. The result is only ever hashed or compared in
+ * memory.
+ */
+export function secretIdentityOf(
+  entry: Parameters<typeof rawSecretOf>[0],
+  fileLines: readonly string[],
+): string | undefined {
+  const raw = rawSecretOf(entry, fileLines);
+  if (raw !== undefined) return raw;
+  const startLine = entry.StartLine;
+  if (typeof startLine !== "number" || startLine < 1 || startLine > fileLines.length) {
+    return undefined;
+  }
+  const endLine =
+    typeof entry.EndLine === "number" && entry.EndLine >= startLine
+      ? Math.min(entry.EndLine, fileLines.length, startLine + 400)
+      : startLine;
+  const text = fileLines.slice(startLine - 1, endLine).join("\n").trim();
+  return text.length > 0 ? text : undefined;
+}
+
+/**
+ * True when the value of a finding of Gitleaks rule `ruleId` is an obvious
+ * placeholder. A token in a provider format cannot be made to contain a
+ * placeholder word, so containing one is enough there. Any other value must
+ * be a placeholder (or a reference) as a whole: `example-Pr0d!` is a password.
+ */
+export function isGitleaksPlaceholder(ruleId: string, rawSecret: string): boolean {
+  return isProviderCredentialRule(`gitleaks-${ruleId}`)
+    ? isPlaceholderSecret(rawSecret)
+    : classifySecretValue(rawSecret) !== "value";
 }
 
 interface GitleaksReportEntry {
@@ -192,6 +242,7 @@ export async function runGitleaks(options: {
 }): Promise<GitleaksResult> {
   const warnings: string[] = [];
   const findings: Finding[] = [];
+  const secretHashes = new Map<Finding, string>();
   const reportPath = path.join(
     os.tmpdir(),
     `code-audit-gitleaks-${process.pid}-${Date.now()}-${Math.random()
@@ -297,14 +348,8 @@ export async function runGitleaks(options: {
 
     const fileLines = linesOf(resolved);
     const rawSecret = fileLines ? rawSecretOf(entry, fileLines) : undefined;
-    // A token in a provider format cannot be made to contain a placeholder
-    // word, so containing one is enough there. Any other value must be a
-    // placeholder (or a reference) as a whole: `example-Pr0d!` is a password.
-    const placeholder =
-      rawSecret !== undefined &&
-      (isProviderCredentialRule(`gitleaks-${ruleId}`)
-        ? isPlaceholderSecret(rawSecret)
-        : classifySecretValue(rawSecret) !== "value");
+    const placeholder = rawSecret !== undefined && isGitleaksPlaceholder(ruleId, rawSecret);
+    const identity = fileLines ? secretIdentityOf(entry, fileLines) : undefined;
 
     const finding = createFinding({
         ruleId: `gitleaks-${ruleId}`,
@@ -328,10 +373,12 @@ export async function runGitleaks(options: {
           ...(options.version ? { version: options.version } : {}),
         },
     });
-    findings.push(
-      placeholder ? lowerConfidence(finding, ADJUSTMENT_PLACEHOLDER, "low") : finding,
-    );
+    const result = placeholder
+      ? lowerConfidence(finding, ADJUSTMENT_PLACEHOLDER, "low")
+      : finding;
+    if (identity !== undefined) secretHashes.set(result, secretHash(identity));
+    findings.push(result);
   }
 
-  return { findings, warnings, outcome };
+  return { findings, warnings, outcome, secretHashes };
 }

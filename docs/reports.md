@@ -222,3 +222,22 @@ compared. This is useful for pre-commit hooks and pull-request checks:
 ```sh
 code-audit scan . --since HEAD --ci --profile quick
 ```
+
+## Secrets in the git history
+
+`--history` (every commit reachable from any ref) or `--history=<range>`
+(`<ref>`, `<ref>..<ref>`, `<ref>...<ref>`) adds a Gitleaks scan of the git
+history, run in an isolated clone (see
+[security-model.md](security-model.md#git-history-scan---history)). It needs
+gitleaks and is skipped without it.
+
+| Where | What |
+|---|---|
+| Finding field `history` | `{ commit, date, stillPresent, occurrences }`: the earliest commit (by date) that added the secret, its date (ISO 8601), whether the secret is still in the working tree, and how many history results were folded into the finding. Never the author or the commit message. Also in SARIF `properties.history` and as a "Git history" line under each finding in `report.md`. |
+| History-only findings | `provenance.engine: "gitleaks-history"`, the rule id `gitleaks-<rule>` of the working-tree scan and its severity and confidence; one per rule, file and secret. Their remediation: rotate the credential, because deleting the file or rewriting the history is not enough. |
+| A secret that is still there | Reported once, as the current finding, with `history.stillPresent: true`: the working-tree Gitleaks result for the same rule and value, or else the current secret finding on the line where the value is now. |
+| `coverage.json` `history` | `status` (`ok`, `partial` when the commit or time limit was hit, `skipped` without gitleaks, `failed`), `range` (null for all refs), `detail`, `commits`, `maxCommits`, `results`, `findings` (history-only findings) and `annotated` (current findings that got a `history`). Also an engine `gitleaks-history` in `engines`, and `args.history` in `run.json`. |
+
+History findings count toward the exit code like any other finding. With
+`--since`, they are kept whatever file they are in: the range of `--history`
+is their scope.

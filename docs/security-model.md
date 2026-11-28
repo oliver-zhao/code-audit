@@ -58,8 +58,10 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
 - **No execution.** Repository code is never executed, imported or
   evaluated; dependencies are never installed; build files and package
   scripts are never run. Files are read as text.
-- **git runs nothing from the repository.** `--since` is the only feature
-  that starts git, and `.git/` is part of the untrusted repository. git is
+- **git runs nothing from the repository.** `--since` and `--history` are
+  the only features that start git (`--history` is described in
+  [its own section](#git-history-scan---history)), and `.git/` is part of the
+  untrusted repository. For `--since`, git is
   never asked to read, hash or convert a working-tree file - that is where
   it runs the `filter.<name>.clean` / `smudge` / `process` programs,
   `textconv` and external diff drivers that `.gitattributes` and
@@ -258,7 +260,8 @@ the audited repository, is reported, and can be switched off:
 | Directories named `build`, `dist`, `vendor`, `bin`, `target`, `coverage`, `node_modules`, ... at any depth | Not read (performance) | `WARNING: N source file(s) in default-excluded directories were not read (vendor/ 2, build/ 1)`; "Skipped files" table | `--untrusted` |
 | A directory that looks like a code-audit run directory (`run.json` naming the tool next to `findings.json`) outside `.audit/` | The tool's output file names in it are not matched against rules; **every secret detector still runs on them** | `WARNING: N file(s) in the audited repository look like code-audit output ...`; `code-audit output` rows in `coverage.json` | `--untrusted` |
 | Files at the adapter paths of `code-audit install` | Skipped **only** when byte-identical (after newline normalisation) to the file this version ships; `.code-audit/installed.json` is never consulted | `code-audit adapter file` rows in `coverage.json` | `--untrusted` |
-| `.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`, `osv-scanner.toml` | The external engine that reads the file may report less | A run warning naming the file (when that engine is selected) | `--engines builtin`, or scan a copy without the file |
+| `.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`, `osv-scanner.toml` | The external engine that reads the file may report less (the `--history` scan passes the root's `.gitleaks.toml` and `.gitleaksignore` to Gitleaks too, but not with `--untrusted`) | A run warning naming the file (when that engine is selected, or `--history` reads it) | `--engines builtin`, or scan a copy without the file; for `--history`: `--untrusted` |
+| `gitleaks:allow` comments in committed content | Gitleaks skips that line | — | `--untrusted` for the `--history` scan (`--ignore-gitleaks-allow`); the working-tree Gitleaks scan honours them |
 
 One switch turns all of it off:
 
@@ -283,6 +286,90 @@ single line (line breaks shown as `⏎`, control and bidirectional-override
 characters as `�`), escaped so that it cannot start a heading, list, table
 row, quote or code fence, and capped in length, in the Markdown report, the
 terminal and the step summary.
+
+## Git history scan (`--history`)
+
+`scan --history[=<range>]` (MCP `audit_start`: `history`) also looks for
+secrets in the git history, with Gitleaks. A secret that was committed and
+later deleted is still in every clone, fork and cache of the repository, so
+it is reported until it is rotated. Without gitleaks the history scan is
+skipped (`coverage.json`: `history.status: "skipped"`), not an error.
+
+The range is checked before anything runs: nothing, or `<ref>`,
+`<ref>..<ref>`, `<ref>...<ref>` where a ref consists of `[A-Za-z0-9._/-]`,
+does not start with `-` or `.` and follows git's ref-name rules (`HEAD~1`,
+`a;b`, `--output=x` are refused with exit code 2). It reaches git and
+Gitleaks as one argument, never through a shell.
+
+Gitleaks' git mode runs `git log -p` in the repository it is given, so it is
+never given the audited repository:
+
+1. `git rev-parse` (with the `--since` hardening above) finds the top level
+   of the repository and checks that the refs of the range exist.
+2. `git clone --mirror --no-local --no-hardlinks --template=` copies every
+   ref and object into a new private temporary directory (mode 0700). The
+   copy's configuration is written by git: it has none of the original's
+   filter, textconv or diff drivers, fsmonitor, hooks path, aliases or
+   attributes file, and `--template=` copies no hooks. `--no-local` makes
+   git read the objects through `upload-pack` instead of copying the object
+   directory, whose files a symbolic link could point anywhere. The
+   hardening's `protocol.allow=never` is relaxed to
+   `protocol.file.allow=always` for this one clone (the local transport is
+   how `--no-local` reads a path). `upload-pack` runs for the audited
+   repository with that repository's configuration; git ignores
+   `uploadpack.packObjectsHook` there, and code-audit starts it as
+   `git -c core.fsmonitor=false -c core.hooksPath=/dev/null
+   -c uploadpack.hideRefs=!refs -c transfer.hideRefs=!refs upload-pack`
+   (a fixed string), so a `hideRefs` entry of the repository cannot keep
+   commits out of the scan. `--mirror` copies every ref, including
+   `refs/remotes/`, `refs/stash` and other namespaces.
+3. Gitleaks runs on the copy: `gitleaks git <copy> --log-opts
+   "--full-history --max-count=N <range|--all>" --report-format json
+   --report-path <tmp>/report.json --redact --no-banner --exit-code 0
+   --gitleaks-ignore-path <empty dir>`, with `GIT_CONFIG_NOSYSTEM=1`,
+   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and, through
+   `GIT_CONFIG_COUNT`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
+   `core.pager=cat`, `core.attributesFile=/dev/null`, `diff.external=`,
+   `log.showSignature=false` and `protocol.allow=never` for the git it
+   starts. With `--untrusted` it also gets `--ignore-gitleaks-allow` and no
+   configuration (the copy has no working tree, so Gitleaks uses its default
+   rules); otherwise the root's own `.gitleaks.toml` and `.gitleaksignore`
+   (regular files inside the root) are passed, as the working-tree scan
+   reads them.
+4. For each result the file at that commit is read from the copy with
+   `git cat-file blob` (which runs no filter) to recover the value in
+   memory: it decides deduplication, the placeholder check and
+   `stillPresent`, and is discarded. At most 2,000 files are read back.
+5. The temporary directory is removed when the scan ends, also on error or
+   timeout.
+
+Limits: `--max-count=10000` (`CODE_AUDIT_HISTORY_MAX_COMMITS`) and five
+minutes for the whole history scan; when either is hit the history status is
+`partial` and the run says why.
+
+Output. A history result is a finding of the Gitleaks rule
+(`gitleaks-<rule>`, same severity and confidence mapping as the working-tree
+scan) with `provenance.engine: "gitleaks-history"` and `history: { commit,
+date, stillPresent, occurrences }`: the earliest commit (by date) that added
+it, and how many results were folded into it. One finding per rule, file
+and secret. A secret that the current scan reports is not reported twice:
+the current finding gets the `history` instead (`stillPresent: true`) when
+the working-tree Gitleaks scan reports the same rule for the same value in
+the same file, or else when the value is still in that file on a line where
+any engine reports a secret. `stillPresent` is also true for a history
+finding whose value the file still contains although no current finding
+covers it (the working-tree scan was not selected, or the value is
+allowlisted there). Author names, e-mail addresses
+and commit messages from the report are never stored or shown. The secret
+never leaves memory: its SHA-256 is used to recognise it, and the
+fingerprint of a history finding is `sha256(rule, file, scrypt(sha256
+(secret)))`, so a fingerprint in a report or baseline cannot be used to test
+guesses of a short password quickly. The remediation says to rotate the
+credential: deleting the file or rewriting the history is not enough.
+
+Not covered: submodules (their history is in another repository), objects
+reachable from no ref (reflog, dangling commits), and the alternates of the
+audited repository are read as the repository's own objects.
 
 ## Run directories are not trusted
 
