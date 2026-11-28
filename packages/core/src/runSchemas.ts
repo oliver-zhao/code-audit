@@ -6,7 +6,7 @@
  * schema before anything else looks at it.
  */
 import { z } from "zod";
-import { FindingSchema } from "./finding.js";
+import { FindingSchema, SEVERITIES } from "./finding.js";
 import { printable } from "./safeFs.js";
 
 /** Largest JSON file read from a run directory. */
@@ -15,7 +15,13 @@ export const MAX_RUN_FILE_BYTES = 128 * 1024 * 1024;
 export const MAX_JSON_DEPTH = 64;
 
 const RUN_PHASES = ["running", "complete", "failed"] as const;
-const VERDICT_STATUS_VALUES = ["confirmed", "likely", "needs_review", "false_positive"] as const;
+const VERDICT_STATUS_VALUES = [
+  "confirmed",
+  "likely",
+  "needs_review",
+  "false_positive",
+  "proof_gap",
+] as const;
 const FINGERPRINT = /^[a-f0-9]{64}$/;
 
 export const RunStateSchema = z.object({
@@ -105,7 +111,7 @@ export const RunRecordSchema = z
       })
       .optional(),
     baselineFixed: z.array(BaselineFixedEntrySchema).optional(),
-    scope: z.object({ since: z.string(), changedFiles: z.number() }).optional(),
+    scope: z.object({ since: z.string(), changedFiles: z.number() }).passthrough().optional(),
     pathContext: z.record(z.number()).optional(),
   })
   .passthrough();
@@ -168,6 +174,7 @@ export const CoverageSchema = z
         changedFiles: z.number(),
         outOfScope: z.number(),
       })
+      .passthrough()
       .optional(),
   })
   .passthrough();
@@ -185,6 +192,45 @@ export const AgentFindingsSchema = z
   })
   .passthrough();
 
+/** Most steps in a verdict `trace`. */
+export const MAX_TRACE_STEPS = 20;
+/** Shortest `missing` text of a `proof_gap` verdict. */
+export const MIN_MISSING_LENGTH = 20;
+
+const LOCATION_FILE = z.string().min(1).max(1000);
+const LOCATION_LINE = z.number().int().positive();
+const NOTE = z.string().max(2000);
+
+export const TraceStepSchema = z.object({
+  file: LOCATION_FILE,
+  line: LOCATION_LINE,
+  role: z.enum(["source", "propagation", "sink"]),
+  note: NOTE.optional(),
+});
+
+export const VerdictConditionsSchema = z.object({
+  auth: z.enum(["none", "user", "admin", "unknown"]).optional(),
+  userInteraction: z.boolean().optional(),
+  note: NOTE.optional(),
+});
+
+export const VerdictControlSchema = z.object({
+  file: LOCATION_FILE,
+  line: LOCATION_LINE,
+  note: NOTE,
+});
+
+/** Longest rationale, note or `missing` text stored with a verdict. */
+export const MAX_VERDICT_TEXT = 4000;
+/** Most verdict entries (primary and independent) stored for one finding. */
+export const MAX_VERDICTS_PER_FINDING = 50;
+
+/**
+ * One entry of verdicts.json: what one reviewer decided about one
+ * fingerprint, stored once (append-only; the current state is computed from
+ * all entries of the fingerprint). Every field after `reviewer` is new in
+ * schemaVersion 2 and optional, so version 1 entries read unchanged.
+ */
 export const VerdictRecordSchema = z.object({
   fingerprint: z.string().regex(FINGERPRINT),
   findingId: z.string().optional(),
@@ -194,11 +240,34 @@ export const VerdictRecordSchema = z.object({
   at: z.string(),
   actor: z.string().optional(),
   reviewer: z.string().optional(),
+  /** Role of the reviewer who wrote this entry; absent (v1) means primary. */
+  role: z.enum(["primary", "independent", "human"]).optional(),
+  /** For role independent: how independent the review was. */
+  independence: z.enum(["subagent", "same-session"]).optional(),
+  /** A primary verdict that knowingly replaced another reviewer's reviewed decision. */
+  replace: z.boolean().optional(),
+  trace: z.array(TraceStepSchema).max(MAX_TRACE_STEPS).optional(),
+  conditions: VerdictConditionsSchema.optional(),
+  control: VerdictControlSchema.optional(),
+  missing: z.string().max(MAX_VERDICT_TEXT).optional(),
+  cwe: z.string().regex(/^CWE-\d{1,6}$/).optional(),
+  severityOverride: z
+    .object({ severity: z.enum(SEVERITIES), reason: z.string().max(MAX_VERDICT_TEXT) })
+    .optional(),
 });
 
+/** Version 1 and 2 are read; version 2 is written. */
+export const VERDICTS_SCHEMA_VERSION = 2;
+
 export const VerdictsSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   runId: z.string(),
+  /**
+   * Set by `audit_start` with `strict_evidence`: verdicts of this run require
+   * structured evidence unless a call says otherwise. It can only make the
+   * checks stricter than the default.
+   */
+  strictEvidence: z.boolean().optional(),
   entries: z.array(VerdictRecordSchema),
 });
 

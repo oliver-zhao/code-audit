@@ -514,6 +514,111 @@ describe("report size and order", () => {
     expect(hotspotSection).toContain("+");
   });
 
+  it("stays within the same budget once every code finding and hotspot is reviewed", () => {
+    const trace = [
+      { file: "src/a.py", line: 1, role: "source", note: "request data" },
+      { file: "src/b.py", line: 2, role: "propagation" },
+      { file: "src/c.py", line: 3, role: "propagation" },
+      { file: "src/d.py", line: 4, role: "sink", note: "the call" },
+    ];
+    const states: Array<[string, Record<string, unknown>]> = [
+      ["needs_review", { status: "needs_review", review: { status: "needs_review", rationale: "unsure" } }],
+      [
+        "proof_gap with every field",
+        {
+          status: "proof_gap",
+          review: {
+            status: "proof_gap",
+            rationale: "could not tell",
+            missing: "whether the handler is reachable without the admin role, ".repeat(5),
+            trace,
+            severityOverride: { severity: "low", reason: "needs an admin session ".repeat(5) },
+          },
+        },
+      ],
+      ["confirmed with a trace", { status: "confirmed", review: { status: "confirmed", rationale: "traced", trace } }],
+      [
+        "disputed",
+        {
+          status: "needs_review",
+          review: {
+            status: "needs_review",
+            primaryStatus: "confirmed",
+            rationale: "traced",
+            trace,
+            disputed: true,
+            disputeOpen: true,
+            dissent: { reviewer: "sub", role: "independent", status: "false_positive", at: "x", rationale: "constant ".repeat(30), independence: "subagent" },
+          },
+        },
+      ],
+    ];
+    // L-n5: every field at its maximum - 20 trace steps with 500-character
+    // notes and 200-character paths, 4000-character texts, an open dispute
+    // and a proof gap on every record.
+    const longTrace = Array.from({ length: 20 }, (_, index) => ({
+      file: `${"p".repeat(190)}/f${index}.py`,
+      line: index + 1,
+      role: index === 0 ? "source" : index === 19 ? "sink" : "propagation",
+      note: "n".repeat(500),
+    }));
+    const dissent = {
+      reviewer: "r".repeat(200),
+      role: "independent",
+      status: "false_positive",
+      at: "x",
+      rationale: "d".repeat(4000),
+      independence: "same-session",
+    };
+    for (const status of ["proof_gap", "needs_review"]) {
+      states.push([
+        `every field at its maximum (${status})`,
+        {
+          status,
+          review: {
+            status,
+            primaryStatus: "proof_gap",
+            rationale: "q".repeat(4000),
+            missing: "m".repeat(4000),
+            trace: longTrace,
+            conditions: { auth: "admin", userInteraction: true, note: "c".repeat(2000) },
+            evidenceLines: Array.from({ length: 20 }, () => "e".repeat(1000)),
+            disputed: true,
+            disputeOpen: true,
+            dissent,
+            history: Array.from({ length: 50 }, () => dissent),
+            // A person's decision on a disputed record adds the cover line.
+            decidedByPerson: { reviewer: "a".repeat(200), at: "x" },
+          },
+        },
+      ]);
+    }
+    for (const [label, state] of states) {
+      const { findings, hotspots } = large();
+      // A confirmed verdict raises a low confidence to high and so moves a
+      // low-confidence candidate into the headline (counting behaviour from
+      // before F3, more findings rather than more review text): here the
+      // low-confidence records get needs_review, the rest the state.
+      const reviewed = (list: Finding[]) =>
+        list.map(
+          (finding) =>
+            (finding.confidence === "low" && state.status === "confirmed"
+              ? { ...finding, ...states[0]![1] }
+              : { ...finding, ...state }) as Finding,
+        );
+      const md = renderMarkdown(context(reviewed(findings), reviewed(hotspots)));
+      const lines = md.split("\n");
+      expect(lines.length, label).toBeLessThanOrEqual(699);
+      if (label.startsWith("every field")) expect(md, label).toContain("were settled by a person's decision");
+      if (label.startsWith("proof_gap")) {
+        expect(md).toContain("- **Open proof gaps (790)**");
+        expect(md).toContain("… 787 more (see findings.json)");
+        expect(md).toContain("… 1 more (see findings.json)");
+      }
+      if (label === "disputed") expect(md).toContain("- **Disputed verdicts (790)**");
+    }
+  });
+
   it("orders the sections: cover, findings, dependencies, candidates, hotspots, suppressed, fixed, coverage", () => {
     const { findings, hotspots } = mixed();
     const md = renderMarkdown(

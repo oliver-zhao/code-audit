@@ -30,6 +30,7 @@ import {
   type EngineName,
   type ReportFormat,
   type Severity,
+  initRunVerdicts,
 } from "@code-audit/core";
 import { runMcpServer } from "@code-audit/mcp";
 import fs from "node:fs";
@@ -68,6 +69,7 @@ Usage:
   code-audit skill <target> [--recursive] [--format md,json,sarif] [--out <dir>]
                         [--offline] [--engines ...] [--rules <dir>] [--json]
                         [--allow-sensitive-root]
+                        [--strict-evidence]
   code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--root <dir>] [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
@@ -78,9 +80,16 @@ Usage:
   code-audit search <run-id|run-dir> <pattern> [--glob <g>] [--regex]
                         [--max-results N] [--timeout-ms N] [--json]
   code-audit verdict <run-id|run-dir> <finding-id|fingerprint>
-                        --status confirmed|likely|needs_review|false_positive
+                        --status confirmed|likely|needs_review|false_positive|proof_gap
                         --rationale <text> [--evidence-line <text>]
                         [--actor <name>] [--reviewer <name>] [--json]
+                        [--role primary|independent|human]
+                        [--independence subagent|same-session] [--replace]
+                        [--trace <file:line:role[:note]>]... [--control <file:line[:note]>]
+                        [--missing <text>] [--cwe <CWE-n>]
+                        --role human: a person's decision; needs --replace and
+                        --reviewer, an interactive terminal and the finding id
+                        typed back, and is refused in a coding agent's shell
   code-audit add-finding <run-id|run-dir> --rationale <text>
                         [--file <f> --start N [--end N] --title <t>
                          --severity <s> --cwe <cwe> [--confidence <c>]
@@ -147,6 +156,8 @@ Scan options:
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
                          ~/.aws, ~/.config, /etc, ...) or one below it; refused
                          without this flag
+  --strict-evidence      every verdict of this run needs structured evidence
+                         (trace, control or missing; see docs/mcp.md)
   --profile <name>       standard (default): every installed engine, OSV.dev lookups;
                          quick: built-in engines only, no network (same as
                          --no-external --offline; --engines still applies)
@@ -246,6 +257,7 @@ interface ScanArgs {
   untrusted: boolean;
   allowSensitiveRoot: boolean;
   history?: boolean | string;
+  strictEvidence: boolean;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -275,6 +287,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let untrusted = false;
   let allowSensitive = false;
   let history: boolean | string | undefined;
+  let strictEvidence = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -389,6 +402,8 @@ function parseScanArgs(args: string[]): ScanArgs {
     } else if (arg.startsWith("--history=")) {
       // Validated by scanProject before anything is written (exit code 2).
       history = arg.slice("--history=".length);
+    } else if (arg === "--strict-evidence") {
+      strictEvidence = true;
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -429,6 +444,7 @@ function parseScanArgs(args: string[]): ScanArgs {
     untrusted,
     allowSensitiveRoot: allowSensitive,
     ...(history !== undefined ? { history } : {}),
+    strictEvidence,
   };
 }
 
@@ -475,6 +491,8 @@ async function runScan(args: string[]): Promise<number> {
     untrusted: parsed.untrusted,
     ...(parsed.history !== undefined ? { history: parsed.history } : {}),
   });
+  // Every later verdict of this run needs structured evidence.
+  if (parsed.strictEvidence) initRunVerdicts(result.runDir, result.runId, { strictEvidence: true });
 
   const run = result.run as {
     baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };

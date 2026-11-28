@@ -27,6 +27,9 @@ export const FindingStatusSchema = z.enum([
   "needs_review",
   "false_positive",
   "suppressed",
+  // A reviewer could not prove or refute the finding and named the missing
+  // fact (`review.missing`). Counted like needs_review: open, not dismissed.
+  "proof_gap",
 ]);
 export type FindingStatus = z.infer<typeof FindingStatusSchema>;
 
@@ -103,6 +106,18 @@ export const FindingHistorySchema = z
   })
   .passthrough();
 export type FindingHistory = z.infer<typeof FindingHistorySchema>;
+/** One entry of a verdict's review history (see runstore `VerdictHistoryItem`). */
+const ReviewHistoryItemSchema = z.object({
+  reviewer: z.string(),
+  role: z.string(),
+  status: z.string(),
+  at: z.string(),
+  rationale: z.string(),
+  independence: z.string().optional(),
+  superseded: z.boolean().optional(),
+  disagreed: z.boolean().optional(),
+  replace: z.boolean().optional(),
+});
 
 export const FindingSchema = z
   .object({
@@ -183,6 +198,48 @@ export const FindingSchema = z
         actor: z.string().optional(),
         at: z.string().optional(),
         evidenceLines: z.array(z.string()).optional(),
+        // Structured evidence of verdicts.json schemaVersion 2.
+        trace: z
+          .array(
+            z.object({
+              file: z.string(),
+              line: z.number(),
+              role: z.string(),
+              note: z.string().optional(),
+            }),
+          )
+          .optional(),
+        conditions: z
+          .object({
+            auth: z.string().optional(),
+            userInteraction: z.boolean().optional(),
+            note: z.string().optional(),
+          })
+          .optional(),
+        control: z
+          .object({ file: z.string(), line: z.number(), note: z.string() })
+          .optional(),
+        missing: z.string().optional(),
+        cwe: z.string().optional(),
+        severityOverride: z
+          .object({ severity: z.string(), reason: z.string() })
+          .optional(),
+        /** Status of the latest primary verdict (differs from `status` while a dispute is open). */
+        primaryStatus: z.string().optional(),
+        /** The review history, oldest first; nothing is removed. */
+        history: z.array(ReviewHistoryItemSchema).optional(),
+        /**
+         * True when an independent reviewer whose label differs from every
+         * primary label agreed with the current decision.
+         */
+        independentlyReviewed: z.boolean().optional(),
+        independentReview: ReviewHistoryItemSchema.optional(),
+        /** An independent reviewer disagreed at some point. */
+        disputed: z.boolean().optional(),
+        dissent: ReviewHistoryItemSchema.optional(),
+        disputeOpen: z.boolean().optional(),
+        /** Set when a person decided (CLI `--role human`); it settles any dispute. */
+        decidedByPerson: z.object({ reviewer: z.string(), at: z.string() }).optional(),
       })
       .optional(),
   })

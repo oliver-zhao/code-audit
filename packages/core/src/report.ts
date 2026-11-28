@@ -135,6 +135,37 @@ const EN = {
   dismissedUnnamed: "unnamed reviewer",
   dismissedNoVerdict: "no verdict record",
   dismissedMore: "… and {n} more; all of them are in findings.json (status false_positive) and verdicts.json.",
+  // Review ledger; see `triageCoverage`.
+  reviewIncomplete:
+    "Review incomplete: {findings} of {findingsTotal} finding(s) and {hotspots} of {hotspotsTotal} hotspot(s) have no verdict (see “Review coverage”). Do not describe this run as free of issues.",
+  triageHeading: "Review coverage",
+  triageLine: "{kind}: {total} · with a verdict {reviewed} · not reviewed {unreviewed}",
+  triageByRule: "not reviewed, by rule",
+  triageFindings: "Findings",
+  triageHotspots: "Hotspots",
+  triageOpen: "open after review (needs_review or proof_gap): {open} · independently reviewed: {independent}",
+  triageMoreRules: "+{n} more rule(s)",
+  proofGapsHeading: "Open proof gaps",
+  proofGapsNote: "neither proved nor refuted; open, counted like needs_review",
+  proofGapNotStated: "not stated",
+  noneUnreviewed:
+    "Nothing to list in this section. This is not a clean result: {n} finding(s) or hotspot(s) have no verdict yet (see “Review coverage”).",
+  independentlyReviewed: "independently reviewed",
+  noneDependencies: "No vulnerable dependency was found.",
+  moreSeeJson: "… {n} more (see findings.json)",
+  disputesHeading: "Disputed verdicts",
+  disputeOpen: "disputed",
+  disputeResolved: "was disputed",
+  disputeSaid: "said",
+  disputeDecision: "decision",
+  decidedByPerson: "decided by a person ({label})",
+  independentBy: "by {label}",
+  humanOverride:
+    "{n} dispute(s) between reviewers were settled by a person's decision recorded with the CLI (--role human): {ids}. The dissent is listed under \u201cReview coverage\u201d; check each one.",
+  traceLabel: "Trace",
+  controlLabel: "Control",
+  missingLabel: "Missing",
+  severityOverrideLabel: "Reviewer severity",
   warnDismissed:
     "{n} finding(s) at severity ≥ {failOn} were marked false positive by {reviewers} and do not count toward the exit code; review the section \"Dismissed by review\".",
   warnDismissedMore: "and {n} more",
@@ -378,6 +409,36 @@ const ZH: Labels = {
   dismissedUnnamed: "未署名的复核者",
   dismissedNoVerdict: "无裁决记录",
   dismissedMore: "……另有 {n} 条；全部记录在 findings.json（status 为 false_positive）和 verdicts.json 中。",
+  reviewIncomplete:
+    "复核未完成：{findingsTotal} 条发现中有 {findings} 条、{hotspotsTotal} 个热点中有 {hotspots} 个尚无裁定（见“复核覆盖”）。不要把本次结果描述为没有问题。",
+  triageHeading: "复核覆盖",
+  triageLine: "{kind}：共 {total} · 已有裁定 {reviewed} · 未复核 {unreviewed}",
+  triageByRule: "未复核（按规则）",
+  triageFindings: "发现",
+  triageHotspots: "热点",
+  triageOpen: "复核后仍未决（needs_review 或 proof_gap）：{open} · 经独立复核：{independent}",
+  triageMoreRules: "另有 {n} 条规则",
+  proofGapsHeading: "未决的证明缺口",
+  proofGapsNote: "既未证实也未否定；仍为未决项，与 needs_review 同样计数",
+  proofGapNotStated: "未说明",
+  noneUnreviewed:
+    "本节没有可列出的条目。这不代表结果干净：仍有 {n} 条发现或热点尚无裁定（见“复核覆盖”）。",
+  independentlyReviewed: "已独立复核",
+  noneDependencies: "未发现存在漏洞的依赖。",
+  moreSeeJson: "……另有 {n} 条（见 findings.json）",
+  disputesHeading: "有争议的裁定",
+  disputeOpen: "有争议",
+  disputeResolved: "曾有争议",
+  disputeSaid: "认为",
+  disputeDecision: "裁定",
+  decidedByPerson: "由人工裁定（{label}）",
+  independentBy: "（{label}）",
+  humanOverride:
+    "{n} 处复核者之间的争议由人工裁定（CLI --role human）解决：{ids}。反对意见列在“复核覆盖”中，请逐条核对。",
+  traceLabel: "调用链",
+  controlLabel: "防护点",
+  missingLabel: "缺少",
+  severityOverrideLabel: "复核者建议的严重性",
   warnDismissed:
     "{n} 条严重性 ≥ {failOn} 的发现被 {reviewers} 标记为误报，不计入退出码；请核对“复核中被驳回的发现”一节。",
   warnDismissedMore: "以及另外 {n} 个",
@@ -1102,7 +1163,7 @@ export interface FindingSummary {
 
 /** A reviewer label as shown in a warning: one line, plain characters, short. */
 export function reviewerLabel(value: string): string {
-  return value
+  return redactText(value)
     .replace(/[^A-Za-z0-9._@:/ +()-]/g, "?")
     .replace(/\s+/g, " ")
     .trim()
@@ -1114,6 +1175,116 @@ export function dismissedBy(finding: Finding): string | undefined {
   const review = finding.review;
   const label = reviewerLabel(review?.reviewer || review?.actor || "");
   return label === "" ? undefined : label;
+}
+
+export interface TriageRuleCount {
+  ruleId: string;
+  total: number;
+  reviewed: number;
+  unreviewed: number;
+}
+
+export interface TriageKindCount {
+  total: number;
+  reviewed: number;
+  unreviewed: number;
+  /** Rules with records of this kind, most unreviewed first. */
+  byRule: TriageRuleCount[];
+}
+
+export interface ProofGapItem {
+  id: string;
+  kind: string;
+  severity: Severity;
+  ruleId: string;
+  file: string;
+  line: number;
+  /** What the reviewer could not establish; absent when not stated. */
+  missing?: string;
+}
+
+/**
+ * The review ledger of a run: for findings and hotspots, how many records
+ * have a verdict and how many nobody has looked at, by rule. Suppressed
+ * records are left out (they are listed on their own). A record counts as
+ * reviewed when it carries a `review` (the run store adds it from
+ * verdicts.json); in a report written by the scan nothing is reviewed yet.
+ */
+export interface TriageCoverage {
+  findings: TriageKindCount;
+  hotspots: TriageKindCount;
+  /** Reviewed records whose status is still needs_review or proof_gap. */
+  open: number;
+  /** Records whose current decision an independent reviewer has checked. */
+  independentlyReviewed: number;
+  /** Suppressed records, not part of the ledger. */
+  suppressed: number;
+  /** Records an independent reviewer disputed at some point. */
+  disputed: number;
+  /** Records whose dispute is still open (status needs_review). */
+  disputesOpen: number;
+  proofGaps: ProofGapItem[];
+}
+
+function triageKind(records: readonly Finding[]): TriageKindCount {
+  const byRule = new Map<string, TriageRuleCount>();
+  let reviewed = 0;
+  for (const finding of records) {
+    const group = byRule.get(finding.ruleId) ?? { ruleId: finding.ruleId, total: 0, reviewed: 0, unreviewed: 0 };
+    group.total += 1;
+    if (finding.review) {
+      group.reviewed += 1;
+      reviewed += 1;
+    } else {
+      group.unreviewed += 1;
+    }
+    byRule.set(finding.ruleId, group);
+  }
+  return {
+    total: records.length,
+    reviewed,
+    unreviewed: records.length - reviewed,
+    byRule: [...byRule.values()].sort(
+      (a, b) => b.unreviewed - a.unreviewed || b.total - a.total || a.ruleId.localeCompare(b.ruleId),
+    ),
+  };
+}
+
+export function triageCoverage(
+  findings: readonly Finding[],
+  hotspots: readonly Finding[] = [],
+): TriageCoverage {
+  const counted = (finding: Finding): boolean => finding.status !== "suppressed";
+  const all = [...findings, ...hotspots];
+  const ledger = all.filter(counted);
+  return {
+    findings: triageKind(findings.filter(counted)),
+    hotspots: triageKind(hotspots.filter(counted)),
+    open: ledger.filter(
+      (finding) => finding.review && (finding.status === "needs_review" || finding.status === "proof_gap"),
+    ).length,
+    independentlyReviewed: ledger.filter((finding) => finding.review?.independentlyReviewed === true).length,
+    suppressed: all.length - ledger.length,
+    disputed: ledger.filter((finding) => finding.review?.disputed === true).length,
+    disputesOpen: ledger.filter((finding) => finding.review?.disputeOpen === true).length,
+    proofGaps: ledger
+      .filter((finding) => finding.status === "proof_gap")
+      .sort(
+        (a, b) =>
+          SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] ||
+          a.file.localeCompare(b.file) ||
+          a.startLine - b.startLine,
+      )
+      .map((finding) => ({
+        id: finding.id,
+        kind: finding.kind,
+        severity: finding.severity,
+        ruleId: finding.ruleId,
+        file: finding.file,
+        line: finding.startLine,
+        ...(finding.review?.missing ? { missing: finding.review.missing } : {}),
+      })),
+  };
 }
 
 function dismissedSummary(
@@ -2117,6 +2288,14 @@ const WARNINGS_SHOWN = 40;
 const FIXED_SHOWN = 100;
 /** Rows of the "Dismissed by review" table; the rest is counted. */
 const DISMISSED_SHOWN = 500;
+/** Rules named per kind in the review coverage lines. */
+const TRIAGE_RULE_ROWS = 8;
+/** Entries of "Open proof gaps"; the rest is counted. */
+const PROOF_GAPS_SHOWN = 3;
+/** Entries of "Disputed verdicts"; the rest is counted. */
+const DISPUTES_SHOWN = 3;
+/** Characters of a `missing` text shown there. */
+const PROOF_GAP_TEXT_MAX = 200;
 /** Characters of a verdict rationale shown in that table. */
 const DISMISSED_RATIONALE_MAX = 300;
 
@@ -2206,6 +2385,146 @@ function groupByRule(findings: Finding[]): RuleGroup[] {
 
 function oneLine(value: string, max: number): string {
   return truncate(value.replace(/\s+/g, " ").trim(), max);
+}
+
+/**
+ * Free text that a reviewer wrote, for report.md: redacted, one line,
+ * Markdown-escaped, and with @mentions and bare URLs broken by a zero-width
+ * space so a report posted to GitHub neither pings anyone nor links anywhere.
+ */
+export function neutralizeLinks(value: string): string {
+  return value
+    .replace(/@(?=[A-Za-z0-9_-])/g, "@​")
+    .replace(/\b(https?|ftp|file|mailto)(:)/gi, "$1​$2")
+    .replace(/\bwww\./gi, "www​.");
+}
+
+function reviewText(value: string, max = PROOF_GAP_TEXT_MAX): string {
+  return neutralizeLinks(escapeMarkdown(redactText(singleLineText(value, max)), max + 200));
+}
+
+/** Trace steps named per finding in report.md; the rest are counted. */
+const TRACE_STEPS_SHOWN = 3;
+
+/**
+ * The structured evidence of a finding's verdict as one Markdown fragment,
+ * appended to the finding's detail line (so reviewed reports stay as long
+ * as unreviewed ones). Long lists end in "… N more (see findings.json)".
+ */
+function reviewSummary(finding: Finding, l: Labels): string {
+  const review = finding.review;
+  if (!review) return "";
+  const parts: string[] = [];
+  if (review.trace && review.trace.length > 0) {
+    const steps = review.trace.slice(0, TRACE_STEPS_SHOWN).map(
+      (step) =>
+        `${escapeMarkdown(step.file, 120)}:${step.line} (${escapeMarkdown(step.role, 20)}` +
+        (step.note ? `: ${reviewText(step.note, 80)}` : "") +
+        ")",
+    );
+    const more = review.trace.length - steps.length;
+    parts.push(
+      `${l.traceLabel}: ${steps.join(" → ")}` + (more > 0 ? ` ${fmt(l.moreSeeJson, { n: more })}` : ""),
+    );
+  }
+  if (review.control) {
+    parts.push(
+      `${l.controlLabel}: ${escapeMarkdown(review.control.file, 120)}:${review.control.line} — ${reviewText(review.control.note, 160)}`,
+    );
+  }
+  if (review.missing) parts.push(`${l.missingLabel}: ${reviewText(review.missing, 160)}`);
+  if (review.severityOverride) {
+    parts.push(
+      `${l.severityOverrideLabel}: ${escapeMarkdown(review.severityOverride.severity, 20)} — ${reviewText(review.severityOverride.reason, 160)}`,
+    );
+  }
+  if (review.dissent) parts.push(disputeText(review, l));
+  return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
+}
+
+/** "independently reviewed (subagent)" for a verdict that is. */
+function independentText(review: Finding["review"], l: Labels): string {
+  const person = personText(review, l);
+  if (!review?.independentlyReviewed) return person ? ` (${person})` : "";
+  const how = review.independentReview?.independence;
+  const by = review.independentReview?.reviewer;
+  return (
+    ` (${l.independentlyReviewed}` +
+    (by ? ` ${fmt(l.independentBy, { label: labelText(by) })}` : "") +
+    `${how ? `: ${escapeMarkdown(how, 20)}` : ""}${person ? `; ${person}` : ""})`
+  );
+}
+
+/** Writing systems told apart in reviewer labels; Japanese scripts count as one. */
+const LABEL_SCRIPTS: Array<[string, RegExp]> = [
+  ["Latin", /\p{Script=Latin}/u],
+  ["Cyrillic", /\p{Script=Cyrillic}/u],
+  ["Greek", /\p{Script=Greek}/u],
+  ["CJK", /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u],
+  ["Hangul", /\p{Script=Hangul}/u],
+  ["Arabic", /\p{Script=Arabic}/u],
+  ["Hebrew", /\p{Script=Hebrew}/u],
+  ["Devanagari", /\p{Script=Devanagari}/u],
+  ["Thai", /\p{Script=Thai}/u],
+];
+
+/** Cyrillic and Greek letters that look like Latin ones. */
+const LATIN_LOOKALIKES = /^[аеорсухѕіјԁԛԝАВЕКМНОРСТУХЅІЈαοριυνκΑΒΕΖΗΙΚΜΝΟΡΤΥΧ]$/u;
+
+/**
+ * Whether a label could pass for another one: letters of more than one
+ * script (a Cyrillic `а` inside a Latin name), or Cyrillic or Greek letters
+ * that all look like Latin ones (`р` for `p`). A name in one script - Chinese,
+ * Russian, Greek, ... - is not.
+ */
+export function isConfusableLabel(label: string): boolean {
+  const scripts = new Set<string>();
+  const letters: string[] = [];
+  for (const char of label) {
+    if (!/\p{L}/u.test(char)) continue;
+    letters.push(char);
+    const script = LABEL_SCRIPTS.find(([, pattern]) => pattern.test(char))?.[0] ?? "Other";
+    scripts.add(script);
+  }
+  if (scripts.size > 1) return true;
+  if (scripts.has("Cyrillic") || scripts.has("Greek")) return letters.every((char) => LATIN_LOOKALIKES.test(char));
+  return false;
+}
+
+/**
+ * A reviewer label for report.md. An ASCII label, or one in a single script
+ * made of letters, digits, spaces and `._@:/+()-` (a Chinese name), is shown
+ * as written; a confusable one (`isConfusableLabel`) or one with other
+ * characters shows them as `?` and is marked `[non-ASCII label]`, so a
+ * look-alike of another reviewer's label is visible to the reader.
+ */
+function labelText(label: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7f]/.test(label)) return reviewText(reviewerLabel(label), 60);
+  const plain = /^[\p{L}\p{N} ._@:/+()-]+$/u.test(label.trim());
+  if (plain && !isConfusableLabel(label)) {
+    return reviewText(redactText(label).replace(/\s+/g, " ").trim().slice(0, 48), 60);
+  }
+  return `${reviewText(reviewerLabel(label), 60)} [non-ASCII label]`;
+}
+
+/** "decided by a person (<label>)" for a human decision. */
+function personText(review: Finding["review"], l: Labels): string {
+  const person = review?.decidedByPerson;
+  return person ? fmt(l.decidedByPerson, { label: labelText(person.reviewer) }) : "";
+}
+
+/** The dissent of a disputed verdict: who said what, and whether it is still open. */
+function disputeText(review: NonNullable<Finding["review"]>, l: Labels): string {
+  const dissent = review.dissent;
+  if (!dissent) return "";
+  return (
+    `${review.disputeOpen ? l.disputeOpen : l.disputeResolved}: ${labelText(dissent.reviewer)} ` +
+    `${l.disputeSaid} ${escapeMarkdown(dissent.status, 20)}` +
+    (dissent.independence ? ` (${escapeMarkdown(dissent.independence, 20)})` : "") +
+    ` — ${reviewText(dissent.rationale, 160)}` +
+    (review.decidedByPerson ? ` — ${personText(review, l)}` : "")
+  );
 }
 
 export function renderMarkdown(input: ReportContext): string {
@@ -2328,6 +2647,41 @@ export function renderMarkdown(input: ReportContext): string {
       "",
     );
   }
+  // While anything has no verdict the report must not read as a clean bill.
+  const triage = triageCoverage(context.findings, allHotspots);
+  const unreviewedRecords = triage.findings.unreviewed + triage.hotspots.unreviewed;
+  // Only a run someone has started to review gets the banner; a plain scan
+  // already says "Candidate results, not reviewed" and keeps its wording.
+  const reviewStarted = triage.findings.reviewed + triage.hotspots.reviewed > 0;
+  const coverLines: string[] = [];
+  if (reviewStarted && unreviewedRecords > 0) {
+    coverLines.push(
+      `> **${fmt(l.reviewIncomplete, {
+        findings: triage.findings.unreviewed,
+        findingsTotal: triage.findings.total,
+        hotspots: triage.hotspots.unreviewed,
+        hotspotsTotal: triage.hotspots.total,
+      })}**`,
+    );
+  }
+  // A person's decision overrode a dispute between reviewers: say so on the
+  // cover, next to any dismissal warning, with the findings it concerns.
+  const overridden = [...context.findings, ...allHotspots].filter(
+    (finding) => finding.review?.decidedByPerson && finding.review.disputed,
+  );
+  if (overridden.length > 0) {
+    const ids = overridden.slice(0, 5).map((finding) => escapeMarkdown(finding.id));
+    coverLines.push(
+      `> **${fmt(l.humanOverride, {
+        n: overridden.length,
+        ids: ids.join(", ") + (overridden.length > ids.length ? `, ${fmt(l.moreSeeJson, { n: overridden.length - ids.length })}` : ""),
+      })}**`,
+    );
+  }
+  if (coverLines.length > 0) lines.push(coverLines.join("  \n"), "");
+  const noneText =
+    reviewStarted && unreviewedRecords > 0 ? fmt(l.noneUnreviewed, { n: unreviewedRecords }) : l.none;
+  const noneDependencies = reviewStarted && unreviewedRecords > 0 ? l.noneDependencies : l.none;
 
   // ---- 1. Executive summary --------------------------------------------
   section(l.summary);
@@ -2455,7 +2809,7 @@ export function renderMarkdown(input: ReportContext): string {
   const modelLine =
     context.reviewers && context.reviewers.length > 0
       ? `${l.model}: ${l.modelReviewed} (${l.reviewer}: ${context.reviewers
-          .map((reviewer) => escapeMarkdown(reviewer))
+          .map((reviewer) => neutralizeLinks(escapeMarkdown(reviewer)))
           .join(", ")})`
       : context.agentReviewed
         ? `${l.model}: ${l.modelReviewed}`
@@ -2504,10 +2858,89 @@ export function renderMarkdown(input: ReportContext): string {
   }
   lines.push("");
 
+  // Review ledger: what has a verdict and what nobody looked at, by rule,
+  // then the open proof gaps and the disputed verdicts - one line each, so a
+  // reviewed report stays as long as an unreviewed one (findings.json and
+  // the summary's `triage` have everything).
+  const disputed = [...context.findings, ...allHotspots]
+    .filter((finding) => finding.review?.dissent)
+    .sort(
+      (a, b) =>
+        Number(b.review?.disputeOpen === true) - Number(a.review?.disputeOpen === true) ||
+        SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] ||
+        a.file.localeCompare(b.file) ||
+        a.startLine - b.startLine,
+    );
+  if (triage.findings.total + triage.hotspots.total > 0) {
+    const openText =
+      triage.open + triage.independentlyReviewed > 0
+        ? ` — ${fmt(l.triageOpen, { open: triage.open, independent: triage.independentlyReviewed })}`
+        : "";
+    // No blank line after this heading: the list follows directly.
+    lines.push(`### ${l.triageHeading}${openText}`);
+    const kindParts: string[] = [];
+    for (const [kind, counts] of [
+      [l.triageFindings, triage.findings],
+      [l.triageHotspots, triage.hotspots],
+    ] as const) {
+      const pending = counts.byRule.filter((row) => row.unreviewed > 0);
+      const shown = pending
+        .slice(0, TRIAGE_RULE_ROWS)
+        .map((row) => `\`${escapeMarkdown(row.ruleId, 120)}\` ${row.unreviewed}`);
+      kindParts.push(
+        fmt(l.triageLine, {
+          kind,
+          total: counts.total,
+          reviewed: counts.reviewed,
+          unreviewed: counts.unreviewed,
+        }) +
+          (shown.length > 0
+            ? ` — ${l.triageByRule}: ${shown.join(", ")}` +
+              (pending.length > shown.length
+                ? `, ${fmt(l.triageMoreRules, { n: pending.length - shown.length })}`
+                : "")
+            : ""),
+      );
+    }
+    // Both kinds on one line: at most four lines whatever the review holds.
+    lines.push(`- ${kindParts.join("; ")}`);
+    const openParts: string[] = [];
+    if (triage.proofGaps.length > 0) {
+      const shown = triage.proofGaps.slice(0, PROOF_GAPS_SHOWN).map(
+        (gap) =>
+          `**${escapeMarkdown(gap.id)}** ${gap.severity} ${escapeMarkdown(gap.file, 120)}:${gap.line} — ${l.missingLabel}: ` +
+          (gap.missing ? reviewText(gap.missing, PROOF_GAP_TEXT_MAX) : l.proofGapNotStated),
+      );
+      const more = triage.proofGaps.length - shown.length;
+      openParts.push(
+        `**${l.proofGapsHeading} (${triage.proofGaps.length})** (${l.proofGapsNote}): ${shown.join("; ")}` +
+          (more > 0 ? `; ${fmt(l.moreSeeJson, { n: more })}` : ""),
+      );
+    }
+    if (disputed.length > 0) {
+      const shown = disputed.slice(0, DISPUTES_SHOWN).map((finding) => {
+        const review = finding.review as NonNullable<Finding["review"]>;
+        return (
+          `**${escapeMarkdown(finding.id)}** ${finding.severity} ${locationText(finding)} ` +
+          `${l.status}: ${escapeMarkdown(finding.status)} (${l.disputeDecision}: ${escapeMarkdown(review.primaryStatus ?? review.status, 20)}), ` +
+          disputeText(review, l)
+        );
+      });
+      const more = disputed.length - shown.length;
+      openParts.push(
+        `**${l.disputesHeading} (${disputed.length})**: ${shown.join("; ")}` +
+          (more > 0 ? `; ${fmt(l.moreSeeJson, { n: more })}` : ""),
+      );
+    }
+    // Open proof gaps and disputed verdicts share one line.
+    if (openParts.length > 0) lines.push(`- ${openParts.join(" · ")}`);
+    lines.push("");
+  }
+
   // ---- 2. Code, secrets and configuration findings -----------------------
   section(l.findingsSection);
   if (headlineCode.length === 0) {
-    lines.push(l.none, "");
+    lines.push(noneText, "");
   }
   for (const group of groupByRule(headlineCode)) {
     const first = group.findings[0] as Finding;
@@ -2563,9 +2996,9 @@ export function renderMarkdown(input: ReportContext): string {
           ...(adjustments.length > 0
             ? [`${l.adjustments}: ${adjustments.map((entry) => escapeMarkdown(entry)).join(", ")}`]
             : []),
-          `${l.status}: ${escapeMarkdown(finding.status)}`,
+          `${l.status}: ${escapeMarkdown(finding.status)}` + independentText(finding.review, l),
           `${l.engine}: ${escapeMarkdown(finding.provenance.engine)}`,
-        ].join(" · "),
+        ].join(" · ") + reviewSummary(finding, l),
         "",
       );
       // A finding without a bundled rule (agent-added, external engine) can
@@ -2626,7 +3059,7 @@ export function renderMarkdown(input: ReportContext): string {
   section(l.dependencies);
   lines.push(`> ${l.scaNote}`, "");
   if (packages.length === 0) {
-    lines.push(l.none, "");
+    lines.push(noneDependencies, "");
   } else {
     const packageTable = (rows: VulnerablePackage[]): void => {
       lines.push(
@@ -2893,10 +3326,13 @@ export function renderMarkdown(input: ReportContext): string {
           .map((line) => singleLineText(line, 120))
           .filter((line) => line.length > 0)
           .slice(0, 2);
+        const control = review?.control
+          ? ` (${l.controlLabel.toLowerCase()}: ${singleLineText(review.control.file, PATH_TEXT_MAX)}:${review.control.line} ${singleLineText(review.control.note, 200)})`
+          : "";
         const rationale = review
           ? `${redactText(singleLineText(review.rationale, DISMISSED_RATIONALE_MAX))}${
               evidence.length > 0 ? ` (${l.dismissedEvidence}: ${evidence.join(" / ")})` : ""
-            }`
+            }${redactText(control)}`
           : l.dismissedNoVerdict;
         lines.push(
           tableRow([
@@ -2906,8 +3342,10 @@ export function renderMarkdown(input: ReportContext): string {
             escapeMarkdown(finding.ruleId),
             `${escapeMarkdown(finding.file, PATH_TEXT_MAX)}${contextTag(finding)}`,
             String(finding.startLine),
-            escapeMarkdown(dismissedBy(finding) ?? l.dismissedUnnamed, 60),
-            escapeMarkdown(rationale, DISMISSED_RATIONALE_MAX + 300),
+            neutralizeLinks(escapeMarkdown(dismissedBy(finding) ?? l.dismissedUnnamed, 60)) +
+              independentText(review, l),
+            neutralizeLinks(escapeMarkdown(rationale, DISMISSED_RATIONALE_MAX + 300)) +
+              (review?.dissent ? ` · ${disputeText(review, l)}` : ""),
           ]),
         );
       }
@@ -3244,6 +3682,31 @@ export function renderSarif(input: ReportContext): string {
           }
         : {}),
       countsTowardExitCode: countsTowardExitCode(finding, summary.thresholds),
+      // The review state of the result. A proof_gap or needs_review verdict
+      // is open, never a suppression.
+      ...(finding.review
+        ? {
+            review: {
+              status: finding.review.status,
+              independentlyReviewed: finding.review.independentlyReviewed === true,
+              ...(finding.review.independentReview?.independence
+                ? { independence: finding.review.independentReview.independence }
+                : {}),
+              ...(finding.review.disputed
+                ? {
+                    disputed: true,
+                    disputeOpen: finding.review.disputeOpen === true,
+                    ...(finding.review.dissent
+                      ? { dissent: { status: finding.review.dissent.status, reviewer: reviewerLabel(finding.review.dissent.reviewer) } }
+                      : {}),
+                  }
+                : {}),
+              ...(finding.review.missing
+                ? { missing: redactText(singleLineText(finding.review.missing, PROOF_GAP_TEXT_MAX)) }
+                : {}),
+            },
+          }
+        : {}),
     },
     // SARIF 3.27.23: an empty array states "not suppressed"; a suppressed
     // result names where the suppression lives and the reason given for it.
@@ -3312,6 +3775,18 @@ export function renderSarif(input: ReportContext): string {
           lowConfidenceCandidates: summary.lowConfidence.total,
           hotspots: summary.hotspots,
           exitCode: summary.exitCode,
+          review: (() => {
+            const triage = triageCoverage(context.findings, context.hotspots ?? []);
+            return {
+              findingsUnreviewed: triage.findings.unreviewed,
+              hotspotsUnreviewed: triage.hotspots.unreviewed,
+              open: triage.open,
+              proofGaps: triage.proofGaps.length,
+              independentlyReviewed: triage.independentlyReviewed,
+              disputed: triage.disputed,
+              disputesOpen: triage.disputesOpen,
+            };
+          })(),
         },
       },
     ],

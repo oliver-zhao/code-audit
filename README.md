@@ -228,7 +228,7 @@ skill and render the report."* The agent follows the shared workflow in
 1. `audit_start`: run the scan; `audit_status`: wait for it and get the counts
 2. `audit_findings`: list candidates, highest risk first
 3. `audit_read` / `audit_search`: read the evidence (secrets masked, repository text marked as untrusted)
-4. `audit_verdict`: `confirmed`, `likely`, `needs_review` or `false_positive`, each with a rationale
+4. `audit_verdict`: `confirmed`, `likely`, `needs_review`, `proof_gap` or `false_positive`, each with a rationale and optional structured evidence (a source-to-sink `trace`, the `control` that makes it safe, or what is `missing`); critical and high verdicts get an independent second review
 5. `audit_add_finding`: add what the rules missed, or promote a hotspot
 6. `audit_report`: render the reviewed report
 
@@ -405,7 +405,17 @@ code-audit add-finding <run> --promote HOT-2026-0001 --rationale "cmd is request
 code-audit report <run> --format md       # re-renders report.md with the verdicts
 ```
 
-Verdicts are `confirmed`, `likely`, `needs_review` and `false_positive`.
+Verdicts are `confirmed`, `likely`, `needs_review`, `proof_gap` (suspicious,
+but one named fact is missing) and `false_positive`. `--trace
+<file:line:role[:note]>` (repeatable), `--control <file:line:note>` and
+`--missing <text>` record structured evidence; every location is checked
+against the files the run scanned. `--role independent --independence
+subagent|same-session` records a second review: when it disagrees, the
+finding stays `needs_review` and the dispute stays in the report. A person
+settles a dispute from an interactive terminal with `--role human --replace
+--reviewer <name>` (refused over MCP and when an agent environment is
+detected; a speed bump, not a proof). A re-triage under a different reviewer
+label needs `--replace`.
 After each verdict the report files of the run are rendered again, so every
 output shows the same numbers. A `false_positive` is never just dropped: the
 report lists every one under "Dismissed by review" with reviewer and
@@ -581,6 +591,7 @@ guarantees are in [docs/security-model.md](docs/security-model.md).
 | `--baseline <file>` | `<path>/.code-audit-baseline.json` if present | Baseline to compare with. |
 | `--no-baseline` | off | Use no baseline. |
 | `--fail-on-existing` | off | Findings already in the baseline count toward the exit code. |
+| `--strict-evidence` | off | Every verdict of this run needs structured evidence: a trace with a source and a sink for `confirmed`, a sink for `likely`, a control for `false_positive`, `missing` for `proof_gap` (see [docs/mcp.md](docs/mcp.md)). |
 | `--since <git-ref>` | off | Report only findings in files changed since the ref. |
 | `--diff-lines` | off | With `--since`: report only findings on lines added or changed since the ref (dependency and secret findings are kept per file; a file with unusual line breaks counts as changed in full). |
 | `--history[=<range>]` | off | Also scan the git history for secrets with Gitleaks, in an isolated clone (all refs, or `<ref>`, `<ref>..<ref>`, `<ref>...<ref>`). A shallow clone is scanned only partially: fetch the full history first (`fetch-depth: 0` in GitHub Actions). || `--ci` | off | CI output (annotations, Markdown summary). |

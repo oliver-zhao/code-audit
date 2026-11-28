@@ -308,6 +308,9 @@ describe("run store", () => {
         status: "confirmed",
         rationale: "traced source to sink",
         reviewer: "claude-test-model",
+        // An earlier test of this file recorded an unnamed verdict on the
+        // same finding; replacing another label's decision needs replace.
+        replace: true,
       },
       { cwd: project },
     );

@@ -65,8 +65,21 @@ document. A failed call has `isError: true` and the document
 `{"error": {"code": "...", "message": "..."}}`. Codes include
 `RUN_NOT_FOUND`, `RUN_NOT_READY` (the scan is still running or failed),
 `DUPLICATE_FINDING`, `OUTSIDE_BASE`, `ROOT_SENSITIVE`, `SEARCH_TIMEOUT`,
-`DISMISSAL_NEEDS_EVIDENCE` and `MCP_TOOL_ERROR` (anything without a specific
-code).
+`DISMISSAL_NEEDS_EVIDENCE`, the verdict codes `INVALID_VERDICT`,
+`INVALID_EVIDENCE`, `EVIDENCE_REQUIRED`, `EVIDENCE_LOCATION_INVALID`,
+`PRIMARY_VERDICT_REQUIRED`, `INDEPENDENT_SAME_REVIEWER`,
+`PRIMARY_REPLACE_REFUSED`, `HUMAN_DECISION_CLI_ONLY`,
+`HUMAN_DECISION_STANDS`, `VERDICT_LIMIT`, `VERDICT_STORE_FULL`,
+`RUN_LOCKED`, `RUN_LOCK_INVALID` and `BLIND_FORMAT` (see [`audit_verdict`](#audit_verdict)), and `MCP_TOOL_ERROR`
+(anything without a specific code).
+
+Arguments are first checked against each tool's input schema by the MCP
+library: a wrong type or a value outside an enumeration (for example a
+`trace` step whose `line` is not a positive integer, a `role` other than
+`source`, `propagation` or `sink`, or more than 20 `trace` steps) fails
+before the tool runs, with the MCP error `-32602` ("Input validation error")
+whose message names the argument path. The `code` values above come from
+the tool itself.
 
 **Size.** A response is capped at 8,000 bytes. Lists (`items`, `matches`,
 `warnings`) are shortened from the end and report text is cut; the result then has
@@ -136,6 +149,7 @@ Starts a scan in the background and returns immediately.
 | `diffLines` | boolean | false | With `since`: only findings on lines added or changed since the ref (`--diff-lines`); dependency and secret findings are kept per file. Refused (`INVALID_ARGUMENT`) without `since`. |
 | `latestLink` | boolean | false | Also copy the reports to `<root>/.audit/latest/` (`--latest-link`). |
 | `history` | boolean \| string | none | Also scan the git history for secrets with Gitleaks (`--history[=<range>]`): `true` for every commit reachable from any ref, or a range `<ref>`, `<ref>..<ref>`, `<ref>...<ref>` (refs of `[A-Za-z0-9._/-]`, not starting with `-`; anything else is refused before the run starts). Skipped, not an error, when gitleaks is not installed. A shallow clone gives a `partial` history scan: fetch the full history first (`fetch-depth: 0` in GitHub Actions). See [security-model.md](security-model.md#git-history-scan---history). |
+| `strict_evidence` | boolean | false | Every `audit_verdict` of this run requires structured evidence (see [`audit_verdict`](#audit_verdict)). Stored in the run's `verdicts.json`; a later call cannot turn it off. No CLI flag. |
 
 Result:
 
@@ -148,9 +162,16 @@ Result:
 }
 ```
 
+With `strict_evidence: true` the result also has `"strict_evidence": true`.
+
 ## `audit_status`
 
-Arguments: `run_id`, `root`. Poll it after `audit_start` until `phase` is
+Arguments: `run_id`, `root`, `blind` (boolean; for an independent reviewer:
+leaves out the dismissal counts and `dismissedWarning`, `reviewed` /
+`unreviewed`, reviewer labels and `triage`, reports the headline counts and
+`summary` as the scan left them, before any verdict, and adds
+`blind: true`). Poll it
+after `audit_start` until `phase` is
 `complete` or `failed`.
 
 While the scan runs: `runId`, `runDir`, `root`, `phase: "running"`,
@@ -185,13 +206,43 @@ While the scan runs: `runId`, `runDir`, `root`, `phase: "running"`,
 full counting summary of the report cover (headline by severity and
 category, dependency counts by scope, reductions, the exit code and its
 explanation); see [reports.md](reports.md). The result also includes review
-progress (`reviewed`, `unreviewed`, `falsePositive`), the `warnings` of the
-run and `notices` about the run directory. `dismissedWarning` is present when
+progress (`reviewed`, `unreviewed`, `falsePositive`), the review ledger
+`triage` (below), the `warnings` of the run and `notices` about the run
+directory. `dismissedWarning` is present when
 findings at severity ≥ the run's `failOn` were marked false positive
 (`"WARNING: 3 finding(s) at severity ≥ high were marked false positive by
 <reviewers> ..."`, the sentence on the report cover): relay it to the user. A long `warnings` list is
 shortened to fit the response cap (`truncated: true`); the complete list is
 in `run.json`.
+
+`triage` says how much of the run has been looked at. Suppressed records are
+left out of it.
+
+```json
+"triage": {
+  "findings": { "total": 12, "reviewed": 3, "unreviewed": 9, "unreviewedByRule": { "py-sql-injection": 4, "js-eval": 2 } },
+  "hotspots": { "total": 30, "reviewed": 0, "unreviewed": 30, "unreviewedByRule": { "py-subprocess-api": 11 }, "moreRules": 6 },
+  "open": 1,
+  "independentlyReviewed": 2,
+  "disputed": 1,
+  "disputesOpen": 0,
+  "proofGaps": [{ "id": "AUD-2026-0004", "location": "src/admin.py:40", "missing": "whether /admin/export can be reached without the admin role" }]
+}
+```
+
+`unreviewedByRule` lists at most 10 rules per kind (most unreviewed first;
+`moreRules` counts the rest), `proofGaps` at most 3 (`moreProofGaps`);
+paths, rule ids and texts are cut. `open` counts records whose verdict is
+`needs_review` or `proof_gap`; `disputed` counts verdicts an independent
+reviewer disagreed with (`disputesOpen`: not resolved yet). While anything is
+unreviewed, do not describe the run as free of issues.
+
+**Size.** The phase, the counts and `dismissedWarning` always fit the
+response cap. When the whole result does not, the server shortens it in this
+order and sets `truncated: true`: the `triage` lists become counts, then the
+`warnings` and `notices` go, then `summary` keeps only `exitCode` and
+`thresholds`, and last only the essential fields remain. The same applies to
+the `summary` text of `audit_report`, which therefore always parses as JSON.
 
 ## `audit_findings`
 
@@ -206,6 +257,7 @@ Lists findings and hotspots, at most 20 per page.
 | `minConfidence` | `low` \| `medium` \| `high` | Lowest confidence to return. |
 | `cursor` | string | `next_cursor` of the previous page, exactly as returned. Cursors are opaque tokens (for example `ca`); a value that is not one is refused with `INVALID_CURSOR`. |
 | `limit` | integer 1–20 | Page size (default 20). |
+| `blind` | boolean | For an independent reviewer: what the scan reported, without any verdict. `status` shows `candidate` (or `suppressed`), `confidence` is the scan's, and there are no review fields. Cannot be combined with `status` or `minConfidence` (both depend on verdicts). |
 
 ```json
 {
@@ -240,7 +292,10 @@ A secret found by the history scan (`history` of `audit_start`) also carries
 `history: { commit, date, still_present, occurrences }` (the commit that
 added it; no author data).
 
-`evidence` is cut at 240 characters and `message` at 300. `next_cursor` is
+`evidence` is cut at 240 characters and `message` at 300. An item with a
+verdict also has `independently_reviewed` (boolean) and, for `proof_gap`,
+`missing` (cut at 200 characters and wrapped like repository content: a
+reviewer wrote it after reading the repository). `next_cursor` is
 absent or null on the last page. Cursors are opaque so that an agent does not
 compute the next offset itself: when a page is shortened to fit the size cap,
 a computed cursor would skip the items left out.
@@ -254,6 +309,7 @@ Reads up to 400 lines of a file of the run's inventory, with secrets masked.
 | `file` | string, required | POSIX path relative to the audit root. |
 | `startLine` | integer ≥ 1 | Default 1. |
 | `endLine` | integer ≥ 1 | Default: as many lines as allowed. |
+| `blind` | boolean | Accepted for the independent reviewer's calls; file content never carries a verdict, so it only adds `blind: true` to the result. |
 
 ```json
 {
@@ -323,16 +379,29 @@ backtracking; a glob over 1,024 characters is refused (`INVALID_GLOB`).
 
 ## `audit_verdict`
 
-Records a reviewer's decision on a finding or hotspot. The last verdict for a
-fingerprint is the current one; earlier ones stay in `verdicts.json`.
+Records a reviewer's decision on a finding or hotspot. `verdicts.json` is
+append-only: each call adds one entry with that reviewer's own status,
+rationale and evidence, stored once. The current state of a finding is the
+latest `primary` entry together with what the `independent` entries make of
+it (see [independent review](#independent-review)).
 
 | Argument | Type | Meaning |
 |---|---|---|
 | `finding` | string, required | Finding id (`AUD-...`, `HOT-...`) or fingerprint. |
-| `status` | `confirmed` \| `likely` \| `needs_review` \| `false_positive`, required | The decision. |
+| `status` | `confirmed` \| `likely` \| `needs_review` \| `false_positive` \| `proof_gap`, required | The decision. `proof_gap`: neither proved nor refuted; `missing` names the fact. |
 | `rationale` | string, required, not empty | Why: the source-to-sink reasoning and the lines checked. |
 | `evidenceLines` | list of strings | Lines of code that support the verdict (secrets in them are masked). Needed to dismiss a `high` or `critical` finding, see below. |
 | `reviewer` | string | Reviewer label, for example the model name. |
+| `role` | `primary` \| `independent` \| `human` | Default `primary`. See [independent review](#independent-review). `human` is refused over MCP (`HUMAN_DECISION_CLI_ONLY`); a person records it with the CLI. |
+| `independence` | `subagent` \| `same-session` | Required with `role: "independent"`: a fresh sub-agent that did not see the decision, or a devil's-advocate pass in the session that made it. Shown in the report. |
+| `replace` | boolean | A `primary` verdict that replaces another reviewer's decision on a finding that has an independent review needs `replace: true` (`PRIMARY_REPLACE_REFUSED` otherwise). Recorded and shown. |
+| `trace` | list of `{file, line, role, note?}`, at most 20 | Source-to-sink path; `role` is `source`, `propagation` or `sink`. |
+| `conditions` | `{auth?, userInteraction?, note?}` | What an attack needs: `auth` is `none`, `user`, `admin` or `unknown`; `userInteraction` whether a victim must act. |
+| `control` | `{file, line, note}` | `false_positive` only: the code that makes it safe. |
+| `missing` | string, at least 20 characters | `proof_gap` only: the fact that could not be established. |
+| `cwe` | string `CWE-<n>` | The weakness the reviewer sees. Recorded only. |
+| `severityOverride` | `{severity, reason}` | `confirmed` and `likely` only: the reviewer's view of the severity. Shown in the report; the counted severity and the exit code do not change. |
+| `strict_evidence` | boolean | Require structured evidence for this verdict. Always on when the run was started with `strict_evidence`; `false` does not turn that off. |
 
 ```json
 {
@@ -342,6 +411,11 @@ fingerprint is the current one; earlier ones stay in `verdicts.json`.
   "findingId": "AUD-2026-0001",
   "status": "confirmed",
   "rationale": "username from request reaches the SQL text",
+  "role": "primary",
+  "requestedStatus": "confirmed",
+  "independentlyReviewed": false,
+  "disputed": false,
+  "strictEvidence": false,
   "history": 1,
   "reviewed": 1,
   "total": 3,
@@ -384,6 +458,173 @@ never just disappears:
 
 This makes a mass dismissal visible and a careless one fail; it does not make
 a dismissal correct. A person should read the section.
+
+### Structured evidence
+
+Every location given in `trace` or `control` is checked, whether or not
+strict evidence is on: the file must be one the run itself scanned (the
+`scannedFiles` of its coverage.json, so an `untrusted` run accepts its
+`dist/` or `vendor/` files and a file created after the scan is refused),
+named by its path relative to the audit root (an absolute path, a `..` that
+leaves the root or a symbolic link that leads out of it is refused), and the
+line must exist in it (a final line break does not start another line). Otherwise the call fails with `EVIDENCE_LOCATION_INVALID` and a
+message naming each bad item, for example `trace[1] (src/db.py:999): line 999
+is beyond the end of src/db.py (40 lines)`. Paths are stored relative to the
+root. A malformed field (a `trace` step without `role`, a `missing` shorter
+than 20 characters, a `cwe` that is not `CWE-<n>`) fails with
+`INVALID_EVIDENCE`, naming the field and how to fill it, and so does a field
+that does not belong to the status (`control` on anything but
+`false_positive`, `missing` on anything but `proof_gap`, `severityOverride`
+on anything but `confirmed` or `likely`). Rationales, notes, `missing` and
+reviewer labels are redacted before they are stored; rationales and
+`missing` are cut at 4,000 characters (a notice says so), notes at 2,000. A
+`control` counts as the evidence that dismissing a `high` or `critical`
+finding needs.
+
+With strict evidence (`strict_evidence` on the call or on `audit_start`):
+
+| Status | Required |
+|---|---|
+| `confirmed` | `trace` with at least one `source` and one `sink` step |
+| `likely` | `trace` with at least one `sink` step |
+| `false_positive` | `control` (and, for `high`/`critical`, the rationale rule above) |
+| `proof_gap` | `missing` |
+
+A missing piece fails with `EVIDENCE_REQUIRED` and an example of the field.
+
+`needs_review` needs nothing more. `proof_gap` is counted like
+`needs_review`: the finding stays active and open, is listed under "Open
+proof gaps" in the Markdown report, and is never a SARIF suppression.
+
+### Independent review
+
+`role: "independent"` records a second review of the current decision by a
+reviewer who did not see it: a fresh sub-agent given only the run id, the
+finding id, its location and the tools, which lists with `blind: true`. It
+needs:
+
+- an existing decision (`PRIMARY_VERDICT_REQUIRED` otherwise);
+- a `reviewer` label that differs from every primary label of the finding
+  (`INDEPENDENT_SAME_REVIEWER`). Labels are compared after NFKC
+  normalisation, with zero-width, soft-hyphen and bidi control characters
+  removed, trimmed and case-folded, so `P`, `p` and `p` followed by a
+  zero-width space are one reviewer; they are stored as given;
+- `independence`: `subagent` or `same-session`.
+
+An independent entry disagrees when its status contradicts the decision of
+its time: anything except equal statuses or `confirmed` with `likely`, so
+`confirmed` against `false_positive` and any `proof_gap` or `needs_review`
+against another status. A disagreement is never erased. While it is open the
+status is `needs_review` and the result has `disagreement`. It is resolved
+only when an independent reviewer whose label differs from every primary
+label agrees with the latest decision, after the last dissent; only that
+makes `independentlyReviewed` true. A new primary verdict, even by the same
+reviewer, does not resolve it: the earlier entries are kept and marked
+superseded in the history. An independent review alone can never dismiss a
+finding. A primary verdict (no `role`) by a different label than the current
+decision's is refused (`PRIMARY_REPLACE_REFUSED`) unless it passes
+`replace: true`, whether or not an independent review exists; the message
+tells a reviewer to pass `role: "independent"` instead. `replace` does not
+settle a dispute.
+
+**A person's decision.** Only a person settles a dispute, and only from the
+command line: `code-audit verdict <run> <finding> --role human --replace
+--reviewer <name> --status <status> --rationale <text>` (with `--control`,
+`--trace`, `--missing` or `--evidence-line` as the status and strict
+evidence require; a `high` or `critical` dismissal needs evidence as
+always). Before recording it, the CLI requires:
+
+- that none of these variables is set (set at all, even empty): `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+  `OPENCODE`, `OPENCODE_BIN_PATH`, `AI_AGENT`, `DSH_AGENT`. The first two and
+  `AI_AGENT` were verified in the shell of Claude Code; Codex, OpenCode and
+  DSH were not installed where this was checked, so their names are the
+  expected ones, not verified. There is no override;
+- that stdin and stdout are both terminals;
+- that the person types the finding id back at the prompt.
+
+Otherwise it fails with `HUMAN_DECISION_REFUSED` and records nothing. The
+first two checks live in the core library: `recordVerdict` runs them
+whenever it records a human decision, so a script calling the exported API
+is refused like the CLI. On reading, a `role: "human"` entry of
+verdicts.json counts only if it has a reviewer label, the `replace` flag the
+tool records with every human decision, and - for a dismissal of a `high` or
+`critical` finding - the evidence that rule requires; any other is ignored,
+and `audit_status` / `code-audit status` (`warnings`, `notices`) and the
+report's warnings say "ignored an invalid human decision entry". These
+checks are a speed bump, not a proof: they stop an agent that runs the
+command from its own shell tool, not one that drives a pseudo-terminal, runs
+in a host that sets none of these variables, or a person who types for an
+agent. Nothing is signed: whoever can write to the run directory can forge
+any record in it, a human decision included, as long as it has the fields
+above. `role: "human"` over MCP is refused with `HUMAN_DECISION_CLI_ONLY`,
+whose message points to `code-audit verdict --help` without spelling out the
+command. A human decision becomes the current status, closes any dispute and
+is shown as "decided by a person (<name>)" next to the dissent history,
+which stays visible; when it settled a dispute, the report cover says so
+("N dispute(s) between reviewers were settled by a person's decision ...")
+with the finding ids. After it, agent verdicts on the finding are refused
+(`HUMAN_DECISION_STANDS`); only another human decision changes it.
+
+**Messages by caller.** Errors name the flags of the interface the call came
+from: `--replace` and `--role independent --independence ...` from the CLI,
+`replace: true` and `role: "independent"` over MCP.
+
+Reports show every disputed verdict with the dissenting reviewer, status,
+independence and rationale, also once resolved ("Disputed verdicts" in
+Markdown, `review.dissent` in findings.json, `properties.review` in SARIF),
+and say how an independent review was made. A finding keeps at most 50
+entries (`VERDICT_LIMIT`). A verdict that would make `verdicts.json` or a
+derived file larger than the run store can read (128 MiB) is refused with
+`VERDICT_STORE_FULL` and nothing is written. Writes of one run are
+serialised by a lock file (`verdicts.json.lock`, created exclusively, holding
+a random owner token): two processes, for example an agent and a sub-agent
+with its own server, both keep their verdicts; a writer that waits more than
+15 seconds gets `RUN_LOCKED`. While a write holds the lock, a worker thread
+refreshes the lock's modification time every 10 seconds, so a slow write is
+never taken over; a lock not refreshed for two minutes was left by a writer
+that died. To take one over, a writer first creates `verdicts.json.lock.takeover`
+exclusively (only one takeover at a time; a takeover takes milliseconds, so
+one older than 5 seconds was left by a writer that died and is cleared;
+while another exists, the writer waits with the same backoff as for the
+lock, without using the CPU, and fails with `RUN_LOCKED` after 15 seconds;
+a takeover path that is a directory, a symbolic link or any other non-file
+fails at once with `RUN_LOCK_INVALID`, naming it), checks again under it
+that the lock is still stale, and moves it to
+a name unique to itself (`verdicts.json.lock.stale.<token>`): only one move
+can succeed, and the lock path is never renamed over. The moved file must
+hold the token read before the move (otherwise it is put back with `link`,
+which never overwrites a newer lock); it is then deleted and the writer
+creates the lock again exclusively. A lock path that is a symbolic link or a
+directory is not one this tool wrote: the call fails at once with
+`RUN_LOCK_INVALID`, naming the path to remove. A writer removes only a lock
+that holds its own token. (`CODE_AUDIT_LOCK_REFRESH_MS` shortens the refresh
+interval for tests; it cannot lengthen it.)
+
+**Limits.** These caps keep every run readable; they are not fair shares.
+One finding's 50 entries can all be used by one reviewer, so that no
+independent review can be recorded on it any more (the finding stays visible
+and open), and the run-wide cap of 128 MiB per file can be reached by about
+2,000 maximal entries, after which no verdict can be recorded on any finding
+of the run. Both fail safe: nothing is hidden and the run stays readable.
+"Independently reviewed" means that a second label recorded an agreeing
+verdict; one agent can invent labels, so real independence comes only from
+the host's sub-agent isolation, and blind mode only hides what a cooperating
+reviewer asks not to see. Labels are normalised (NFKC, invisible characters,
+case) but look-alike letters from other scripts are not: a Cyrillic `р` and a
+Latin `p` are different reviewers. The report therefore names the
+independent reviewer ("independently reviewed by <label>"). A label written
+in one script (a Chinese, Russian or Greek name, with digits, spaces and
+`._@:/+()-`) is shown as written. A label that mixes scripts (a Cyrillic `а`
+in a Latin name), or whose Cyrillic or Greek letters all look like Latin ones
+(`р`), or that has other characters, is shown with those characters as `?`
+and marked `[non-ASCII label]`.
+
+`verdicts.json` is written with `schemaVersion: 2`; files with
+`schemaVersion: 1` are read as before (their entries count as primary
+verdicts). code-audit 0.3.0 refuses a version 2 file
+(`RUN_STORE_CORRUPT`), and a run with a `proof_gap` verdict, whose
+`findings.json` holds that status.
 
 ## `audit_add_finding`
 
@@ -450,6 +691,7 @@ Renders the report with the current verdicts.
 | Argument | Type | Meaning |
 |---|---|---|
 | `format` | `summary` \| `md` \| `json` \| `sarif` | Default `summary`. |
+| `blind` | boolean | Only with `summary` (other formats are refused with `BLIND_FORMAT`): the summary without dismissals, review progress, reviewer labels and `triage`, with the headline counts as the scan left them. An independent reviewer should not call `audit_report` at all. |
 
 `summary` writes nothing and returns the review counts plus, in `text`, the
 same JSON document as `audit_status`. `md`, `json` and `sarif` write that
@@ -479,7 +721,15 @@ were marked false positive (see [`audit_verdict`](#audit_verdict)). For `md`,
 is true for `md` and `json`, whose text contains repository-derived content.
 Markdown lists false positives separately under "Dismissed by review", JSON
 keeps them with their `review`, and SARIF records them as suppressions and
-reports hotspots at level `note`.
+reports hotspots at level `note`. The Markdown summary has "Review coverage":
+one line per kind (records with and without a verdict, the rules with the
+most unreviewed records), then, when there are any, one line each for the
+open proof gaps and the disputed verdicts (the first three, then "… N more
+(see findings.json)"). Once a run has a verdict and anything is still
+unreviewed, a line under the title says so and the report does not say "No
+reportable issues found"; a plain scan keeps its wording. The `summary` text
+carries the same ledger as `triage`, is sent as compact JSON and is
+shortened field by field to fit (see [`audit_status`](#audit_status)).
 
 ## `audit_skill`
 

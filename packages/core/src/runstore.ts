@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Worker } from "node:worker_threads";
 import fs from "node:fs";
 import path from "node:path";
 import type { z } from "zod";
@@ -7,6 +8,7 @@ import {
   computeFingerprint,
   createFinding,
   dedupeFindings,
+  SEVERITIES,
   severityAtLeast,
   sortFindings,
   type Confidence,
@@ -22,6 +24,7 @@ import {
 import { defaultRulesDir, LATEST_OUTPUT_FILES, TOOL_VERSION } from "./meta.js";
 import { countPathContexts } from "./pathContext.js";
 import {
+  PathJailError,
   allowSensitiveRoot,
   resolveInside,
   toPosixRelative,
@@ -39,7 +42,9 @@ import {
   runPolicy,
   summarizeRun,
   summaryCountFields,
+  triageCoverage,
   type FindingSummary,
+  type TriageKindCount,
   type ReportContext,
   type RunPolicy,
 } from "./report.js";
@@ -52,6 +57,7 @@ import {
   type RuleSet,
 } from "./rules.js";
 import { compileGlob } from "./glob.js";
+import { HumanDecisionError, assertHumanContext, processHumanContext } from "./humanGate.js";
 import { InterruptedError, runInterruptible } from "./interrupt.js";
 import {
   LINE_MASK_ALL,
@@ -71,12 +77,20 @@ import {
   CoverageSchema,
   FindingsEnvelopeSchema,
   MAX_RUN_FILE_BYTES,
+  MAX_TRACE_STEPS,
+  MAX_VERDICT_TEXT,
+  MAX_VERDICTS_PER_FINDING,
+  MIN_MISSING_LENGTH,
   RunFileError,
   RunIndexSchema,
   RunRecordSchema,
   RunStateSchema,
+  VERDICTS_SCHEMA_VERSION,
   VerdictsSchema,
   parseRunFile,
+  type TraceStepSchema,
+  type VerdictConditionsSchema,
+  type VerdictControlSchema,
 } from "./runSchemas.js";
 import {
   SafeFsError,
@@ -140,12 +154,30 @@ export const VERDICT_STATUSES = [
   "likely",
   "needs_review",
   "false_positive",
+  "proof_gap",
 ] as const;
 export type VerdictStatus = (typeof VERDICT_STATUSES)[number];
 
+export const VERDICT_ROLES = ["primary", "independent", "human"] as const;
+export type VerdictRole = (typeof VERDICT_ROLES)[number];
+
+export const INDEPENDENCE_KINDS = ["subagent", "same-session"] as const;
+/** How an independent review was made: a fresh sub-agent, or a devil's-advocate pass in the same session. */
+export type Independence = (typeof INDEPENDENCE_KINDS)[number];
+
+export type TraceStep = z.infer<typeof TraceStepSchema>;
+export type VerdictConditions = z.infer<typeof VerdictConditionsSchema>;
+export type VerdictControl = z.infer<typeof VerdictControlSchema>;
+
+/**
+ * One entry of verdicts.json: what one reviewer decided, stored once. The
+ * file is append-only; the current state of a finding is computed from all
+ * of its entries (`currentVerdicts`).
+ */
 export interface VerdictRecord {
   fingerprint: string;
   findingId?: string;
+  /** The status this reviewer gave. */
   status: VerdictStatus;
   rationale: string;
   evidenceLines?: string[];
@@ -153,15 +185,76 @@ export interface VerdictRecord {
   actor?: string;
   /** Host agent reviewer label (for example the model name). */
   reviewer?: string;
+  /** Role of the reviewer who wrote this entry; absent (schemaVersion 1) means primary. */
+  role?: VerdictRole;
+  /** For role independent: a fresh sub-agent or a same-session devil's-advocate pass. */
+  independence?: Independence;
+  /** A primary verdict that knowingly replaced another reviewer's reviewed decision. */
+  replace?: boolean;
+  /** Source-to-sink path, at most `MAX_TRACE_STEPS` steps; every location was checked. */
+  trace?: TraceStep[];
+  conditions?: VerdictConditions;
+  /** The code that makes a `false_positive` safe; the location was checked. */
+  control?: VerdictControl;
+  /** The fact a `proof_gap` verdict could not establish. */
+  missing?: string;
+  cwe?: string;
+  /** A reviewer's view of the severity. Recorded and shown; never changes the counted severity. */
+  severityOverride?: { severity: Severity; reason: string };
 }
 
 export interface VerdictsDocument {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   runId: string;
+  /** See `VerdictsSchema.strictEvidence`. */
+  strictEvidence?: boolean;
   entries: VerdictRecord[];
 }
 
-export type CurrentVerdicts = Record<string, VerdictRecord>;
+/** One entry of a finding's review history, as reports show it. */
+export interface VerdictHistoryItem {
+  reviewer: string;
+  role: VerdictRole;
+  status: VerdictStatus;
+  at: string;
+  rationale: string;
+  independence?: Independence;
+  /** A later primary verdict replaced the decision this entry belongs to. */
+  superseded: boolean;
+  /** An independent entry whose status contradicted the primary verdict of its time. */
+  disagreed: boolean;
+  replace?: boolean;
+}
+
+/**
+ * The current decision on a finding: the latest primary verdict (its status,
+ * rationale and evidence), with what the independent reviews make of it.
+ * `status` is the effective status: `needs_review` while a disagreement is
+ * open.
+ */
+export interface CurrentVerdict extends VerdictRecord {
+  /** The status of the latest primary verdict. */
+  primaryStatus: VerdictStatus;
+  /** Every entry of the finding, oldest first. Nothing is ever removed. */
+  history: VerdictHistoryItem[];
+  /**
+   * True when an independent reviewer whose label differs from every primary
+   * label agreed with the latest primary verdict, after the last dissent.
+   */
+  independentlyReviewed: boolean;
+  /** The independent review that made `independentlyReviewed` true. */
+  independentReview?: VerdictHistoryItem;
+  /** An independent reviewer disagreed at some point (shown even once resolved). */
+  disputed: boolean;
+  /** The latest dissenting independent review. */
+  dissent?: VerdictHistoryItem;
+  /** A dissent that no qualifying independent agreement has answered yet. */
+  disputeOpen: boolean;
+  /** Set when the decision is a person's (`--role human` on the CLI). */
+  decidedByPerson?: { reviewer: string; at: string };
+}
+
+export type CurrentVerdicts = Record<string, CurrentVerdict>;
 
 /** How the audit root of a loaded run was established. */
 export type RunRootSource =
@@ -194,6 +287,8 @@ export interface LoadedRun {
   verdictsDocument: VerdictsDocument;
   /** Things the user should see about this run (printed as warnings). */
   notices: string[];
+  /** Invalid entries of verdicts.json that were ignored; also in `notices`. */
+  verdictWarnings?: string[];
   /** Shared across copies of this object; holds what is loaded on demand. */
   session: RunSession;
 }
@@ -686,20 +781,203 @@ export function resolveRunDir(
 
 export function readVerdicts(runDir: string): VerdictsDocument {
   return (
-    readRunFile(runDir, "verdicts.json", VerdictsSchema) ?? {
-      schemaVersion: 1,
+    (readRunFile(runDir, "verdicts.json", VerdictsSchema) as VerdictsDocument | undefined) ?? {
+      schemaVersion: VERDICTS_SCHEMA_VERSION,
       runId: path.basename(runDir),
       entries: [],
     }
   );
 }
 
-export function currentVerdicts(document: VerdictsDocument): CurrentVerdicts {
-  // No prototype: a fingerprint is a key chosen by a file in the repository.
-  const current = Object.create(null) as CurrentVerdicts;
-  for (const entry of document.entries) {
-    current[entry.fingerprint] = entry;
+/**
+ * Turn on strict evidence for every later verdict of a run (`audit_start`
+ * with `strict_evidence`). Writes verdicts.json of the new run directory,
+ * which must be canonical and hold no verdicts yet.
+ */
+export function initRunVerdicts(runDir: string, runId: string, settings: { strictEvidence: boolean }): void {
+  const existing = readVerdicts(runDir);
+  writeJson(runDir, "verdicts.json", {
+    schemaVersion: VERDICTS_SCHEMA_VERSION,
+    runId,
+    ...(settings.strictEvidence || existing.strictEvidence ? { strictEvidence: true } : {}),
+    entries: existing.entries,
+  } satisfies VerdictsDocument);
+}
+
+/** The label a verdict entry is known by (stored and shown as given). */
+export function verdictLabel(entry: Pick<VerdictRecord, "reviewer" | "actor">): string {
+  return (entry.reviewer || entry.actor || UNNAMED_REVIEWER).trim() || UNNAMED_REVIEWER;
+}
+
+/**
+ * The form in which reviewer labels are compared: NFKC, without zero-width,
+ * soft-hyphen and bidi control characters, trimmed and case-folded, so `P`,
+ * `p` and `p` followed by a zero-width space are one reviewer.
+ */
+export function normalizeReviewerLabel(label: string): string {
+  return label
+    .normalize("NFKC")
+    .replace(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/** Roles whose entry is a decision (the latest one is current). */
+function isDecisionRole(role: VerdictRole): boolean {
+  return role === "primary" || role === "human";
+}
+
+/**
+ * Whether an independent reviewer's status contradicts the primary one.
+ * Equal statuses agree, and so do confirmed and likely (both say the finding
+ * is real); every other difference - confirmed or likely against
+ * false_positive, anything against proof_gap or needs_review - is a
+ * disagreement.
+ */
+export function verdictsDisagree(primary: VerdictStatus, independent: VerdictStatus): boolean {
+  if (primary === independent) return false;
+  const real = (status: VerdictStatus): boolean => status === "confirmed" || status === "likely";
+  return !(real(primary) && real(independent));
+}
+
+/**
+ * The current decision of one finding from its entries, oldest first.
+ *
+ * - The latest primary entry is the decision (a schemaVersion 1 entry is a
+ *   primary one).
+ * - An independent entry disagrees when its status contradicts the primary
+ *   decision of its time (`verdictsDisagree`). A disagreement is never
+ *   erased: it stays open, and the status is `needs_review`, until an
+ *   independent reviewer whose label differs from every primary label of the
+ *   finding agrees with the latest primary decision, after the last dissent.
+ * - Only such an agreement makes `independentlyReviewed` true.
+ */
+function foldVerdicts(entries: readonly VerdictRecord[]): CurrentVerdict {
+  let latestPrimary = -1;
+  const primaryLabels = new Set<string>();
+  entries.forEach((entry, index) => {
+    if (isDecisionRole(entry.role ?? "primary")) {
+      latestPrimary = index;
+      primaryLabels.add(normalizeReviewerLabel(verdictLabel(entry)));
+    }
+  });
+  // A file without any primary entry (hand-made): its first entry decides.
+  if (latestPrimary < 0) {
+    latestPrimary = 0;
+    primaryLabels.add(normalizeReviewerLabel(verdictLabel(entries[0] as VerdictRecord)));
   }
+  const decision = entries[latestPrimary] as VerdictRecord;
+  let primaryOfTime: VerdictRecord | undefined;
+  let lastDissent = -1;
+  const history: VerdictHistoryItem[] = entries.map((entry, index) => {
+    const stored: VerdictRole = entry.role ?? "primary";
+    const role: VerdictRole = index === latestPrimary && stored === "independent" ? "primary" : stored;
+    if (isDecisionRole(role)) primaryOfTime = entry;
+    const disagreed =
+      role === "independent" &&
+      primaryOfTime !== undefined &&
+      verdictsDisagree(primaryOfTime.status, entry.status);
+    if (disagreed) lastDissent = index;
+    return {
+      reviewer: verdictLabel(entry),
+      role,
+      status: entry.status,
+      at: entry.at,
+      rationale: entry.rationale,
+      ...(entry.independence ? { independence: entry.independence } : {}),
+      superseded: index < latestPrimary,
+      disagreed,
+      ...(entry.replace ? { replace: true } : {}),
+    };
+  });
+  let independentReview: VerdictHistoryItem | undefined;
+  history.forEach((item, index) => {
+    if (
+      item.role === "independent" &&
+      index > latestPrimary &&
+      index > lastDissent &&
+      !primaryLabels.has(normalizeReviewerLabel(item.reviewer)) &&
+      !verdictsDisagree(decision.status, item.status)
+    ) {
+      independentReview ??= item;
+    }
+  });
+  // A person's decision (CLI `--role human`) settles every dispute.
+  const byPerson = (decision.role ?? "primary") === "human";
+  const disputeOpen = !byPerson && lastDissent >= 0 && independentReview === undefined;
+  const { role: _role, independence: _independence, replace: _replace, ...base } = decision;
+  return {
+    ...base,
+    role: byPerson ? "human" : "primary",
+    ...(byPerson ? { decidedByPerson: { reviewer: verdictLabel(decision), at: decision.at } } : {}),
+    status: disputeOpen ? "needs_review" : decision.status,
+    primaryStatus: decision.status,
+    history,
+    independentlyReviewed: independentReview !== undefined,
+    ...(independentReview ? { independentReview } : {}),
+    disputed: lastDissent >= 0,
+    ...(lastDissent >= 0 ? { dissent: history[lastDissent] as VerdictHistoryItem } : {}),
+    disputeOpen,
+  };
+}
+
+/**
+ * Why a stored `role: "human"` entry is not a decision this tool wrote, or
+ * undefined when it is one: it must have a reviewer label, the replace flag
+ * recorded at write time, and - dismissing a high or critical finding - the
+ * evidence `assertDismissalJustified` requires. verdicts.json lives in the
+ * run directory; whoever can edit it can still forge any other record.
+ */
+function invalidHumanEntry(entry: VerdictRecord, finding: Finding | undefined): string | undefined {
+  if (entry.role !== "human") return undefined;
+  if (!entry.reviewer?.trim()) return "no reviewer label";
+  if (entry.replace !== true) return "no replace flag";
+  if (
+    finding &&
+    entry.status === "false_positive" &&
+    finding.kind !== "hotspot" &&
+    severityAtLeast(finding.severity, DISMISSAL_EVIDENCE_SEVERITY)
+  ) {
+    const longEnough = entry.rationale.replace(/\s+/g, " ").length >= DISMISSAL_MIN_RATIONALE;
+    const evidence =
+      entry.control !== undefined ||
+      (entry.evidenceLines ?? []).some((line) => line.trim().length >= 3) ||
+      LOCATION_REFERENCE.test(entry.rationale);
+    if (!longEnough || !evidence) return "a high or critical dismissal without the required evidence";
+  }
+  return undefined;
+}
+
+/** Human entries of a document that are not valid, with the reason. */
+export function invalidHumanEntries(
+  document: VerdictsDocument,
+  findings: readonly Finding[] = [],
+): Array<{ index: number; findingId?: string; reason: string }> {
+  const byFingerprint = new Map(findings.map((finding) => [finding.fingerprint, finding]));
+  const result: Array<{ index: number; findingId?: string; reason: string }> = [];
+  document.entries.forEach((entry, index) => {
+    const reason = invalidHumanEntry(entry, byFingerprint.get(entry.fingerprint));
+    if (reason) result.push({ index, ...(entry.findingId ? { findingId: entry.findingId } : {}), reason });
+  });
+  return result;
+}
+
+/**
+ * The current decision of every fingerprint. With `findings`, a human entry
+ * that `invalidHumanEntry` rejects is left out (and reported by `loadRun`).
+ */
+export function currentVerdicts(document: VerdictsDocument, findings?: readonly Finding[]): CurrentVerdicts {
+  const ignored = new Set(invalidHumanEntries(document, findings ?? []).map((item) => item.index));
+  // No prototype: a fingerprint is a key chosen by a file in the repository.
+  const grouped = new Map<string, VerdictRecord[]>();
+  for (const [index, entry] of document.entries.entries()) {
+    if (ignored.has(index)) continue;
+    const list = grouped.get(entry.fingerprint);
+    if (list) list.push(entry);
+    else grouped.set(entry.fingerprint, [entry]);
+  }
+  const current = Object.create(null) as CurrentVerdicts;
+  for (const [fingerprint, entries] of grouped) current[fingerprint] = foldVerdicts(entries);
   return current;
 }
 
@@ -974,6 +1252,13 @@ export function loadRun(
   const state = readRunState(runDir);
   const verdictsDocument = readVerdicts(runDir);
   const runId = typeof run.runId === "string" ? run.runId : path.basename(runDir);
+  const allRecords = [...findings, ...hotspots];
+  const verdictWarnings = invalidHumanEntries(verdictsDocument, allRecords).map(
+    (item) =>
+      `ignored an invalid human decision entry${item.findingId ? ` for ${printable(item.findingId, 40)}` : ""} ` +
+      `in verdicts.json (${item.reason}); a person's decision is written only by the CLI`,
+  );
+  notices.push(...verdictWarnings);
   return {
     runDir,
     runId,
@@ -983,9 +1268,10 @@ export function loadRun(
     hotspots,
     coverage,
     state,
-    verdicts: currentVerdicts(verdictsDocument),
+    verdicts: currentVerdicts(verdictsDocument, allRecords),
     verdictsDocument,
     notices,
+    verdictWarnings,
     session,
   };
 }
@@ -997,6 +1283,20 @@ export function loadRun(
  * and restores the scan's value when a later verdict says otherwise). Every
  * reader - `findings`, `status`, the reports, the files - sees this form.
  */
+/** Characters of a rationale carried in a finding's `review.history`. */
+const HISTORY_RATIONALE_MAX = 300;
+/** Entries of `review.history` carried in a finding (the newest). */
+const HISTORY_SHOWN = 50;
+
+/** A history item for findings.json and the reports: redacted, short. */
+function historyView(item: VerdictHistoryItem): VerdictHistoryItem {
+  return {
+    ...item,
+    reviewer: redactText(item.reviewer).slice(0, 200),
+    rationale: redactText(item.rationale.slice(0, HISTORY_RATIONALE_MAX)),
+  };
+}
+
 function withVerdict(run: LoadedRun, finding: Finding): Finding {
   const verdict = run.verdicts[finding.fingerprint];
   // `review` always comes from verdicts.json, never from what findings.json
@@ -1008,13 +1308,35 @@ function withVerdict(run: LoadedRun, finding: Finding): Finding {
     status: verdict.status,
     review: {
       status: verdict.status,
-      rationale: verdict.rationale,
-      ...(verdict.reviewer ? { reviewer: verdict.reviewer } : {}),
-      ...(verdict.actor ? { actor: verdict.actor } : {}),
+      // Written redacted since schemaVersion 2; older files are redacted here.
+      rationale: redactText(verdict.rationale),
+      ...(verdict.reviewer ? { reviewer: redactText(verdict.reviewer) } : {}),
+      ...(verdict.actor ? { actor: redactText(verdict.actor) } : {}),
       at: verdict.at,
       ...(verdict.evidenceLines ? { evidenceLines: verdict.evidenceLines } : {}),
+      ...(verdict.trace ? { trace: verdict.trace } : {}),
+      ...(verdict.conditions ? { conditions: verdict.conditions } : {}),
+      ...(verdict.control ? { control: verdict.control } : {}),
+      ...(verdict.missing ? { missing: verdict.missing } : {}),
+      ...(verdict.cwe ? { cwe: verdict.cwe } : {}),
+      ...(verdict.severityOverride ? { severityOverride: verdict.severityOverride } : {}),
+      primaryStatus: verdict.primaryStatus,
+      history: verdict.history.slice(-HISTORY_SHOWN).map(historyView),
+      independentlyReviewed: verdict.independentlyReviewed,
+      ...(verdict.independentReview ? { independentReview: historyView(verdict.independentReview) } : {}),
+      disputed: verdict.disputed,
+      ...(verdict.dissent ? { dissent: historyView(verdict.dissent) } : {}),
+      disputeOpen: verdict.disputeOpen,
+      ...(verdict.decidedByPerson
+        ? { decidedByPerson: { reviewer: redactText(verdict.decidedByPerson.reviewer).slice(0, 200), at: verdict.decidedByPerson.at } }
+        : {}),
     },
   });
+}
+
+/** True when a qualifying independent reviewer agreed with the current decision. */
+export function isIndependentlyReviewed(verdict: CurrentVerdict | undefined): boolean {
+  return verdict?.independentlyReviewed === true;
 }
 
 export function effectiveFindings(run: LoadedRun): Finding[] {
@@ -1061,6 +1383,7 @@ function assertDismissalJustified(
   status: VerdictStatus,
   rationale: string,
   evidenceLines: readonly string[] | undefined,
+  hasControl = false,
 ): void {
   if (status !== "false_positive" || finding.kind === "hotspot") return;
   if (!severityAtLeast(finding.severity, DISMISSAL_EVIDENCE_SEVERITY)) return;
@@ -1068,10 +1391,11 @@ function assertDismissalJustified(
   if (rationale.replace(/\s+/g, " ").length < DISMISSAL_MIN_RATIONALE) {
     problems.push(`a rationale of at least ${DISMISSAL_MIN_RATIONALE} characters that says why the code is safe`);
   }
-  const hasEvidence = (evidenceLines ?? []).some((line) => line.trim().length >= 3);
+  // A checked `control` location is a file:line reference.
+  const hasEvidence = hasControl || (evidenceLines ?? []).some((line) => line.trim().length >= 3);
   if (!hasEvidence && !LOCATION_REFERENCE.test(rationale)) {
     problems.push(
-      "evidence: evidenceLines (CLI: --evidence-line) quoting the code that shows it, or a file:line reference in the rationale",
+      "evidence: evidenceLines (CLI: --evidence-line) quoting the code that shows it, a control {file, line, note} naming the protecting code, or a file:line reference in the rationale",
     );
   }
   if (problems.length === 0) return;
@@ -1088,6 +1412,36 @@ export interface RecordVerdictInput {
   evidenceLines?: string[];
   actor?: string;
   reviewer?: string;
+  /**
+   * `primary` (default): the decision. `independent`: a second reviewer who
+   * did not see the primary decision checks it; see `recordVerdict`.
+   */
+  role?: VerdictRole;
+  /** Required with role independent: a fresh sub-agent, or a same-session devil's-advocate pass. */
+  independence?: Independence;
+  /**
+   * A primary verdict that replaces the decision of another reviewer on a
+   * finding that has an independent review is refused unless this is true.
+   */
+  replace?: boolean;
+  /** Source-to-sink path; every location must exist in the audit root. */
+  trace?: TraceStep[];
+  conditions?: VerdictConditions;
+  /** The code that makes a false positive safe; the location must exist. */
+  control?: VerdictControl;
+  /** For `proof_gap`: the fact that could not be established (>= 20 characters). */
+  missing?: string;
+  /** `CWE-<n>`: the weakness the reviewer sees. */
+  cwe?: string;
+  /** A reviewer's view of the severity; recorded and shown, never counted. */
+  severityOverride?: { severity: Severity; reason: string };
+  /**
+   * Require structured evidence for this verdict (`trace` for confirmed,
+   * `control` for false_positive, `missing` for proof_gap). A run started
+   * with strict evidence requires it for every verdict; `false` here does
+   * not turn that off.
+   */
+  strictEvidence?: boolean;
 }
 
 export interface RecordVerdictResult {
@@ -1095,8 +1449,21 @@ export interface RecordVerdictResult {
   runDir: string;
   fingerprint: string;
   findingId: string;
+  /** The current status after this verdict (see `role`). */
   status: VerdictStatus;
   rationale: string;
+  /** Role this verdict was recorded with. */
+  role: VerdictRole;
+  /** The status this call asked for; differs from `status` after a disagreement. */
+  requestedStatus: VerdictStatus;
+  /** True when a qualifying independent reviewer agreed with the current decision. */
+  independentlyReviewed: boolean;
+  /** Set while an independent review's disagreement is open. */
+  disagreement?: string;
+  /** An independent reviewer disagreed at some point (also once resolved). */
+  disputed: boolean;
+  /** Whether structured evidence was required for this verdict. */
+  strictEvidence: boolean;
   history: number;
   reviewed: number;
   total: number;
@@ -1107,71 +1474,791 @@ export interface RecordVerdictResult {
   dismissedWarning?: string;
 }
 
+/** Label of a reviewer who gave none. */
+export const UNNAMED_REVIEWER = "unnamed reviewer";
+/** Characters kept of a rationale, `missing` or a severity override reason. */
+const REVIEWER_RATIONALE_MAX = MAX_VERDICT_TEXT;
+/** Characters kept of a note. */
+const EVIDENCE_TEXT_MAX = 2000;
+/** Evidence lines kept per verdict, and characters per line. */
+const MAX_EVIDENCE_LINES = 20;
+const EVIDENCE_LINE_MAX = 1000;
+
+const TRACE_EXAMPLE =
+  '[{"file":"src/routes.py","line":12,"role":"source","note":"name = request.args[\\"name\\"]"},' +
+  '{"file":"src/db.py","line":40,"role":"sink","note":"cursor.execute(sql)"}]';
+const CONTROL_EXAMPLE =
+  '{"file":"src/db.py","line":38,"note":"name is passed as a bound query parameter"}';
+const MISSING_EXAMPLE =
+  '"whether /admin/export can be reached without the admin role"';
+
+interface StructuredEvidence {
+  trace?: TraceStep[];
+  conditions?: VerdictConditions;
+  control?: VerdictControl;
+  missing?: string;
+  cwe?: string;
+  severityOverride?: { severity: Severity; reason: string };
+}
+
+function evidenceError(message: string): never {
+  throw new RunStoreError(message, "INVALID_EVIDENCE");
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Agent-written text stored with a verdict: trimmed, redacted, cut. */
+function evidenceText(value: unknown, label: string, max = EVIDENCE_TEXT_MAX): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") evidenceError(`${label} must be a string`);
+  const text = value.trim();
+  return text ? redactText(text).slice(0, max) : undefined;
+}
+
+function locationShape(
+  value: unknown,
+  label: string,
+  example: string,
+): { file: string; line: number } {
+  if (!isPlainRecord(value)) {
+    evidenceError(`${label} must be an object like ${example}`);
+  }
+  if (typeof value.file !== "string" || value.file.trim() === "") {
+    evidenceError(
+      `${label}.file is missing: give the path relative to the audit root, as audit_findings and audit_read show it (for example "src/app.py")`,
+    );
+  }
+  const file = value.file.trim();
+  if (typeof value.line !== "number" || !Number.isInteger(value.line) || value.line < 1) {
+    evidenceError(`${label}.line is missing or not a line number: give the line (an integer >= 1) in ${printable(file, 200)}`);
+  }
+  return { file, line: value.line };
+}
+
+/**
+ * Check the shape of the structured fields of a verdict and bring them into
+ * the stored form. Each message names the field and says how to fill it:
+ * small models rely on that to correct a call.
+ */
+function normalizeEvidence(input: RecordVerdictInput): StructuredEvidence {
+  const evidence: StructuredEvidence = {};
+  if (input.trace !== undefined && input.trace !== null) {
+    if (!Array.isArray(input.trace)) {
+      evidenceError(`trace must be a list of steps, for example ${TRACE_EXAMPLE}`);
+    }
+    if (input.trace.length > MAX_TRACE_STEPS) {
+      evidenceError(
+        `trace has ${input.trace.length} steps; at most ${MAX_TRACE_STEPS} are accepted: keep the source, the sink and the steps in between that matter`,
+      );
+    }
+    const steps: TraceStep[] = [];
+    input.trace.forEach((step: unknown, index) => {
+      const label = `trace[${index}]`;
+      const location = locationShape(step, label, TRACE_EXAMPLE);
+      const role = (step as Record<string, unknown>).role;
+      if (role !== "source" && role !== "propagation" && role !== "sink") {
+        evidenceError(
+          `${label}.role must be "source", "propagation" or "sink" (got ${printable(JSON.stringify(role) ?? "nothing", 40)}): "source" is where untrusted input enters, "sink" the dangerous call`,
+        );
+      }
+      const note = evidenceText((step as Record<string, unknown>).note, `${label}.note`);
+      steps.push({ ...location, role, ...(note ? { note } : {}) });
+    });
+    if (steps.length > 0) evidence.trace = steps;
+  }
+  if (input.conditions !== undefined && input.conditions !== null) {
+    const conditions: unknown = input.conditions;
+    if (!isPlainRecord(conditions)) {
+      evidenceError('conditions must be an object like {"auth":"user","userInteraction":false}');
+    }
+    const result: VerdictConditions = {};
+    if (conditions.auth !== undefined) {
+      if (!["none", "user", "admin", "unknown"].includes(conditions.auth as string)) {
+        evidenceError(
+          'conditions.auth must be "none" (no login), "user" (any logged-in user), "admin" or "unknown"',
+        );
+      }
+      result.auth = conditions.auth as VerdictConditions["auth"];
+    }
+    if (conditions.userInteraction !== undefined) {
+      if (typeof conditions.userInteraction !== "boolean") {
+        evidenceError("conditions.userInteraction must be true or false: does the attack need a victim to act?");
+      }
+      result.userInteraction = conditions.userInteraction;
+    }
+    const note = evidenceText(conditions.note, "conditions.note");
+    if (note) result.note = note;
+    if (Object.keys(result).length > 0) evidence.conditions = result;
+  }
+  if (input.control !== undefined && input.control !== null) {
+    const location = locationShape(input.control, "control", CONTROL_EXAMPLE);
+    const note = evidenceText((input.control as unknown as Record<string, unknown>).note, "control.note");
+    if (!note) {
+      evidenceError(
+        "control.note is missing: say in one sentence how the code at control.file:control.line makes the finding safe",
+      );
+    }
+    evidence.control = { ...location, note };
+  }
+  if (input.missing !== undefined && input.missing !== null) {
+    const missing = evidenceText(input.missing, "missing", REVIEWER_RATIONALE_MAX);
+    if (!missing || missing.replace(/\s+/g, " ").length < MIN_MISSING_LENGTH) {
+      evidenceError(
+        `missing must say in at least ${MIN_MISSING_LENGTH} characters which fact you could not establish, for example ${MISSING_EXAMPLE}`,
+      );
+    }
+    evidence.missing = missing;
+  }
+  if (input.cwe !== undefined && input.cwe !== null && String(input.cwe).trim() !== "") {
+    const cwe = String(input.cwe).trim().toUpperCase();
+    if (!/^CWE-\d{1,6}$/.test(cwe)) {
+      evidenceError(`cwe must look like CWE-89 (got ${printable(String(input.cwe), 40)})`);
+    }
+    evidence.cwe = cwe;
+  }
+  if (input.severityOverride !== undefined && input.severityOverride !== null) {
+    const override: unknown = input.severityOverride;
+    if (!isPlainRecord(override)) {
+      evidenceError('severityOverride must be an object like {"severity":"medium","reason":"needs an admin session"}');
+    }
+    if (!(SEVERITIES as readonly unknown[]).includes(override.severity)) {
+      evidenceError(`severityOverride.severity must be one of ${SEVERITIES.join(", ")}`);
+    }
+    const reason = evidenceText(override.reason, "severityOverride.reason");
+    if (!reason) {
+      evidenceError("severityOverride.reason is missing: say why the severity differs from the rule's");
+    }
+    evidence.severityOverride = { severity: override.severity as Severity, reason };
+  }
+  return evidence;
+}
+
+/**
+ * Fields that belong to some statuses only: `control` to false_positive,
+ * `missing` to proof_gap, `severityOverride` to confirmed and likely
+ * (findings that are real). Anything else is refused, so a report never
+ * shows evidence that does not fit the decision.
+ */
+function assertFieldsFitStatus(status: VerdictStatus, evidence: StructuredEvidence): void {
+  const problems: string[] = [];
+  if (evidence.control && status !== "false_positive") {
+    problems.push(`control belongs to false_positive only (this verdict is ${status}): remove it`);
+  }
+  if (evidence.missing && status !== "proof_gap") {
+    problems.push(`missing belongs to proof_gap only (this verdict is ${status}): remove it, or record proof_gap`);
+  }
+  if (evidence.severityOverride && status !== "confirmed" && status !== "likely") {
+    problems.push(`severityOverride belongs to confirmed and likely only (this verdict is ${status}): remove it`);
+  }
+  if (problems.length > 0) evidenceError(problems.join("; "));
+}
+
+/** With strict evidence: what each status must carry. */
+function assertStrictEvidence(status: VerdictStatus, evidence: StructuredEvidence): void {
+  const prefix = "strict evidence is on for this verdict: ";
+  const roles = new Set((evidence.trace ?? []).map((step) => step.role));
+  if (status === "confirmed") {
+    const absent = (["source", "sink"] as const).filter((role) => !roles.has(role));
+    if (absent.length === 0) return;
+    throw new RunStoreError(
+      `${prefix}a confirmed verdict needs trace with at least one step of role "source" and one of role "sink" ` +
+        `(no ${absent.map((role) => `"${role}"`).join(" and no ")} step given). Example: trace: ${TRACE_EXAMPLE}. ` +
+        "If you cannot show both ends, record proof_gap with missing set to what you could not establish",
+      "EVIDENCE_REQUIRED",
+    );
+  }
+  if (status === "likely" && !roles.has("sink")) {
+    throw new RunStoreError(
+      `${prefix}a likely verdict needs trace with at least one step of role "sink" (the dangerous call you checked), ` +
+        `for example trace: [{"file":"src/db.py","line":40,"role":"sink","note":"cursor.execute(sql)"}]. ` +
+        "If you have not looked at the sink, record proof_gap with missing set to what you could not establish",
+      "EVIDENCE_REQUIRED",
+    );
+  }
+  if (status === "false_positive" && !evidence.control) {
+    throw new RunStoreError(
+      `${prefix}a false_positive verdict needs control: the file, line and note of the code that makes it safe, ` +
+        `for example control: ${CONTROL_EXAMPLE}. If you cannot point at that code, use needs_review or proof_gap`,
+      "EVIDENCE_REQUIRED",
+    );
+  }
+  if (status === "proof_gap" && !evidence.missing) {
+    throw new RunStoreError(
+      `${prefix}a proof_gap verdict needs missing: the fact you could not establish, in at least ${MIN_MISSING_LENGTH} characters, ` +
+        `for example missing: ${MISSING_EXAMPLE}`,
+      "EVIDENCE_REQUIRED",
+    );
+  }
+}
+
+/** Lines of a text: a trailing line break does not start another line. */
+export function textLineCount(text: string): number {
+  if (text === "") return 0;
+  const lines = splitLines(text);
+  return lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+}
+
+/**
+ * Every `trace` step and the `control` must name a line that exists: a file
+ * the run itself scanned (coverage.json `scannedFiles`: the inventory of the
+ * scan, with its own options such as `--untrusted`), reached through the path
+ * jail of the audit root (no absolute path, no `..` or symbolic link that
+ * leaves the root), still a regular text file, and a line within it. Returns
+ * the evidence with each file as its path relative to the root. Throws
+ * `EVIDENCE_LOCATION_INVALID` naming every bad item.
+ */
+function checkEvidenceLocations(run: LoadedRun, evidence: StructuredEvidence): StructuredEvidence {
+  const items: Array<{ label: string; file: string; line: number; set: (file: string) => void }> = [];
+  const trace = evidence.trace?.map((step) => ({ ...step }));
+  trace?.forEach((step, index) =>
+    items.push({ label: `trace[${index}]`, file: step.file, line: step.line, set: (file) => (step.file = file) }),
+  );
+  const control = evidence.control ? { ...evidence.control } : undefined;
+  if (control) {
+    items.push({ label: "control", file: control.file, line: control.line, set: (file) => (control.file = file) });
+  }
+  if (items.length === 0) return evidence;
+  const root = requireAuditRoot(run);
+  const scanned = new Set(requireCoverage(run).scannedFiles.map((entry) => entry.path));
+  const lineCounts = new Map<string, number>();
+  const problems: string[] = [];
+  for (const item of items) {
+    const shown = `${item.label} (${printable(item.file, 200)}:${item.line})`;
+    if (path.isAbsolute(item.file) || path.win32.isAbsolute(item.file)) {
+      problems.push(`${shown}: an absolute path is not accepted, use the path relative to the audit root`);
+      continue;
+    }
+    let resolved: string;
+    try {
+      resolved = resolveInside(root, item.file);
+    } catch (error) {
+      // The message of the jail names the resolved target; it is not echoed.
+      problems.push(
+        error instanceof PathJailError
+          ? `${shown}: the path leaves the audit root`
+          : `${shown}: the path cannot be resolved inside the audit root`,
+      );
+      continue;
+    }
+    const relPath = toPosixRelative(root, resolved);
+    if (!scanned.has(relPath)) {
+      problems.push(`${shown}: not a file this run scanned (missing, excluded, binary, oversized or created after the scan)`);
+      continue;
+    }
+    let count = lineCounts.get(relPath);
+    if (count === undefined) {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(resolved);
+      } catch {
+        problems.push(`${shown}: the file no longer exists`);
+        continue;
+      }
+      if (!stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES) {
+        problems.push(`${shown}: not a regular text file within the read limit`);
+        continue;
+      }
+      count = textLineCount(fs.readFileSync(resolved, "utf8"));
+      lineCounts.set(relPath, count);
+    }
+    if (item.line > count) {
+      problems.push(`${shown}: line ${item.line} is beyond the end of ${relPath} (${count} lines)`);
+      continue;
+    }
+    item.set(relPath);
+  }
+  if (problems.length > 0) {
+    const more = problems.length > 5 ? `; ${problems.length - 5} more` : "";
+    throw new RunStoreError(
+      `${problems.slice(0, 5).join("; ")}${more}. Every trace step and the control must name a file of the audit root ` +
+        "by its path relative to the root (as audit_findings and audit_read show it) and a line that exists in that file. " +
+        "Check the location with audit_read, fix the item named here and call audit_verdict again",
+      "EVIDENCE_LOCATION_INVALID",
+    );
+  }
+  return { ...evidence, ...(trace ? { trace } : {}), ...(control ? { control } : {}) };
+}
+
+/** Name of the lock file that serialises verdict writes of a run. */
+export const VERDICT_LOCK_FILE = "verdicts.json.lock";
+/** How long a verdict waits for another writer of the same run. */
+const LOCK_TIMEOUT_MS = 15_000;
+/** A lock not refreshed for this long is left over from a writer that died. */
+const LOCK_STALE_MS = 120_000;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` holding the verdict lock of a run directory: a lock file created
+ * with O_EXCL (which also refuses a planted symbolic link), retried until
+ * `LOCK_TIMEOUT_MS`. Two processes (an agent and its independent sub-agent
+ * with its own MCP server) then read, merge and write verdicts.json one
+ * after the other instead of overwriting each other.
+ */
+export function withRunLock<T>(runDir: string, fn: () => T): T {
+  const lock = path.join(runDir, VERDICT_LOCK_FILE);
+  const token = `${process.pid}:${crypto.randomBytes(12).toString("hex")}`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+  /** The token in a lock file, or undefined when it cannot be read as one. */
+  const tokenIn = (file: string): string | undefined => {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW);
+      const buffer = Buffer.alloc(200);
+      const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, read).toString("utf8").trim();
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  };
+  /** A lock path that this tool never writes: refused at once, with what to do. */
+  const invalid = (what: string): never => {
+    throw new RunStoreError(
+      `the verdict lock ${lock} is ${what}, not a lock file this tool wrote; nothing was recorded. ` +
+        "Remove it (a person, not an agent: check first that it is not yours) and record the verdict again",
+      "RUN_LOCK_INVALID",
+    );
+  };
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(lock, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
+      fs.writeSync(fd, `${token}\n`);
+      fs.closeSync(fd);
+      break;
+    } catch (error) {
+      if (fd !== undefined) fs.closeSync(fd);
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new RunStoreError(`cannot create the verdict lock ${lock}: ${(error as Error).message}`, "RUN_STORE_WRITE");
+      }
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(lock);
+    } catch {
+      continue; // Released meanwhile.
+    }
+    if (stat.isSymbolicLink()) invalid("a symbolic link");
+    if (stat.isDirectory()) invalid("a directory");
+    if (!stat.isFile()) invalid("not a regular file");
+    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+      // Retry at once only when this writer removed the stale lock; when
+      // another writer is taking over, wait like any other writer.
+      if (takeOverStaleLock(lock, token, tokenIn)) continue;
+    }
+    if (Date.now() > deadline) {
+      throw new RunStoreError(
+        `another process is writing verdicts of this run (lock file ${lock}, held by ${printable(tokenIn(lock) ?? "an unknown writer", 60)}); ` +
+          `call audit_verdict again in a moment. A lock its writer has not refreshed for ${LOCK_STALE_MS / 1000} seconds is taken over`,
+        "RUN_LOCKED",
+      );
+    }
+    sleepSync(15 + Math.floor(Math.random() * 20));
+  }
+  // While the write runs (synchronously), a worker thread refreshes the
+  // lock's mtime every LOCK_REFRESH_MS, so a slow write is never judged
+  // stale. It only touches a lock that still holds this writer's token.
+  const heartbeat = startLockHeartbeat(lock, token);
+  try {
+    return fn();
+  } finally {
+    heartbeat?.terminate().catch(() => undefined);
+    // Only our own lock is removed.
+    if (tokenIn(lock) === token) {
+      try {
+        fs.unlinkSync(lock);
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+}
+
+/** A takeover mutex older than this was left by a writer that died during a takeover. */
+const TAKEOVER_STALE_MS = 5_000;
+
+/**
+ * Remove a lock that nobody refreshed for LOCK_STALE_MS (its writer died),
+ * so that the normal O_EXCL create can run again.
+ *
+ * Takeovers are serialised by `<lock>.takeover`, created with O_EXCL: under
+ * it, the lock is checked again - a live writer may have replaced the stale
+ * lock since this writer looked - and only a lock that is still stale is
+ * moved, to a name unique to this writer (`<lock>.stale.<token>`; the lock
+ * path is never renamed over). The moved file must still hold the token
+ * read before the move; if it does not, it is put back with link(), which
+ * never overwrites a lock that appeared meanwhile.
+ */
+function takeOverStaleLock(
+  lock: string,
+  token: string,
+  tokenIn: (file: string) => string | undefined,
+): boolean {
+  const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+  const mutex = `${lock}.takeover`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(mutex, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | NOFOLLOW, 0o600);
+    fs.writeSync(fd, `${token}\n`);
+    fs.closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) fs.closeSync(fd);
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw new RunStoreError(`cannot create the lock takeover file ${mutex}: ${(error as Error).message}`, "RUN_STORE_WRITE");
+    }
+    // Another writer is taking over, or one died doing so.
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.lstatSync(mutex);
+    } catch {
+      return false; // Gone already.
+    }
+    if (!stat.isFile()) {
+      const what = stat.isSymbolicLink() ? "a symbolic link" : stat.isDirectory() ? "a directory" : "not a regular file";
+      throw new RunStoreError(
+        `the lock takeover file ${mutex} is ${what}, not one this tool wrote; nothing was recorded. ` +
+          "Remove it (a person, not an agent: check first that it is not yours) and record the verdict again",
+        "RUN_LOCK_INVALID",
+      );
+    }
+    // A takeover takes milliseconds: one older than TAKEOVER_STALE_MS was
+    // left by a writer that died during it.
+    if (Date.now() - stat.mtimeMs > TAKEOVER_STALE_MS) fs.rmSync(mutex, { force: true });
+    return false;
+  }
+  try {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(lock);
+    } catch {
+      return true; // Released meanwhile: try to create it now.
+    }
+    if (!stat.isFile() || Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return false;
+    const stale = tokenIn(lock);
+    const moved = `${lock}.stale.${token.replace(/[^A-Za-z0-9]/g, "")}`;
+    try {
+      fs.renameSync(lock, moved);
+    } catch {
+      return true; // Released meanwhile.
+    }
+    if (tokenIn(moved) !== stale) {
+      try {
+        fs.linkSync(moved, lock);
+      } catch {
+        // A lock appeared meanwhile; it stands.
+      }
+    }
+    fs.rmSync(moved, { force: true });
+    return true;
+  } finally {
+    if (tokenIn(mutex) === token) fs.rmSync(mutex, { force: true });
+  }
+}
+
+/** How often a held lock is refreshed. */
+export const LOCK_REFRESH_MS = 10_000;
+
+/** `CODE_AUDIT_LOCK_REFRESH_MS` (tests only) shortens the refresh interval; never longer than the default. */
+function lockRefreshMs(): number {
+  const value = Number(process.env.CODE_AUDIT_LOCK_REFRESH_MS);
+  return Number.isFinite(value) && value >= 20 && value < LOCK_REFRESH_MS ? value : LOCK_REFRESH_MS;
+}
+
+const HEARTBEAT_SOURCE = `
+const { workerData } = require("node:worker_threads");
+const fs = require("node:fs");
+setInterval(() => {
+  try {
+    const fd = fs.openSync(workerData.lock, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const buffer = Buffer.alloc(200);
+    const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+    if (buffer.subarray(0, read).toString("utf8").trim() !== workerData.token) return;
+    const now = new Date();
+    fs.utimesSync(workerData.lock, now, now);
+  } catch {}
+}, workerData.every);
+`;
+
+function startLockHeartbeat(lock: string, token: string): Worker | undefined {
+  try {
+    const worker = new Worker(HEARTBEAT_SOURCE, {
+      eval: true,
+      workerData: { lock, token, every: lockRefreshMs() },
+    });
+    worker.unref();
+    return worker;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Refuse to write a run file the reader would refuse (`MAX_RUN_FILE_BYTES`):
+ * a verdict that would make the run unreadable is not recorded.
+ */
+function assertStorable(name: string, text: string): void {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_RUN_FILE_BYTES) {
+    throw new RunStoreError(
+      `recording this verdict would make ${name} ${bytes} bytes, over the ${MAX_RUN_FILE_BYTES} byte limit of the run store; ` +
+        "nothing was written. Shorten the rationale and notes, or render the report of the run as it is",
+      "VERDICT_STORE_FULL",
+    );
+  }
+}
+
+/**
+ * Record a verdict.
+ *
+ * verdicts.json is append-only and every entry is one reviewer's decision,
+ * stored once (`currentVerdicts` computes the current state):
+ *
+ * - `primary` (the default): the decision. On a finding that has an
+ *   independent review, replacing the decision of another reviewer label
+ *   needs `replace: true`.
+ * - `independent`: a second review by a reviewer who did not see the
+ *   decision. It needs an existing decision, a reviewer label that differs
+ *   from every primary label of the finding, and `independence`. A
+ *   disagreement keeps the finding at `needs_review` until a qualifying
+ *   independent reviewer agrees with the latest decision; it is never
+ *   erased. An independent review alone can never dismiss a finding.
+ *
+ * The run directory is locked (`withRunLock`) from reading the verdicts to
+ * writing them; a write the reader could not load is refused.
+ */
+/**
+ * Test-only: skips the terminal and environment checks of a human decision.
+ * Not exported; tests use the same registered symbol.
+ */
+const HUMAN_GATE_TEST_BYPASS = Symbol.for("code-audit.test-only.skip-human-gate");
+
+export interface RecordVerdictAccess {
+  /**
+   * A person at a terminal confirmed the decision (the CLI's checks in
+   * humanGate.ts passed). Only then is `role: "human"` accepted; the MCP
+   * server never sets it.
+   */
+  human?: boolean;
+  /** The call comes from the CLI: messages name its flags (`--replace`). */
+  cli?: boolean;
+}
+
 export function recordVerdict(
   ref: string,
   target: string,
   input: RecordVerdictInput,
   options: ResolveRunOptions = {},
+  access: RecordVerdictAccess = {},
 ): RecordVerdictResult {
   if (!VERDICT_STATUSES.includes(input.status)) {
     throw new RunStoreError(
-      `unsupported verdict status: ${String(input.status)}`,
+      `unsupported verdict status: ${String(input.status)}; use one of ${VERDICT_STATUSES.join(", ")}`,
       "INVALID_VERDICT",
     );
   }
-  const rationale = input.rationale?.trim();
-  if (!rationale) {
+  const role: VerdictRole = input.role ?? "primary";
+  if (!VERDICT_ROLES.includes(role)) {
+    throw new RunStoreError(
+      `role must be "primary" (your own decision, the default) or "independent" (a check of someone else's verdict)`,
+      "INVALID_VERDICT",
+    );
+  }
+  if (role === "human" && access.human !== true) {
+    throw new RunStoreError(
+      'role "human" records a person\'s decision; a person can record this decision with the code-audit CLI ' +
+        "(see `code-audit verdict --help`). An agent must not record it",
+      "HUMAN_DECISION_CLI_ONLY",
+    );
+  }
+  const flag = (cliForm: string, mcpForm: string): string => (access.cli ? cliForm : mcpForm);
+  const reviewerInput = input.reviewer?.trim() ? redactText(input.reviewer.trim()).slice(0, 200) : undefined;
+  const actorInput = input.actor?.trim() ? redactText(input.actor.trim()).slice(0, 200) : undefined;
+  if (role === "human") {
+    // The same checks as the CLI: not in an agent's shell, and at a terminal.
+    if ((access as Record<symbol, unknown>)[HUMAN_GATE_TEST_BYPASS] !== true) {
+      try {
+        assertHumanContext(processHumanContext());
+      } catch (error) {
+        if (error instanceof HumanDecisionError) throw new RunStoreError(error.message, error.code);
+        throw error;
+      }
+    }
+    if (!reviewerInput) {
+      throw new RunStoreError("a human decision needs --reviewer <your name>; it is shown as \"decided by a person (<name>)\"", "INVALID_VERDICT");
+    }
+    if (input.replace !== true) {
+      throw new RunStoreError(
+        "a human decision replaces the current verdict and closes any dispute: pass --replace to confirm",
+        "INVALID_VERDICT",
+      );
+    }
+  }
+  if (role === "independent") {
+    if (!reviewerInput) {
+      throw new RunStoreError(
+        'an independent verdict needs reviewer: your own label, different from the label of the primary reviewer (for example "subagent-1")',
+        "INVALID_VERDICT",
+      );
+    }
+    if (!INDEPENDENCE_KINDS.includes(input.independence as Independence)) {
+      throw new RunStoreError(
+        'an independent verdict needs independence: "subagent" when you are a fresh sub-agent that did not see the first verdict, ' +
+          'or "same-session" for a devil\'s-advocate pass in the session that made it',
+        "INVALID_VERDICT",
+      );
+    }
+  }
+  if (role !== "independent" && input.independence !== undefined) {
+    throw new RunStoreError('independence belongs to role "independent" only: remove it, or set role "independent"', "INVALID_VERDICT");
+  }
+  const rawRationale = input.rationale?.trim();
+  if (!rawRationale) {
     throw new RunStoreError(
       "rationale is required for a verdict",
       "RATIONALE_REQUIRED",
     );
   }
-  const run = loadRun(ref, options);
-  const finding = findTarget(run, target);
-  assertDismissalJustified(finding, input.status, rationale, input.evidenceLines);
-  const entry: VerdictRecord = {
-    fingerprint: finding.fingerprint,
-    findingId: finding.id,
-    status: input.status,
-    rationale,
-    ...(input.evidenceLines && input.evidenceLines.length > 0
-      ? {
-          evidenceLines: input.evidenceLines.map((line) => redactText(line)),
-        }
-      : {}),
-    at: new Date().toISOString(),
-    ...(input.actor ? { actor: input.actor } : {}),
-    ...(input.reviewer ? { reviewer: input.reviewer } : {}),
-  };
-  const document: VerdictsDocument = {
-    schemaVersion: 1,
-    runId: run.runId,
-    entries: [...run.verdictsDocument.entries, entry],
-  };
-  const current = currentVerdicts(document);
-  const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
-  // Every derived file is rendered before anything is written, so a run that
-  // cannot be rendered is left as it was.
-  const artifacts = renderDerived(updated);
-  writeJson(run.runDir, "verdicts.json", document);
-  const refreshed = writeDerived(updated, artifacts);
-  const total = run.findings.length + run.hotspots.length;
-  return {
-    runId: run.runId,
-    runDir: run.runDir,
-    fingerprint: finding.fingerprint,
-    findingId: finding.id,
-    status: input.status,
-    rationale,
-    history: document.entries.filter(
-      (item) => item.fingerprint === finding.fingerprint,
-    ).length,
-    reviewed: Object.keys(current).length,
-    total,
-    refreshed,
-    notices: run.notices,
-    ...dismissedFields(updated),
-  };
+  const shaped = normalizeEvidence(input);
+  assertFieldsFitStatus(input.status, shaped);
+  const notices: string[] = [];
+  const rationale = redactText(rawRationale).slice(0, REVIEWER_RATIONALE_MAX);
+  if (rawRationale.length > REVIEWER_RATIONALE_MAX) {
+    notices.push(`the rationale was cut to ${REVIEWER_RATIONALE_MAX} characters`);
+  }
+  const runDir = resolveRun(ref, options).runDir;
+  return withRunLock(runDir, () => {
+    // Read under the lock: what another process wrote meanwhile is kept.
+    const run = loadRun(ref, options);
+    const finding = findTarget(run, target);
+    const strict = input.strictEvidence === true || run.verdictsDocument.strictEvidence === true;
+    if (strict) assertStrictEvidence(input.status, shaped);
+    const evidence = checkEvidenceLocations(run, shaped);
+    assertDismissalJustified(finding, input.status, rawRationale, input.evidenceLines, evidence.control !== undefined);
+    const previous = run.verdicts[finding.fingerprint];
+    const label = reviewerInput ?? actorInput ?? UNNAMED_REVIEWER;
+    if (previous && previous.history.length >= MAX_VERDICTS_PER_FINDING) {
+      throw new RunStoreError(
+        `${finding.id} already has ${previous.history.length} verdicts, the most one finding keeps (${MAX_VERDICTS_PER_FINDING}); ` +
+          "nothing was written. Leave the current decision for a person to settle",
+        "VERDICT_LIMIT",
+      );
+    }
+    const labelKey = normalizeReviewerLabel(label);
+    if (previous?.decidedByPerson && role !== "human") {
+      throw new RunStoreError(
+        `${finding.id} was decided by a person (${printable(previous.decidedByPerson.reviewer, 80)}); ` +
+          "only another human decision from the command line can change it. Report your view to the user instead",
+        "HUMAN_DECISION_STANDS",
+      );
+    }
+    if (role === "independent") {
+      if (!previous) {
+        throw new RunStoreError(
+          `${finding.id} has no verdict yet, and an independent review checks an existing one. ` +
+            'Record the first verdict with role "primary" (the default); then a reviewer who has not seen it records role "independent"',
+          "PRIMARY_VERDICT_REQUIRED",
+        );
+      }
+      const primaryLabels = new Set(
+        previous.history
+          .filter((item) => isDecisionRole(item.role))
+          .map((item) => normalizeReviewerLabel(item.reviewer)),
+      );
+      if (primaryLabels.has(labelKey)) {
+        throw new RunStoreError(
+          `reviewer ${printable(label, 80)} already recorded a primary verdict on ${finding.id}, so it cannot review it independently ` +
+            "(labels are compared ignoring case, Unicode form and invisible characters). " +
+            "An independent review comes from a reviewer that did not make the decision: a fresh sub-agent with its own label",
+          "INDEPENDENT_SAME_REVIEWER",
+        );
+      }
+    } else if (role === "primary" && previous) {
+      const decidedBy = previous.history.filter((item) => isDecisionRole(item.role)).at(-1)?.reviewer;
+      if (decidedBy !== undefined && normalizeReviewerLabel(decidedBy) !== labelKey && input.replace !== true) {
+        throw new RunStoreError(
+          `${finding.id} has a primary verdict by ${printable(decidedBy, 80)}; a primary verdict by ${printable(label, 80)} would replace it. ` +
+            `If you are reviewing that verdict, pass ${flag("--role independent --independence subagent|same-session", 'role "independent" (with independence')} and your own reviewer label${access.cli ? "" : ")"}. ` +
+            `To replace the decision on purpose, call again with ${flag("--replace", "replace: true")}; the replacement is shown in the report`,
+          "PRIMARY_REPLACE_REFUSED",
+        );
+      }
+    }
+    const evidenceLines =
+      input.evidenceLines && input.evidenceLines.length > 0
+        ? input.evidenceLines
+            .slice(0, MAX_EVIDENCE_LINES)
+            .map((line) => redactText(String(line)).slice(0, EVIDENCE_LINE_MAX))
+        : undefined;
+    const entry: VerdictRecord = {
+      fingerprint: finding.fingerprint,
+      findingId: finding.id,
+      status: input.status,
+      rationale,
+      ...(evidenceLines ? { evidenceLines } : {}),
+      at: new Date().toISOString(),
+      ...(actorInput ? { actor: actorInput } : {}),
+      ...(reviewerInput ? { reviewer: reviewerInput } : {}),
+      role,
+      ...(role === "independent" ? { independence: input.independence as Independence } : {}),
+      ...((role === "primary" && input.replace === true && previous) || role === "human" ? { replace: true } : {}),
+      ...evidence,
+    };
+    const document: VerdictsDocument = {
+      schemaVersion: VERDICTS_SCHEMA_VERSION,
+      runId: run.runId,
+      ...(run.verdictsDocument.strictEvidence ? { strictEvidence: true } : {}),
+      entries: [...run.verdictsDocument.entries, entry],
+    };
+    const current = currentVerdicts(document, [...run.findings, ...run.hotspots]);
+    const updated: LoadedRun = { ...run, verdictsDocument: document, verdicts: current };
+    // Every file is rendered and measured before anything is written, so a
+    // run that cannot be rendered, or would not load again, is left as it was.
+    const verdictsText = `${JSON.stringify(document, null, 2)}\n`;
+    assertStorable("verdicts.json", verdictsText);
+    const artifacts = renderDerived(updated);
+    for (const [name, text] of artifacts.files) assertStorable(name, text);
+    writeText(run.runDir, "verdicts.json", verdictsText);
+    const refreshed = writeDerived(updated, artifacts);
+    const now = current[finding.fingerprint] as CurrentVerdict;
+    const total = run.findings.length + run.hotspots.length;
+    const dissent = now.dissent;
+    return {
+      runId: run.runId,
+      runDir: run.runDir,
+      fingerprint: finding.fingerprint,
+      findingId: finding.id,
+      status: now.status,
+      rationale: now.rationale,
+      role,
+      requestedStatus: input.status,
+      independentlyReviewed: now.independentlyReviewed,
+      ...(now.disputeOpen && dissent
+        ? {
+            disagreement:
+              `independent reviewer ${dissent.reviewer} said ${dissent.status} while the decision was ` +
+              `${now.primaryStatus}; the status is needs_review until a person decides or an independent reviewer ` +
+              "with another label agrees with the decision",
+          }
+        : {}),
+      disputed: now.disputed,
+      strictEvidence: strict,
+      history: now.history.length,
+      reviewed: Object.keys(current).length,
+      total,
+      refreshed,
+      notices: [...run.notices, ...notices],
+      ...dismissedFields(updated),
+    };
+  });
 }
 
 export interface FindingsFilter {
@@ -1917,13 +3004,18 @@ export interface ReviewStats {
   unreviewed: number;
   total: number;
   falsePositive: number;
+  /** Records whose current verdict is needs_review or proof_gap: reviewed, still undecided. */
+  open: number;
+  /** Records whose current verdict is proof_gap. */
+  proofGaps: number;
+  /** Records whose current verdict an independent reviewer has checked. */
+  independentlyReviewed: number;
 }
 
 export function reviewStats(run: LoadedRun): ReviewStats {
   const all = [...run.findings, ...run.hotspots];
-  const reviewed = all.filter(
-    (finding) => run.verdicts[finding.fingerprint] !== undefined,
-  ).length;
+  const verdicts = all.map((finding) => run.verdicts[finding.fingerprint]);
+  const reviewed = verdicts.filter((verdict) => verdict !== undefined).length;
   const falsePositive = run.findings.filter(
     (finding) => run.verdicts[finding.fingerprint]?.status === "false_positive",
   ).length;
@@ -1932,6 +3024,91 @@ export function reviewStats(run: LoadedRun): ReviewStats {
     unreviewed: all.length - reviewed,
     total: all.length,
     falsePositive,
+    open: verdicts.filter(
+      (verdict) => verdict?.status === "needs_review" || verdict?.status === "proof_gap",
+    ).length,
+    proofGaps: verdicts.filter((verdict) => verdict?.status === "proof_gap").length,
+    independentlyReviewed: verdicts.filter(isIndependentlyReviewed).length,
+  };
+}
+
+/** Rules per kind listed in `triageSummary`; the rest is counted. */
+const TRIAGE_SUMMARY_RULES = 10;
+/** Proof gaps listed in `triageSummary`; the rest is counted. */
+const TRIAGE_SUMMARY_GAPS = 3;
+
+/**
+ * The review ledger of a run for `status` and `report --format summary`
+ * (see `triageCoverage`): per kind the totals and, by rule, how many records
+ * nobody has reviewed; then the open proof gaps. Kept compact (rule id ->
+ * count, short lists) so the MCP response stays within its size cap; the
+ * Markdown report has the full tables.
+ */
+export function triageSummary(run: LoadedRun) {
+  const triage = triageCoverage(effectiveFindings(run), effectiveHotspots(run));
+  const kind = (counts: TriageKindCount) => {
+    const pending = counts.byRule.filter((row) => row.unreviewed > 0);
+    const byRule = Object.create(null) as Record<string, number>;
+    // Rule ids of agent-added and external findings are not ours: cut.
+    for (const row of pending.slice(0, TRIAGE_SUMMARY_RULES)) byRule[printable(row.ruleId, 100)] = row.unreviewed;
+    return {
+      total: counts.total,
+      reviewed: counts.reviewed,
+      unreviewed: counts.unreviewed,
+      unreviewedByRule: { ...byRule },
+      ...(pending.length > TRIAGE_SUMMARY_RULES
+        ? { moreRules: pending.length - TRIAGE_SUMMARY_RULES }
+        : {}),
+    };
+  };
+  return {
+    findings: kind(triage.findings),
+    hotspots: kind(triage.hotspots),
+    open: triage.open,
+    independentlyReviewed: triage.independentlyReviewed,
+    disputed: triage.disputed,
+    disputesOpen: triage.disputesOpen,
+    // Paths and text come from the repository and the reviewer: cut, so the
+    // ledger cannot push the counts out of a size-capped response.
+    proofGaps: triage.proofGaps.slice(0, TRIAGE_SUMMARY_GAPS).map((gap) => ({
+      id: printable(gap.id, 40),
+      location: `${printable(gap.file, 140)}:${gap.line}`,
+      ...(gap.missing ? { missing: printable(redactText(gap.missing), 160) } : {}),
+    })),
+    ...(triage.proofGaps.length > TRIAGE_SUMMARY_GAPS
+      ? { moreProofGaps: triage.proofGaps.length - TRIAGE_SUMMARY_GAPS }
+      : {}),
+  };
+}
+
+/**
+ * The headline counts of a run as the scan left them, before any verdict:
+ * for a blind caller (an independent reviewer), whom verdict-adjusted
+ * counts would tell that a finding was dismissed or confirmed.
+ */
+export function scanTimeCounts(ref: string, options: ResolveRunOptions = {}) {
+  const run = loadRun(ref, options);
+  const reset = (finding: Finding): Finding => {
+    const { review: _review, confidenceBeforeVerdict, ...rest } = finding as Finding & {
+      confidenceBeforeVerdict?: Confidence;
+    };
+    if (!run.verdicts[finding.fingerprint]) return rest as Finding;
+    const status = rest.suppression
+      ? "suppressed"
+      : rest.provenance.engine === "agent"
+        ? "needs_review"
+        : "candidate";
+    return { ...rest, status, confidence: confidenceBeforeVerdict ?? rest.confidence } as Finding;
+  };
+  const counts = summaryCountFields(
+    summarizeRun(run.run, run.findings.map(reset), run.hotspots.map(reset)),
+  );
+  return {
+    findings: counts.findings,
+    findingCounts: counts.findingCounts,
+    lowConfidenceCandidates: counts.lowConfidenceCandidates,
+    hotspots: counts.hotspotCount,
+    summary: counts.summary,
   };
 }
 
@@ -1973,18 +3150,25 @@ function existsNoFollow(file: string): boolean {
 function reportContextOf(run: LoadedRun): ReportContext {
   const reviewerSet = new Set<string>();
   for (const entry of run.verdictsDocument.entries) {
-    if (entry.reviewer) reviewerSet.add(entry.reviewer);
+    // Labels are agent-written: redacted (older files were written as given).
+    if (entry.reviewer) reviewerSet.add(redactText(entry.reviewer));
   }
   for (const finding of run.findings) {
     const reviewer = (finding.provenance as { reviewer?: unknown }).reviewer;
-    if (typeof reviewer === "string" && reviewer) reviewerSet.add(reviewer);
+    if (typeof reviewer === "string" && reviewer) reviewerSet.add(redactText(reviewer));
   }
   const reviewers = [...reviewerSet].sort();
   const agentReviewed =
     reviewers.length > 0 ||
     run.verdictsDocument.entries.length > 0 ||
     run.findings.some((finding) => finding.provenance.engine === "agent");
-  return buildReportContext(run.run, {
+  const runRecord = run.verdictWarnings?.length
+    ? {
+        ...run.run,
+        warnings: [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...run.verdictWarnings],
+      }
+    : run.run;
+  return buildReportContext(runRecord, {
     findings: effectiveFindings(run),
     hotspots: effectiveHotspots(run),
     coverage: requireCoverage(run),
@@ -2088,7 +3272,7 @@ export function renderRunReport(
 ): RunReportResult {
   const run = loadRun(ref, options);
   const stats = reviewStats(run);
-  const warnings = Array.isArray(run.run.warnings) ? run.run.warnings : [];
+  const warnings = [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...(run.verdictWarnings ?? [])];
 
   let text: string;
   let outputPath: string | undefined;
@@ -2105,6 +3289,7 @@ export function renderRunReport(
         reviewed: stats.reviewed,
         unreviewed: stats.unreviewed,
         falsePositive: stats.falsePositive,
+        triage: triageSummary(run),
         ...dismissedFields(run),
         ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
         ...(runRecord.scope ? { scope: runRecord.scope } : {}),
@@ -2174,10 +3359,11 @@ export function runStatus(ref: string, options: ResolveRunOptions = {}) {
     reviewed: stats.reviewed,
     unreviewed: stats.unreviewed,
     falsePositive: stats.falsePositive,
+    triage: triageSummary(run),
     ...dismissedFields(run),
     ...(runRecord.baseline ? { baseline: runRecord.baseline } : {}),
     ...(runRecord.scope ? { scope: runRecord.scope } : {}),
-    warnings: Array.isArray(run.run.warnings) ? run.run.warnings : [],
+    warnings: [...(Array.isArray(run.run.warnings) ? run.run.warnings : []), ...(run.verdictWarnings ?? [])],
     notices: run.notices,
   };
 }
