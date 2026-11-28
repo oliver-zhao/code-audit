@@ -163,7 +163,21 @@ const tools = mcpReply.find((message) => message.id === 2)?.result?.tools ?? [];
 process.stdout.write(`  | initialize -> ${JSON.stringify({ protocolVersion: init?.protocolVersion, serverInfo: init?.serverInfo })}\n`);
 process.stdout.write(`  | tools/list -> ${tools.map((tool) => tool.name).join(", ")}\n`);
 check(init?.serverInfo?.name === "code-audit" && init?.serverInfo?.version === version, "code-audit-mcp answers initialize with its name and version");
-check(tools.length === 8, "code-audit-mcp lists 8 tools");
+const EXPECTED_TOOLS = [
+  "audit_start",
+  "audit_status",
+  "audit_findings",
+  "audit_read",
+  "audit_search",
+  "audit_verdict",
+  "audit_add_finding",
+  "audit_report",
+  "audit_skill",
+];
+check(
+  JSON.stringify(tools.map((tool) => tool.name).sort()) === JSON.stringify([...EXPECTED_TOOLS].sort()),
+  `code-audit-mcp lists its ${EXPECTED_TOOLS.length} tools`,
+);
 
 if (keep) process.stdout.write(`\nKept: ${work}\n`);
 else fs.rmSync(work, { recursive: true, force: true });

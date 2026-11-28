@@ -82,7 +82,7 @@ export const ProvenanceSchema = z
     /** All engines that reported this finding after cross-engine dedupe. */
     engines: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 /**
  * Where a secret was found in the git history (`scan --history`). Only the
@@ -104,7 +104,7 @@ export const FindingHistorySchema = z
     /** Number of history results folded into this finding (at least 1). */
     occurrences: z.number().int().positive(),
   })
-  .passthrough();
+  .loose();
 export type FindingHistory = z.infer<typeof FindingHistorySchema>;
 /** One entry of a verdict's review history (see runstore `VerdictHistoryItem`). */
 const ReviewHistoryItemSchema = z.object({
@@ -251,7 +251,7 @@ export const FindingSchema = z
       })
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 export type Finding = z.infer<typeof FindingSchema>;
 

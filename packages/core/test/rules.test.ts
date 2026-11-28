@@ -373,6 +373,10 @@ describe("engine features used by the Python rules", () => {
       "rules: []",
     ]);
     expect(() => loadRules(malformed)).toThrow(/rules\.yml.*invalid definitions/);
+    // The key schema's own message names the expected form.
+    expect(() => loadRules(malformed)).toThrow(
+      /invalid definitions: lower: definition names must look like REQUEST_VALUE/,
+    );
   });
 
   it("matches a multi-line call once and reports the line where the match starts", () => {

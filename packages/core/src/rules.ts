@@ -188,7 +188,7 @@ export const RULE_FIELDS: readonly string[] = Object.keys(RuleObjectSchema.shape
 
 const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
     const issue = (message: string, field: string): void => {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [field] });
+      ctx.addIssue({ code: "custom", message, path: [field] });
     };
     const binary = rule.languages.includes("binary");
     if (binary) {
@@ -235,14 +235,14 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
     }
     if (!rule.pattern && !rule.patterns) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "either pattern or patterns is required",
         path: ["pattern"],
       });
     }
     if (rule.pattern && rule.patterns) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "pattern and patterns are mutually exclusive",
         path: ["patterns"],
       });
@@ -255,7 +255,7 @@ const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
       !rule.languages.every((language) => language === "json")
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "withinKeys is only supported for rules whose languages are [yaml] or [json]",
         path: ["withinKeys"],
       });
@@ -417,6 +417,12 @@ function listYamlFiles(dir: string): string[] {
 const DefinitionsSchema = z.record(
   z.string().regex(/^[A-Z][A-Z0-9_]*$/, "definition names must look like REQUEST_VALUE"),
   z.string().min(1),
+  {
+    // zod 4 reports a bad key as one "invalid_key" issue that wraps the key
+    // schema's issues; surface the key schema's own message, as zod 3 did.
+    error: (issue) =>
+      issue.code === "invalid_key" ? issue.issues[0]?.message : undefined,
+  },
 );
 
 const DEFINITION_REFERENCE = /\{\{([A-Z][A-Z0-9_]*)\}\}/g;

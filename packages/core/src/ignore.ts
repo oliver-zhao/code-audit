@@ -29,7 +29,7 @@ const IgnoreEntrySchema = z
     reason: z.string().min(1, "reason is required"),
     expires: IsoDateSchema.optional(),
   })
-  .passthrough()
+  .loose()
   .superRefine((entry, ctx) => {
     if (
       !entry.fingerprint &&
@@ -38,7 +38,7 @@ const IgnoreEntrySchema = z
       !entry.advisory
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message:
           "entry needs at least one of fingerprint, rule, paths or advisory",
         path: ["fingerprint"],

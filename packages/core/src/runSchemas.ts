@@ -67,7 +67,7 @@ const BaselineFixedEntrySchema = z
     severity: z.string(),
     title: z.string(),
   })
-  .passthrough();
+  .loose();
 
 /**
  * run.json. Only the fields a later command reads are constrained; the rest
@@ -83,7 +83,7 @@ export const RunRecordSchema = z
         version: z.string().optional(),
         node: z.string().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
     args: z
       .object({
@@ -92,7 +92,7 @@ export const RunRecordSchema = z
         profile: z.string().optional(),
         lang: z.string().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
     startedAt: z.string().optional(),
     finishedAt: z.string().optional(),
@@ -111,10 +111,10 @@ export const RunRecordSchema = z
       })
       .optional(),
     baselineFixed: z.array(BaselineFixedEntrySchema).optional(),
-    scope: z.object({ since: z.string(), changedFiles: z.number() }).passthrough().optional(),
-    pathContext: z.record(z.number()).optional(),
+    scope: z.object({ since: z.string(), changedFiles: z.number() }).loose().optional(),
+    pathContext: z.record(z.string(), z.number()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const PATH_CONTEXT = z.enum(["test", "docs", "example", "vendored", "generated"]);
 
@@ -128,7 +128,7 @@ export const CoverageSchema = z
       skippedFiles: z.number(),
       loc: z.number(),
     }),
-    languages: z.record(z.object({ files: z.number(), loc: z.number() })),
+    languages: z.record(z.string(), z.object({ files: z.number(), loc: z.number() })),
     scannedFiles: z.array(
       z.object({
         path: z.string(),
@@ -140,7 +140,7 @@ export const CoverageSchema = z
     ),
     skipped: z.array(z.object({ path: z.string(), reason: z.string() })),
     manifests: z.array(
-      z.object({ relPath: z.string(), type: z.string(), isLockfile: z.boolean() }).passthrough(),
+      z.object({ relPath: z.string(), type: z.string(), isLockfile: z.boolean() }).loose(),
     ),
     engines: z.array(
       z.object({
@@ -174,23 +174,23 @@ export const CoverageSchema = z
         changedFiles: z.number(),
         outOfScope: z.number(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 export const FindingsEnvelopeSchema = z
   .object({
     findings: z.array(FindingSchema).default([]),
     hotspots: z.array(FindingSchema).default([]),
   })
-  .passthrough();
+  .loose();
 
 export const AgentFindingsSchema = z
   .object({
     findings: z.array(FindingSchema).default([]),
   })
-  .passthrough();
+  .loose();
 
 /** Most steps in a verdict `trace`. */
 export const MAX_TRACE_STEPS = 20;
