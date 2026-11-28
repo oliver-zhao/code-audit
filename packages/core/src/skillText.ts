@@ -107,13 +107,16 @@ const GIT_TOP_LEVEL: Record<string, "file" | "dir"> = {
 const CONFIG_KEYS: ReadonlyArray<RegExp> = [
   /^core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks)$/,
   /^remote\..+\.(?:url|fetch)$/,
+  // Written by `git clone --no-tags`; its value is checked below.
+  /^remote\..+\.tagopt$/,
   /^branch\..+\.(?:remote|merge)$/,
   /^extensions\.objectformat$/,
 ];
 
 /** Config keys of `text` (`section.sub.key`, lower-cased except the subsection), or a parse problem. */
-function configKeys(text: string): { keys: string[]; problem?: string } {
+function configKeys(text: string): { keys: string[]; values: Map<string, string[]>; problem?: string } {
   const keys: string[] = [];
+  const values = new Map<string, string[]>();
   let section: string | undefined;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -124,11 +127,22 @@ function configKeys(text: string): { keys: string[]; problem?: string } {
       section = header[2] !== undefined ? `${name}.${header[2]}` : name;
       continue;
     }
-    const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=.*)?$/.exec(line);
-    if (!entry || section === undefined) return { keys, problem: `unparsed config line ${JSON.stringify(line.slice(0, 80))}` };
-    keys.push(`${section}.${(entry[1] as string).toLowerCase()}`);
+    const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=(.*))?$/.exec(line);
+    if (!entry || section === undefined) return { keys, values, problem: `unparsed config line ${JSON.stringify(line.slice(0, 80))}` };
+    const key = `${section}.${(entry[1] as string).toLowerCase()}`;
+    keys.push(key);
+    let value = (entry[2] ?? "").trim();
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+    values.set(key, [...(values.get(key) ?? []), value]);
   }
-  return { keys };
+  return { keys, values };
+}
+
+/** https://, ssh://, git:// or scp-like user@host:path, with no whitespace or `::`. */
+export function isPlainRemoteUrl(url: string): boolean {
+  if (/[\s\u0000-\u001f]/.test(url) || url.includes("::") || url.startsWith("-")) return false;
+  if (/^(?:https|ssh|git):\/\/[A-Za-z0-9[]/i.test(url)) return true;
+  return /^[A-Za-z0-9._][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:[^-]/.test(url);
 }
 
 /**
@@ -206,10 +220,22 @@ export function gitDirProblems(gitDir: string): Array<{ path: string; reason: st
     if (stat.isFile()) {
       if (stat.size > 64 * 1024) add("config", "config is larger than 64 KiB");
       else {
-        const { keys, problem } = configKeys(fs.readFileSync(path.join(gitDir, "config"), "utf8"));
+        const { keys, values, problem } = configKeys(fs.readFileSync(path.join(gitDir, "config"), "utf8"));
         if (problem) add("config", problem);
         for (const key of keys) {
           if (!CONFIG_KEYS.some((pattern) => pattern.test(key))) add("config", `config key ${key} is not one git writes for a plain clone (it can run commands or change what git does)`);
+        }
+        // A remote is a network address: not a helper transport (`ext::`),
+        // not a local path, not an option.
+        for (const [key, list] of values) {
+          if (/^remote\..+\.tagopt$/.test(key)) {
+            for (const value of list) if (value !== "--no-tags" && value !== "--tags") add("config", `config ${key} = ${JSON.stringify(value.slice(0, 80))} is not --no-tags or --tags`);
+            continue;
+          }
+          if (!/^remote\..+\.url$/.test(key)) continue;
+          for (const url of list) {
+            if (!isPlainRemoteUrl(url)) add("config", `config ${key} = ${JSON.stringify(url.slice(0, 80))} is not an https://, ssh://, git:// or user@host:path address`);
+          }
         }
       }
     }
@@ -217,4 +243,232 @@ export function gitDirProblems(gitDir: string): Array<{ path: string; reason: st
     // no config file: nothing to check
   }
   return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Wide encodings
+// ---------------------------------------------------------------------------
+
+export type WideEncoding = "utf-16le" | "utf-16be" | "utf-32le" | "utf-32be";
+
+/**
+ * UTF-32 with a BOM, UTF-16 with a BOM, or UTF-16 without one: over the
+ * first 512 bytes, mostly ASCII with a NUL in every other byte.
+ */
+export function detectWideEncoding(buffer: Uint8Array): WideEncoding | undefined {
+  const b = (index: number): number => buffer[index] ?? -1;
+  if (b(0) === 0xff && b(1) === 0xfe && b(2) === 0 && b(3) === 0) return "utf-32le";
+  if (b(0) === 0 && b(1) === 0 && b(2) === 0xfe && b(3) === 0xff) return "utf-32be";
+  if (b(0) === 0xff && b(1) === 0xfe) return "utf-16le";
+  if (b(0) === 0xfe && b(1) === 0xff) return "utf-16be";
+  const limit = Math.min(buffer.length, 512) & ~1;
+  if (limit < 8) return undefined;
+  let le = 0;
+  let be = 0;
+  const printable = (byte: number): boolean => (byte >= 0x20 && byte <= 0x7e) || byte === 0x09 || byte === 0x0a || byte === 0x0d;
+  for (let index = 0; index < limit; index += 2) {
+    const first = buffer[index] as number;
+    const second = buffer[index + 1] as number;
+    if (printable(first) && second === 0) le += 1;
+    if (first === 0 && printable(second)) be += 1;
+  }
+  const pairs = limit / 2;
+  if (le >= pairs * 0.9) return "utf-16le";
+  if (be >= pairs * 0.9) return "utf-16be";
+  return undefined;
+}
+
+/** Decode wide text strictly; undefined when it does not decode. */
+export function decodeWideText(buffer: Uint8Array, encoding: WideEncoding): string | undefined {
+  try {
+    if (encoding === "utf-16le" || encoding === "utf-16be") {
+      const text = new TextDecoder(encoding, { fatal: true }).decode(buffer);
+      return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    }
+    if (buffer.length % 4 !== 0) return undefined;
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const chars: string[] = [];
+    for (let at = 0; at < buffer.length; at += 4) {
+      const code = view.getUint32(at, encoding === "utf-32le");
+      if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return undefined;
+      if (at === 0 && code === 0xfeff) continue;
+      chars.push(String.fromCodePoint(code));
+    }
+    return chars.join("");
+  } catch {
+    return undefined;
+  }
+}
+
+/** `buffer` with every NUL byte removed (bash drops them when it runs a script). */
+export function stripNul(buffer: Uint8Array): Buffer {
+  return Buffer.from(Buffer.from(buffer).filter((byte) => byte !== 0));
+}
+
+// ---------------------------------------------------------------------------
+// PDF streams
+// ---------------------------------------------------------------------------
+
+export interface PdfText {
+  /** Text recovered from FlateDecode streams, with the line their stream starts on. */
+  parts: Array<{ text: string; line: number }>;
+  /** Filters seen that can hold text but were not decoded. */
+  undecoded: string[];
+  /** Streams over the limits (not analysed). */
+  overLimit: number;
+  /** Inflated bytes in all. */
+  inflatedBytes: number;
+}
+
+const TEXT_CAPABLE_FILTERS = ["LZWDecode", "ASCII85Decode", "ASCIIHexDecode", "RunLengthDecode", "LZW", "A85", "AHx", "RL"];
+const MAX_PDF_STREAMS = 10_000;
+
+/** A literal `(...)` string of PDF syntax at `start`, with escapes resolved. */
+function pdfLiteral(text: string, start: number): { value: string; end: number } {
+  let depth = 1;
+  let value = "";
+  let at = start + 1;
+  while (at < text.length && depth > 0) {
+    const char = text[at] as string;
+    if (char === "\\") {
+      const next = text[at + 1] ?? "";
+      const octal = /^[0-7]{1,3}/.exec(text.slice(at + 1, at + 4));
+      if (octal) {
+        value += String.fromCharCode(parseInt(octal[0], 8) & 0xff);
+        at += 1 + octal[0].length;
+        continue;
+      }
+      value += ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" } as Record<string, string>)[next] ?? (next === "\n" ? "" : next);
+      at += 2;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+    value += char;
+    at += 1;
+  }
+  return { value, end: at + 1 };
+}
+
+/**
+ * The strings shown by the text operators of a content stream: `(..) Tj`,
+ * `(..) '`, `(..) "`, `[(..) -120 (..)] TJ` and `<hex> Tj`. One line per
+ * operator, and one line per text object (`BT` ... `ET`) with its strings
+ * joined, so that text split across operators is matched as a whole.
+ */
+export function pdfTextOperators(content: string): string[] {
+  const lines: string[] = [];
+  let block: string[] = [];
+  let pending: string[] = [];
+  let at = 0;
+  const limit = Math.min(content.length, 8 * 1024 * 1024);
+  while (at < limit) {
+    const char = content[at] as string;
+    if (char === "(") {
+      const literal = pdfLiteral(content, at);
+      pending.push(literal.value);
+      at = literal.end;
+      continue;
+    }
+    if (char === "<" && content[at + 1] !== "<") {
+      const close = content.indexOf(">", at);
+      if (close < 0) break;
+      const hex = content.slice(at + 1, close).replace(/\s+/g, "");
+      if (/^[0-9A-Fa-f]*$/.test(hex)) pending.push(Buffer.from(hex.length % 2 ? `${hex}0` : hex, "hex").toString("latin1"));
+      at = close + 1;
+      continue;
+    }
+    const operator = /^(?:TJ|Tj|BT|ET|'|")(?![A-Za-z])/.exec(content.slice(at, at + 3));
+    if (operator) {
+      const name = operator[0];
+      if (name === "BT") {
+        block = [];
+        pending = [];
+      } else if (name === "ET") {
+        if (block.length > 1) lines.push(block.join(" "));
+        block = [];
+        pending = [];
+      } else {
+        const joined = pending.join("");
+        if (joined) {
+          lines.push(joined);
+          block.push(joined);
+        }
+        pending = [];
+      }
+      at += name.length;
+      continue;
+    }
+    // Any other operator ends the operands collected so far.
+    if (/[A-Za-z*]/.test(char)) {
+      const word = /^[A-Za-z*]+/.exec(content.slice(at, at + 16))?.[0] ?? char;
+      pending = [];
+      at += word.length;
+      continue;
+    }
+    at += 1;
+  }
+  return lines;
+}
+
+/**
+ * Inflate the FlateDecode streams of a PDF (each at most `maxStreamBytes`,
+ * ratio at most `maxRatio`, all of them together at most `budget` bytes) and
+ * return their printable text and the strings of their text operators.
+ */
+export function pdfStreamText(
+  buffer: Buffer,
+  limits: { maxStreamBytes: number; maxRatio: number; budget: number },
+  inflate: (data: Buffer, maxOutputLength: number) => Buffer,
+): PdfText {
+  const result: PdfText = { parts: [], undecoded: [], overLimit: 0, inflatedBytes: 0 };
+  const source = buffer.toString("latin1");
+  const streamWord = /stream\r?\n/g;
+  let match: RegExpExecArray | null;
+  let streams = 0;
+  while ((match = streamWord.exec(source)) !== null) {
+    // "endstream" is not the start of a stream.
+    if (match.index > 0 && /[A-Za-z]/.test(source[match.index - 1] as string)) continue;
+    streams += 1;
+    if (streams > MAX_PDF_STREAMS) break;
+    const dataStart = match.index + match[0].length;
+    const dataEnd = source.indexOf("endstream", dataStart);
+    if (dataEnd < 0) break;
+    streamWord.lastIndex = dataEnd + 9;
+    const dictStart = source.lastIndexOf("<<", match.index);
+    const dictionary = dictStart >= 0 ? source.slice(dictStart, match.index) : "";
+    const filterIndex = dictionary.indexOf("/Filter");
+    const used =
+      filterIndex >= 0
+        ? [...dictionary.slice(filterIndex + 7).matchAll(/\/([A-Za-z0-9]+)/g)].map((m) => m[1] as string).slice(0, 4)
+        : [];
+    const line = (source.slice(0, dataStart).match(/\n/g)?.length ?? 0) + 1;
+    const textCapable = used.filter((name) => TEXT_CAPABLE_FILTERS.includes(name));
+    if (textCapable.length > 0) {
+      for (const name of textCapable) if (!result.undecoded.includes(name)) result.undecoded.push(name);
+      continue;
+    }
+    if (!(used[0] === "FlateDecode" || used[0] === "Fl")) continue;
+    let data = buffer.subarray(dataStart, dataEnd);
+    if (data.length > 0 && data[data.length - 1] === 0x0a) data = data.subarray(0, data[data.length - 2] === 0x0d ? -2 : -1);
+    let inflated: Buffer;
+    try {
+      inflated = inflate(Buffer.from(data), limits.maxStreamBytes);
+    } catch {
+      result.overLimit += 1;
+      continue;
+    }
+    if (inflated.length > limits.maxRatio * Math.max(data.length, 1) || result.inflatedBytes + inflated.length > limits.budget) {
+      result.overLimit += 1;
+      continue;
+    }
+    result.inflatedBytes += inflated.length;
+    result.parts.push({ text: extractPrintableText(inflated).text, line });
+    const operators = pdfTextOperators(inflated.toString("latin1"));
+    if (operators.length > 0) result.parts.push({ text: operators.join("\n"), line });
+  }
+  return result;
 }

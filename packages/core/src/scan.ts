@@ -177,7 +177,7 @@ export interface ScanOptions {
    * built-in rule results and go through the same dedupe, path context,
    * suppression and reporting. Called only when the builtin engine runs.
    */
-  extraFindings?: (inventory: InventoryResult) => Finding[];
+  extraFindings?: (inventory: InventoryResult, existing: readonly Finding[]) => Finding[];
   /**
    * Adjust the loaded rule set before matching (skill mode widens the
    * instruction-file rules to every Markdown file of a package).
@@ -495,7 +495,10 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       else ruleFindings.push(finding);
     }
     if (builtinEnabled && options.extraFindings) {
-      for (const finding of options.extraFindings(inv)) {
+      // `existing`: what the built-in rules and secret detectors already
+      // reported, so the caller can avoid reporting the same thing twice.
+      const existing = [...ruleFindings, ...ruleHotspots, ...secretScan.findings];
+      for (const finding of options.extraFindings(inv, existing)) {
         if (finding.kind === "hotspot") ruleHotspots.push(finding);
         else ruleFindings.push(finding);
       }

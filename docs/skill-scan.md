@@ -48,8 +48,10 @@ skill" when it looks created by git: only git's standard top-level entries
 `shallow`), only `*.sample` hooks, only `info/exclude`, loose objects and
 pack files in `objects/`, no symbolic links, and no `config` key outside
 `core.{repositoryformatversion,filemode,bare,logallrefupdates,ignorecase,precomposeunicode,symlinks}`,
-`remote.*.{url,fetch}`, `branch.*.{remote,merge}` and
-`extensions.objectformat`. Otherwise every unusual entry is listed with its
+`remote.*.{url,fetch,tagopt}`, `branch.*.{remote,merge}` and
+`extensions.objectformat`; a `remote.*.url` must be an `https://`,
+`ssh://`, `git://` or `user@host:path` address and `tagopt` `--no-tags` or
+`--tags`. Otherwise every unusual entry is listed with its
 reason, and every file in it. A nested `.git`, a `.git` inside an archive,
 and a `.git` that is a file (gitdir pointer) or a symbolic link are still
 reported; control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
@@ -90,11 +92,11 @@ toward the exit code like a package; `summary.outside` counts its results.
 Without `--recursive` the target is one package; a `SKILL.md` target scans
 the directory that contains it.
 
-Every file below the target with an instruction-like extension (`.md`,
-`.mdc`, `.markdown`, `.mdx`, `.txt`, `.rst`, `.adoc`, `.html`, `.htm`) is
-treated as an instruction file: a skill tells the agent to read its
-`reference.md`, `FORMS.md` and so on, and may point outside its own
-directory (`../../shared.md`). The rules whose `pathInclude` uses the
+Every text file below the target is treated as an instruction file,
+whatever its extension (Markdown, `.txt`, `.yaml`, `.json`, templates,
+extensionless files, and source code too): a skill tells the agent to read
+its `reference.md`, `FORMS.md`, `config.yaml` and so on, and may point
+outside its own directory (`../../shared.md`). The rules whose `pathInclude` uses the
 `{{INSTR}}` macro (prompt injection, agent configuration) are applied to
 them too; outside every package they feed the `<outside packages>` group.
 
@@ -105,14 +107,31 @@ path can produce.
 ### Text pass (file classification is not trusted)
 
 Every file the inventory skips as binary (by extension or a NUL byte) and
-every file that is not valid UTF-8 goes through a text pass: its printable
-runs (4 or more characters of ASCII or UTF-8, or a whole newline-terminated
-line) are matched with the Markdown (instruction) rules, the shell rules and
-the secret detectors. Results point at the original file and the line its
-text starts on, with evidence marked "[text extracted from a non-text
-file]". A polyglot such as `%PDF-1.4` followed by a script is therefore
-matched like the script. A file counts as analysed only once the text pass
-ran on it; a file over 1 MiB is not analysed.
+every file that is not valid UTF-8 goes through a text pass. Results point
+at the original file and the line its text starts on (approximate), with
+evidence marked with the view that matched; a result the normal pass already
+reported (same rule, file and line) is not repeated.
+
+- UTF-16 (with a BOM, or mostly ASCII with a NUL in every other byte of the
+  first 512 bytes) and UTF-32 with a BOM are decoded and matched like a
+  UTF-8 file: the rules of the file's language, the instruction and shell
+  rules, and the secret detectors. Wide text that does not decode is not
+  analysed.
+- Otherwise its printable runs (4 or more characters of ASCII or UTF-8, or a
+  whole newline-terminated line) are matched with the Markdown (instruction)
+  and shell rules and the secret detectors, and so is the same text with
+  every NUL byte removed (bash drops NUL bytes and runs what is left).
+- In a PDF, every `FlateDecode` stream is inflated (at most 1 MiB and a
+  100:1 ratio per stream, 100 MiB per scan) and its printable text and the
+  strings of its text operators (`Tj`, `TJ`, `'`, `"`, hex strings, joined
+  per text object) are matched the same way. A stream over the limits makes
+  the package `INCOMPLETE`. Streams with `LZWDecode`, `ASCII85Decode`,
+  `ASCIIHexDecode` or `RunLengthDecode` are not decoded: a note says so (not
+  `INCOMPLETE`).
+
+A polyglot such as `%PDF-1.4` followed by a script is therefore matched like
+the script. A file counts as analysed only once the text pass ran on it; a
+file over 1 MiB is not analysed.
 
 ### Capability declaration check
 
@@ -249,6 +268,13 @@ Paths in `findings` and `reasons` are relative to the scanned root; paths in
 (names, paths, evidence) is untrusted text.
 
 ## Limits
+
+- PDF: only `FlateDecode` streams are decoded. Text in streams with other
+  filters (LZW, ASCII85, ASCIIHex, RunLength, chains of them), text drawn
+  through font encodings or CMaps that map codes to other characters, and
+  text in images is not analysed; a note names the undecoded filters.
+- Text obfuscated with shell quoting (`cu''rl`), encodings a script decodes
+  at run time, or encryption is beyond pattern rules.
 
 - The verdict is only as good as the rules: a hostile package written to
   avoid every known pattern gets `SAFE_TO_INSTALL`, which is why that verdict

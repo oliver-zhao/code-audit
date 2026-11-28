@@ -34,6 +34,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
   ARCHIVE_MAX_FILE_BYTES,
+  ARCHIVE_MAX_RATIO,
   archiveFormatOf,
   extractArchive,
   type ArchiveSkip,
@@ -59,7 +60,15 @@ import { scanProject, type EngineName, type ReportFormat, type ScanResult } from
 import { runTool } from "./external/run.js";
 import { scanRules, type RuleHit } from "./rules.js";
 import { scanSecrets } from "./secrets.js";
-import { extractPrintableText, gitDirProblems } from "./skillText.js";
+import zlib from "node:zlib";
+import {
+  decodeWideText,
+  detectWideEncoding,
+  extractPrintableText,
+  gitDirProblems,
+  pdfStreamText,
+  stripNul,
+} from "./skillText.js";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -927,30 +936,53 @@ function packageRelative(pkgRel: string, fileRel: string): string {
 // Text pass: rules over the printable text of every file
 // ---------------------------------------------------------------------------
 
-/** Extensions of text an agent may be told to read (skill-mode instructions). */
-export const INSTRUCTION_EXTENSIONS = [".md", ".mdc", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".html", ".htm"];
-/** Those the inventory does not already read as Markdown. */
-const NON_MARKDOWN_INSTRUCTION = new Set([".markdown", ".txt", ".rst", ".adoc", ".html", ".htm"]);
 
 interface TextPassState {
-  /** Files whose printable text went through the rules and secret detectors. */
+  /** Files whose text went through the rules and secret detectors. */
   passed: Set<string>;
-  /** Files the text pass could not read (too large, unreadable). */
+  /** Files the text pass could not cover (too large, unreadable, undecodable). */
   notAnalysed: Array<{ path: string; reason: string }>;
+  /** Notes about content the pass could not decode but that does not make the result incomplete. */
+  notes: Array<{ path: string; note: string }>;
 }
 
 function syntheticFile(relPath: string, absPath: string, language: InventoryFile["language"], size: number): InventoryFile {
   return { relPath, absPath, language, size, loc: 0, kind: language === "markdown" ? "doc" : "source", scannable: true, isLockfile: false };
 }
 
+/** Inflated bytes allowed for the PDF streams of one scan (the archive budget). */
+const PDF_INFLATE_BUDGET = 100 * 1024 * 1024;
+
+/** One text derived from a file, and the rules it is matched with. */
+interface TextSource {
+  rel: string;
+  text: string;
+  /** Original line of each line of `text`; a number maps every line there. */
+  lines: number[] | number;
+  /** `full`: the rules of the file's own language as well. */
+  full: boolean;
+  secrets: boolean;
+  label: string;
+}
+
 /**
  * Skill mode does not trust file classification. Every file the inventory
- * skipped as binary, and every file that is not valid UTF-8, is reduced to
- * its printable text, which is matched with the Markdown (instruction) and
- * shell rules and the secret detectors; results point at the original file
- * and the line its text starts on. Text files with an instruction-like
- * extension that the inventory does not read as Markdown (`.txt`, `.rst`,
- * `.html`, ...) are matched with the instruction rules as Markdown.
+ * skipped as binary, and every file that is not valid UTF-8, goes through a
+ * text pass whose results point at the original file:
+ *
+ * - UTF-16 / UTF-32 text is decoded and matched like a UTF-8 file (the
+ *   rules of its language, the instruction and shell rules, secrets); one
+ *   that does not decode is not analysed;
+ * - otherwise its printable runs, and the printable runs of the file with
+ *   every NUL removed (bash drops NULs and runs what is left), are matched
+ *   with the Markdown (instruction) and shell rules, the former also with
+ *   the secret detectors;
+ * - a PDF's FlateDecode streams are inflated (bounded) and their printable
+ *   text and the strings of their text operators are matched the same way.
+ *
+ * Every other text file is also matched with the instruction rules, as
+ * Markdown, whatever its extension. Results already reported by the normal
+ * pass (same rule, file and line) are not repeated.
  */
 function textPass(
   root: string,
@@ -959,12 +991,13 @@ function textPass(
   scratch: string,
   invalidUtf8: readonly string[],
   state: TextPassState,
-): (inv: InventoryResult) => Finding[] {
-  return (inv) => {
+): (inv: InventoryResult, existing: readonly Finding[]) => Finding[] {
+  return (inv, existing) => {
+    const invalid = new Set(invalidUtf8);
     const candidates = new Set<string>(invalidUtf8);
     for (const skip of inv.skipped) if (BINARY_SKIP_REASONS.has(skip.reason)) candidates.add(skip.relPath);
-    const extracted: Array<{ rel: string; lines: number[]; md: InventoryFile; sh: InventoryFile; secret: InventoryFile }> = [];
-    let counter = 0;
+    const sources: TextSource[] = [];
+    let pdfBudget = PDF_INFLATE_BUDGET;
     for (const rel of [...candidates].sort()) {
       const abs = path.join(root, ...rel.split("/"));
       let buffer: Buffer | undefined;
@@ -983,52 +1016,86 @@ function textPass(
         state.notAnalysed.push({ path: rel, reason: "file could not be read for the text pass (not analysed)" });
         continue;
       }
-      const text = extractPrintableText(buffer);
-      counter += 1;
-      const textFile = path.join(scratch, `${counter}.txt`);
-      fs.writeFileSync(textFile, text.text, { mode: 0o600 });
-      extracted.push({
-        rel,
-        lines: text.lines,
-        md: syntheticFile(`${rel}.strings.md`, textFile, "markdown", text.text.length),
-        sh: syntheticFile(`${rel}.strings.sh`, textFile, "shell", text.text.length),
-        secret: syntheticFile(rel, textFile, "unknown", text.text.length),
-      });
+      const wide = detectWideEncoding(buffer);
+      if (wide) {
+        const decoded = decodeWideText(buffer, wide);
+        if (decoded === undefined) {
+          state.notAnalysed.push({ path: rel, reason: `${wide.toUpperCase()} text that does not decode (not analysed)` });
+          continue;
+        }
+        sources.push({ rel, text: decoded, lines: [...decoded.split(/\r\n|\r|\n/).keys()].map((index) => index + 1), full: true, secrets: true, label: `${wide.toUpperCase()} text` });
+        state.passed.add(rel);
+        continue;
+      }
+      const printable = extractPrintableText(buffer);
+      sources.push({ rel, text: printable.text, lines: printable.lines, full: false, secrets: !invalid.has(rel), label: "text extracted from a non-text file" });
+      if (buffer.includes(0)) {
+        const joined = extractPrintableText(stripNul(buffer));
+        sources.push({ rel, text: joined.text, lines: joined.lines, full: false, secrets: false, label: "text of a non-text file with NUL bytes removed" });
+      }
+      if (buffer.subarray(0, 1024).includes(Buffer.from("%PDF-"))) {
+        const pdf = pdfStreamText(
+          buffer,
+          { maxStreamBytes: ARCHIVE_MAX_FILE_BYTES, maxRatio: ARCHIVE_MAX_RATIO, budget: pdfBudget },
+          (data, maxOutputLength) => zlib.inflateSync(data, { maxOutputLength }),
+        );
+        pdfBudget -= pdf.inflatedBytes;
+        for (const part of pdf.parts) {
+          sources.push({ rel, text: part.text, lines: part.line, full: false, secrets: true, label: "text of a compressed PDF stream" });
+        }
+        if (pdf.overLimit > 0) {
+          state.notAnalysed.push({ path: rel, reason: `${pdf.overLimit} compressed PDF stream(s) over the size or ratio limit (not analysed)` });
+          continue;
+        }
+        if (pdf.undecoded.length > 0) {
+          state.notes.push({ path: rel, note: `${rel}: PDF streams with ${pdf.undecoded.join(", ")} were not decoded; text in them was not analysed` });
+        }
+      }
       state.passed.add(rel);
     }
+
+    // Synthetic files: the text of each source as Markdown and as shell
+    // (and under its own name for a decoded wide-text file).
+    const originalOf = new Map<string, TextSource>();
+    const textFiles: InventoryFile[] = [];
+    const fullFiles: InventoryFile[] = [];
+    const secretFiles: InventoryFile[] = [];
+    sources.forEach((source, index) => {
+      const file = path.join(scratch, `${index}.txt`);
+      fs.writeFileSync(file, source.text, { mode: 0o600 });
+      const md = syntheticFile(`${source.rel}.${index}.strings.md`, file, "markdown", source.text.length);
+      const sh = syntheticFile(`${source.rel}.${index}.strings.sh`, file, "shell", source.text.length);
+      textFiles.push(md, sh);
+      originalOf.set(md.relPath, source);
+      originalOf.set(sh.relPath, source);
+      if (source.full) {
+        const own = syntheticFile(source.rel, file, detectLanguage(source.rel), source.text.length);
+        fullFiles.push(own);
+        originalOf.set(`full:${source.rel}`, source);
+      }
+      if (source.secrets) {
+        const secret = syntheticFile(`${source.rel}#${index}`, file, "unknown", source.text.length);
+        secretFiles.push(secret);
+        originalOf.set(secret.relPath, source);
+      }
+    });
+    // Instructions can be in any text file a skill tells the agent to read.
     const instructionFiles: InventoryFile[] = inv.files
-      .filter((file) => NON_MARKDOWN_INSTRUCTION.has(path.extname(file.relPath).toLowerCase()) && file.language !== "markdown")
+      .filter((file) => file.language !== "markdown" && file.scannable && !file.isLockfile)
       .map((file) => syntheticFile(`${file.relPath}.instr.md`, file.absPath, "markdown", file.size));
-
-    const originalOf = new Map<string, { rel: string; lines?: number[] }>();
-    for (const item of extracted) {
-      originalOf.set(item.md.relPath, { rel: item.rel, lines: item.lines });
-      originalOf.set(item.sh.relPath, { rel: item.rel, lines: item.lines });
-      originalOf.set(item.secret.relPath, { rel: item.rel, lines: item.lines });
+    for (const file of instructionFiles) {
+      originalOf.set(file.relPath, { rel: file.relPath.slice(0, -".instr.md".length), text: "", lines: [], full: false, secrets: false, label: "" });
     }
-    for (const file of instructionFiles) originalOf.set(file.relPath, { rel: file.relPath.slice(0, -".instr.md".length) });
-    const lineOf = (relPath: string, line: number): { rel: string; line: number } => {
-      const original = originalOf.get(relPath) as { rel: string; lines?: number[] };
-      return { rel: original.rel, line: original.lines ? (original.lines[line - 1] ?? 1) : line };
-    };
 
-    const textRules: RuleSet = {
-      ...ruleSet,
-      rules: ruleSet.rules.filter((rule) => rule.languages.includes("markdown" as never) || rule.languages.includes("shell" as never)),
-    };
+    const lineOf = (source: TextSource, line: number): number =>
+      typeof source.lines === "number" ? source.lines : (source.lines[line - 1] ?? 1);
     const instructionOnly: RuleSet = { ...ruleSet, rules: ruleSet.rules.filter((rule) => instructionIds.has(rule.id)) };
-    const hits: RuleHit[] = [
-      ...scanRules([...extracted.flatMap((item) => [item.md, item.sh])], textRules, { inlineIgnore: false }).hits,
-      ...scanRules(instructionFiles, instructionOnly, { inlineIgnore: false }).hits,
-    ];
+    const seen = new Set<string>(existing.map((finding) => `${finding.ruleId}\u0000${finding.file}\u0000${finding.startLine}`));
     const findings: Finding[] = [];
-    const seen = new Set<string>();
-    for (const hit of hits) {
-      const where = lineOf(hit.file.relPath, hit.line);
-      const key = `${hit.rule.id}\u0000${where.rel}\u0000${where.line}`;
-      if (seen.has(key)) continue;
+    const add = (hit: RuleHit, source: TextSource, line: number): void => {
+      const key = `${hit.rule.id}\u0000${source.rel}\u0000${line}`;
+      if (seen.has(key)) return;
       seen.add(key);
-      const fromStrings = originalOf.get(hit.file.relPath)?.lines !== undefined;
       findings.push(
         createFinding({
           ruleId: hit.rule.id,
@@ -1039,30 +1106,43 @@ function textPass(
           kind: hit.rule.kind,
           cwe: hit.rule.cwe,
           owasp: hit.rule.owasp,
-          language: detectLanguage(where.rel),
-          file: where.rel,
-          startLine: where.line,
-          evidence: fromStrings ? `[text extracted from a non-text file] ${hit.evidence}` : hit.evidence,
-          message: `${hit.rule.message}${fromStrings ? " (matched in the printable text of a file that is not plain text)" : " (matched as an instruction file in skill mode)"}`,
+          language: detectLanguage(source.rel),
+          file: source.rel,
+          startLine: line,
+          evidence: source.label ? `[${source.label}] ${hit.evidence}` : hit.evidence,
+          message: `${hit.rule.message}${source.label ? ` (matched in the ${source.label})` : " (matched as an instruction file in skill mode)"}`,
           remediation: hit.rule.remediation,
           references: hit.rule.references ?? [hit.rule.cwe],
           provenance: { engine: "builtin-rules", rule: hit.rule.id, version: TOOL_VERSION },
         }),
       );
+    };
+    for (const hit of scanRules(textFiles, ruleSet, { inlineIgnore: false }).hits) {
+      const source = originalOf.get(hit.file.relPath) as TextSource;
+      add(hit, source, lineOf(source, hit.line));
     }
-    // Files that are not valid UTF-8 already went through the secret
-    // detectors as decoded text; binaries had none.
-    const invalid = new Set(invalidUtf8);
-    for (const secret of scanSecrets(extracted.filter((item) => !invalid.has(item.rel)).map((item) => item.secret)).findings) {
-      const where = lineOf(secret.file, secret.startLine);
+    for (const hit of scanRules(fullFiles, ruleSet, { inlineIgnore: false }).hits) {
+      const source = originalOf.get(`full:${hit.file.relPath}`) as TextSource;
+      add(hit, source, lineOf(source, hit.line));
+    }
+    for (const hit of scanRules(instructionFiles, instructionOnly, { inlineIgnore: false }).hits) {
+      const source = originalOf.get(hit.file.relPath) as TextSource;
+      add(hit, source, hit.line);
+    }
+    for (const secret of scanSecrets(secretFiles).findings) {
+      const source = originalOf.get(secret.file) as TextSource;
+      const line = lineOf(source, secret.startLine);
+      const key = `${secret.ruleId}\u0000${source.rel}\u0000${line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const { id: _id, fingerprint: _fingerprint, ...rest } = secret;
       findings.push(
         createFinding({
           ...(rest as Parameters<typeof createFinding>[0]),
-          file: where.rel,
-          startLine: where.line,
-          endLine: where.line,
-          evidence: `[text extracted from a non-text file] ${secret.evidence}`,
+          file: source.rel,
+          startLine: line,
+          endLine: line,
+          evidence: `[${source.label}] ${secret.evidence}`,
         }),
       );
     }
@@ -1385,7 +1465,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   // Instruction matching covers the whole target: in a recursive scan a file
   // outside every package (`../../shared.md`) feeds the outside group.
   const skillRules = extendInstructionRules(loadRules(options.rulesDir ?? defaultRulesDir()), instructionRules, [""]);
-  const textState: TextPassState = { passed: new Set(), notAnalysed: [] };
+  const textState: TextPassState = { passed: new Set(), notAnalysed: [], notes: [] };
   const scratch = makeTempDir();
   const capability = capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed, invalidUtf8);
   const strings = textPass(root, skillRules, instructionRules, scratch, invalidUtf8, textState);
@@ -1403,7 +1483,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     ...(options.pathEnv ? { pathEnv: options.pathEnv } : {}),
     ...(options.http ? { http: options.http } : {}),
     ...(options.now ? { now: options.now } : {}),
-    extraFindings: (inv) => [...capability(inv), ...strings(inv)],
+    extraFindings: (inv, existing) => [...capability(inv), ...strings(inv, existing)],
     transformRules: () => skillRules,
   });
   } finally {
@@ -1564,7 +1644,11 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
         path: pkg.rel === "" ? "." : pkg.rel,
         name: pkg.name,
         kind: pkg.kind,
-        notes: rootGitNote && pkg.rel === "" ? [...pkg.notes, rootGitNote] : pkg.notes,
+        notes: [
+          ...pkg.notes,
+          ...(rootGitNote && pkg.rel === "" ? [rootGitNote] : []),
+          ...textState.notes.filter((entry) => isInside(pkg.rel, entry.path)).map((entry) => cleanText(entry.note, 300)),
+        ],
       },
       own,
       incomplete,
