@@ -146,6 +146,14 @@ export const FindingSchema = z
     message: z.string().optional(),
     remediation: z.string(),
     references: z.array(z.string()).optional(),
+    /**
+     * Classification labels of the rule behind the finding (see `tags` in
+     * docs/rules.md), for built-in rules: the union of the tags of every rule
+     * whose hit was folded into this one by group resolution, so a released
+     * rule that wins a group still carries `malicious-intent` when a tagged
+     * rule matched the same expression.
+     */
+    tags: z.array(z.string()).optional(),
     provenance: ProvenanceSchema,
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
     /** Present when the finding was suppressed by an ignore file or inline comment. */
@@ -272,6 +280,7 @@ export interface FindingInit {
   impact?: string;
   message?: string;
   references?: string[];
+  tags?: string[];
   provenance: { engine: string; rule?: string; version?: string; engines?: string[] };
   package?: string;
   ecosystem?: string;

@@ -831,7 +831,10 @@ export function verdictReasons(
   const label = (finding: Finding): string =>
     `${finding.ruleId} at ${finding.file}:${finding.startLine} (${finding.kind}, ${finding.severity}, confidence ${finding.confidence})`;
   for (const finding of findings) {
-    const malicious = tagsOf(finding.ruleId).includes(MALICIOUS_INTENT_TAG);
+    // Rule tags, plus the tags a finding carries from every rule that matched
+    // in its group (a group keeps the released rule's id; see merge/rules).
+    const malicious =
+      tagsOf(finding.ruleId).includes(MALICIOUS_INTENT_TAG) || (finding.tags ?? []).includes(MALICIOUS_INTENT_TAG);
     if (malicious && atLeast(finding.confidence, "medium")) {
       reasons.push({ code: "malicious-intent", message: `rule tagged malicious-intent matched: ${label(finding)}`, ...where(finding) });
     } else if (finding.kind === "finding" && finding.severity === "critical" && finding.confidence === "high") {
@@ -1660,6 +1663,14 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     });
   }
   for (const skip of target.archiveSkipped) fileIncomplete.push({ path: skip.path, reason: `archive entry ${skip.reason}` });
+  // A skill tree whose list of binary files hit its budget: the binaries in
+  // it were not all checked (inventory.ts). "" is the audit root.
+  for (const tree of scan.coverage.binaryListIncomplete ?? []) {
+    fileIncomplete.push({
+      path: tree === "" ? "." : tree,
+      reason: "the list of binary files in this skill tree is incomplete (entry budget reached); not every file was checked",
+    });
+  }
   // Every partial-analysis warning names its file; it counts for the packages
   // that contain the file (none, for a file outside every package).
   for (const warning of scan.warnings) {
@@ -1699,7 +1710,7 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
         title: singleLineText(finding.title, 200),
         file: finding.file,
         startLine: finding.startLine,
-        tags: [...tagsOf(finding.ruleId)],
+        tags: [...new Set([...tagsOf(finding.ruleId), ...(finding.tags ?? [])])].sort(),
         evidence: singleLineText(finding.evidence, 240),
       })),
       capabilities: {

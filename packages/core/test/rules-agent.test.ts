@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { inventory } from "../src/inventory.js";
 import { loadRules, scanRules, type RuleHit } from "../src/rules.js";
+import { scanBinaryRules } from "../src/binaryRules.js";
 import { scanProject } from "../src/scan.js";
 import {
   CLEAN,
@@ -21,11 +22,15 @@ const temp = makeTempDir("rules-agent");
 afterAll(() => cleanup(temp));
 
 const ruleSet = loadRules(RULES_DIR);
-const MINE = /^(?:agent-|prompt-injection-|dep-)/;
+const MINE = /^(?:agent-|prompt-injection-|dep-|mcp-)/;
 const MY_DIRS = /^(?:agents|deps)\//;
 
+/** Rule hits and binary-rule hits of the area. */
 function scanDir(root: string): RuleHit[] {
-  return scanRules(inventory(root).files, ruleSet).hits.filter((hit) => MINE.test(hit.rule.id));
+  const inv = inventory(root);
+  return [...scanRules(inv.files, ruleSet).hits, ...scanBinaryRules(inv.binaries, ruleSet)].filter((hit) =>
+    MINE.test(hit.rule.id),
+  );
 }
 
 let counter = 0;

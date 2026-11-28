@@ -1,0 +1,725 @@
+version: 1
+# Skills, commands, subagents and the scripts and servers that ship with
+# them: anti-refusal (jailbreak) instructions, tampering with agent memory and
+# shell startup files, trigger abuse in front matter, padding that hides
+# text, prompt leaks, cloud uploads, calls to other coding agents, package
+# source redirects, bundled binaries and MCP tool poisoning.
+# Written for code-audit (Apache-2.0).
+#
+# Precision: like prompt-injection.yml, the patterns want imperative wording
+# and the notPatterns drop lines that quote, negate or describe the phrase.
+#
+# Scope: instruction files by path ({{INSTRX}}), and inside a skill or plugin
+# tree (a directory with SKILL.md, plugin.json or .claude-plugin/plugin.json,
+# the root included) also SKILL.md, agents/*.md, commands/*.md and
+# skills/**/*.md by their path in the tree (inSkillTree: TREE_INSTR); scripts
+# by path or, inside a tree, by extension or #! line (TREE_SCRIPT).
+#
+# Rules that share a group with a released rule (agent-instr-bypass,
+# agent-cli-launch) have groupPriority -1: a line the released rule already
+# reported keeps its 0.3.0 rule id and fingerprint.
+definitions:
+  INSTR: '(?:^|/)(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|AGENT|GEMINI|SKILL|QWEN|CRUSH|WARP)\.md$|(?:^|/)(?:\.cursorrules|\.windsurfrules|\.clinerules|\.rules)$|(?:^|/)\.github/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)/.+\.md)$|(?:^|/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|qwen|dsh|amazonq|augment|trae)/.+\.mdc?$|(?:^|/)plugins/[^/]+/(?:agents|commands|skills)/.+\.md$'
+  # Instruction files and command files of plugins laid out at the root.
+  INSTRX: '{{INSTR}}|(?:^|/)commands/[^/]+\.md$'
+  # Inside a skill or plugin tree, relative to the tree root.
+  TREE_INSTR: '(?:^|/)SKILL\.md$|(?:^|/)(?:agents|commands)/[^/]+\.md$|(?:^|/)skills/.+\.md$'
+  TREE_SCRIPT: '\.(?:sh|bash|zsh|ksh|fish|py|pyw|js|mjs|cjs|ts|mts|cts)$|(?:^|/)[^/.]+$'
+  TREE_PKG: '(?:^|/)(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.conf|pip\.ini|uv\.toml|pyproject\.toml)$|\.(?:sh|bash|zsh|ksh)$|(?:^|/)[^/.]+$'
+  # Scripts that ship inside a skill, plugin or agent project directory.
+  SKILL_SCRIPT: '(?:^|/)(?:skills|\.claude|\.codex|\.agents|\.opencode)/.+\.(?:sh|bash|zsh|ksh|fish|py|pyw|js|mjs|cjs|ts|mts|cts)$|(?:^|/)plugins/[^/]+/.+\.(?:sh|bash|zsh|ksh|fish|py|pyw|js|mjs|cjs|ts|mts|cts)$'
+  # Package-source files that ship inside a skill or plugin directory.
+  PKG_SOURCE_FILE: '(?:^|/)(?:skills|\.claude|\.codex|\.agents|\.opencode)/(?:.+/)?(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.conf|pip\.ini|uv\.toml|pyproject\.toml|[^/]+\.(?:sh|bash|zsh|ksh))$|(?:^|/)plugins/[^/]+/(?:.+/)?(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.conf|pip\.ini|uv\.toml|pyproject\.toml|[^/]+\.(?:sh|bash|zsh|ksh))$'
+  NEG: '\b(?:never|not|don\x27t|do\s+not|must\s+not|mustn\x27t|should\s+not|shouldn\x27t|won\x27t|cannot|can\x27t|avoid|refuse)\b'
+  DISCUSS: '(?:\bsuch\s+as|\be\.g\.|\bfor\s+example|\bphrases?|\bpatterns?|\battacks?|\binjections?|\bpayloads?|\bmalicious|\bwatch\s+(?:out\s+)?for|\bbeware\s+of|\bsays?|\bsaying|\bstrings?|\btells?\s+you\s+to|\basks?\s+(?:you\s+)?to|\btries\s+to|\btrying\s+to|\battempts?\s+to|\battackers?|\bjailbreaks?\b|\bdetect\w*|\bflag(?:s|ged)?\b|\bexamples?\b)(?![A-Za-z])[\s:,(]{0,4}'
+  QUOTE: '[\"\x27\x60“‘«]'
+  W: '(?:[\w\x27]+\s+)'
+  # A word break that tolerates Markdown emphasis (**Never** *refuse*).
+  S: '(?:[*_~]{0,3}\s+[*_~]{0,3})'
+  # Shell startup files.
+  SHELL_RC: '(?:~|\$HOME|\$\{HOME\})/\.(?:bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zshenv|zlogin|config/fish/config\.fish)\b|(?<![\w./~$-])\.(?:bashrc|zshrc|bash_profile|zprofile|zshenv)\b'
+  # Global agent configuration and memory in the user's home directory.
+  AGENT_HOME: '(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)[/\\]\.(?:claude[/\\](?:settings(?:\.local)?\.json|CLAUDE\.md|skills|agents|commands|hooks|plugins|memory|projects)\b|claude\.json\b|codex[/\\](?:config\.toml|AGENTS\.md|skills|prompts|hooks)\b|gemini[/\\](?:settings\.json|GEMINI\.md|commands|extensions)\b|cursor[/\\](?:mcp\.json|rules|hooks\.json)\b|config[/\\](?:opencode|crush|goose)[/\\]|agents[/\\]skills\b|dsh[/\\])'
+  # Memory files and the instruction files of the project.
+  MEMORY_FILE: '\bMEMORY\.md\b|\.claude[/\\]memory\b|(?<![\w.-])(?:CLAUDE|AGENTS|GEMINI)\.md\b|\.claude[/\\]settings(?:\.local)?\.json\b|\.claude[/\\](?:skills|agents|commands)[/\\]'
+  # "<verb> ... to <target>", "> <target>" and the Chinese forms: the write
+  # forms in prose or a command line, followed by the target.
+  WRITE_TO: '(?:>>|(?<![>=\w\x22\x27/-])(?<!^[ \t]{0,20})>(?![>=]))\s*[\"\x27\x60]?|\btee\s+(?:-a\s+|--append\s+)?[\"\x27\x60]?|\b(?:append(?:s|ing|ed)?|add(?:s|ing|ed)?|writ(?:e|es|ing)|insert(?:s|ing)?|prepend(?:s|ing)?|inject(?:s|ing)?|echo(?:es|ing)?|put(?:s|ting)?|sav(?:e|es|ing)|cop(?:y|ies|ying)|mov(?:e|es|ing)|plac(?:e|es|ing)|creat(?:e|es|ing))\b(?:[^\n.]|\.(?=\S)){0,120}?\b(?:to|into|in|at|under)\s+(?:the\s+(?:end|top|bottom)\s+of\s+)?(?:the\s+)?(?:(?:user\x27?s|your|their|global)\s+)?(?:[^\n;]{0,40}?[\s(])?[\"\x27\x60(]?|\b(?:modify|modifying|edit|editing|overwrite|overwriting|update|updating|change|changing|patch|patching|rewrite|rewriting|replace|replacing|alter|altering)\s+(?:the\s+)?(?:(?:user\x27?s|your|their|global)\s+)?(?:[^\n;]{0,40}?[\s(])?[\"\x27\x60(]?|\bsed\s+-i\S{0,10}\s[^\n]{0,200}?\s[\"\x27\x60]?|(?:把|将)[^\n]{0,60}?(?:追加|写入|添加|加入|插入|复制|覆盖)(?:到|进|至)?\s*[\x60\x22\x27“（(]?|(?:追加|写入|添加|加入|插入|覆盖|修改)(?:到|进|至)\s*[\x60\x22\x27“（(]?'
+  # "Open <target> and add ...", "In <target>, set ...".
+  TF_OPEN: '\b(?:open|edit|in|inside|within)\s+[\x60\x22\x27]?'
+  TF_TAIL: '[\x60\x22\x27]?[,:\s][^\n]{0,60}?\b(?:add|append|insert|set|write|put|prepend)\b'
+  # "在 <target> 末尾添加".
+  ZH_OPEN: '在\s*[\x60\x22\x27“]?'
+  ZH_TAIL: '[\x60\x22\x27”]?\s*的?(?:末尾|开头|结尾|最后|中|里)?\s*(?:添加|追加|写入|加入|插入)'
+  # Uploads to cloud storage: the destination is a bucket or container.
+  AWS: '\baws(?:\s+--?[\w-]{1,40}(?:[= ](?!s3\b)[^\s-]\S{0,100})?){0,4}\s+s3\s+(?:cp|sync|mv)'
+  UPLOAD: '{{AWS}}\s[^\n|;&]{0,300}?\s[\x22\x27]?s3://|\bgsutil\s+(?:-\w+\s+){0,4}(?:cp|rsync|mv)\s[^\n|;&]{0,300}?\s[\x22\x27]?gs://|\bgcloud\s+(?:alpha\s+|beta\s+)?storage\s+(?:cp|rsync|mv)\s[^\n|;&]{0,300}?\s[\x22\x27]?gs://|\baz\s+storage\s+(?:blob|file|fs\s+file)\s+(?:upload|upload-batch|sync)\b|\bazcopy\s+(?:copy|cp|sync)\s[^\n|;&]{0,300}?\s[\x22\x27]?https://[\w.-]{1,100}\.(?:blob|dfs|file)\.core\.windows\.net|\brclone\s+(?:copy|copyto|sync|move|moveto)\s+[\"\x27]?(?![\w.-]{1,60}:)[^\s|;&]{1,300}\s+[\"\x27]?[\w.-]{1,60}:|[\x22\x27]aws[\x22\x27]\s*,\s*[\x22\x27]s3[\x22\x27]\s*,\s*[\x22\x27](?:cp|sync|mv)[\x22\x27]\s*,[^\]\n]{0,300}?[\x22\x27]s3://'
+  # The same commands with a bucket or container as the source: a download.
+  DOWNLOAD: '{{AWS}}\s+(?:--?[\w-]+\s+){0,4}[\"\x27]?s3://|\b(?:gsutil\s+(?:-\w+\s+){0,4}|gcloud\s+(?:alpha\s+|beta\s+)?storage\s+)(?:cp|rsync|mv)\s+(?:--?[\w-]+\s+){0,4}[\"\x27]?gs://|\bazcopy\s+(?:copy|cp|sync)\s+[\"\x27]?https://|[\x22\x27]s3[\x22\x27]\s*,\s*[\x22\x27](?:cp|sync|mv)[\x22\x27]\s*,\s*[\x22\x27]s3://'
+  # Official package indexes (and two vendor indexes that are documented as the install source).
+  PYPI_OK: '(?:(?:[\w-]{1,63}\.){0,4}pypi\.org|pypi\.python\.org|files\.pythonhosted\.org|download\.pytorch\.org|pypi\.nvidia\.com)(?:[:/\"\x27\s]|$)'
+  NPM_OK: '(?:registry\.npmjs\.org|registry\.yarnpkg\.com)(?:[:/\"\x27\s]|$)'
+  IGNORE_PHRASE: '(?<![A-Za-z])(?:ignore|disregard|forget)\s+(?:(?:all|any|of|the|your|my|these|those)\s+){0,3}(?:previous|prior|above|preceding|earlier|original|system|initial)\s+(?:instructions?|prompts?|rules|directives|directions|guidelines|guidance|context|messages?)(?![A-Za-z])'
+  # Cyrillic and Greek letters that look like Latin ones.
+  LOOKALIKE: '[\u0430\u0435\u043E\u0440\u0441\u0443\u0445\u0456\u0458\u0455\u04BB\u0501\u0410\u0412\u0415\u041A\u041C\u041D\u041E\u0420\u0421\u0422\u0425\u0405\u0406\u0408\u03BF\u0391\u0392\u0395\u0396\u0397\u0399\u039A\u039C\u039D\u039F\u03A1\u03A4\u03A5\u03A7]'
+  # Blanks that render as nothing (padding rules).
+  BLANK: '[ \t\u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u2800\u3000\u3164\uFEFF\uFFA0]'
+  # The home directory in shell, Python and JavaScript code.
+  HOME_CODE: '~|\$HOME\b|\$\{HOME\}|\$\{?ZDOTDIR\b|\bUSERPROFILE\b|homedir(?:\(\))?|home\(\)|expanduser\(|process\.env\.HOME\b|process\.env\[[\x22\x27]HOME[\x22\x27]\]|environ(?:\.get\(|\[)\s*[\x22\x27]HOME[\x22\x27]|getenv\(\s*[\x22\x27]HOME[\x22\x27]|expanduser\(\s*[rbuf]?[\x22\x27]~'
+  # A file that refers to the home directory anywhere (agent-memory-tamper-script
+  # also accepts a quoted rc file name in such a file: the home directory is
+  # usually put in a variable first). A bare `cd` goes home too.
+  HOME_FILE: 'homedir|\bUSERPROFILE\b|\$\{?ZDOTDIR\b|Path\.home|\.home\(\)|expanduser|\$HOME\b|\$\{HOME\}|(?:^|[\s\x22\x27=(:\x60])~(?:/|[\s;\x22\x27)\x60]|$)|environ\S{0,12}HOME\b|getenv\(\s*[\x22\x27]HOME|process\.env\.HOME|(?:^|[;&|]\s*)cd(?:\s+(?:~|\$HOME|\$\{HOME\})/?)?\s*(?:;|&&|$)'
+  TEST_PATH: '(?:^|/)(?:tests?|__tests__|spec|specs|testdata)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]+\.py$|_test\.py$|(?:^|/)conftest\.py$'
+rules:
+  # ---- Anti-refusal and jailbreak instructions ----
+  # Same group as prompt-injection-disable-safety and agent-disable-permissions:
+  # one result per expression, the released rule first.
+  - id: agent-anti-refusal-never-refuse
+    title: Instruction forbids the agent to refuse requests
+    title_zh: 指令禁止 Agent 拒绝请求
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '\b(?:never|do{{S}}not|don\x27t|must{{S}}not|should{{S}}not|shall{{S}}not|will{{S}}not|won\x27t|cannot|can\x27t)(?:{{S}}ever)?{{S}}(?:refuse|decline|reject){{S}}(?:(?:any|a|an|the|my|our|user|users\x27?|user\x27s|their|single|every){{S}}){0,3}(?:requests?|tasks?|questions?|instructions?|prompts?|commands?|orders?)[*_~]{0,3}(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|for\s+any\s+reason|under\s+any|from\s+(?:the\s+|a\s+)?users?|even\s+if|whatsoever|whatever))|\b(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}refuse[*_~]{0,3}(?=\s*(?:[.!;)]|$))|\byou\s+(?:can(?:not|\x27t|\s+not)|are\s+not\s+allowed\s+to|may\s+not|are\s+unable\s+to)\s+(?:refuse|decline|say\s+no)\b|\b(?:never|do{{S}}not|don\x27t|must{{S}}not)(?:{{S}}ever)?{{S}}(?:turn\s+down|say\s+no\s+to|decline)\s+(?:(?:any|a|the|every)\s+)?(?:requests?|anything|the\s+user|users)\b|\brefusing\s+is\s+not\s+an\s+option\b|\bcomply\s+with\s+everything\b|\byou\s+(?:will|must|should)\s+always\s+(?:answer|comply|obey)\b[^\n]{0,20}?\bno\s+matter\s+what\b|\bunder\s+no\s+circumstances\s*,?\s+(?:should|will|may|can|must|are|do|shall)\s+you\s+(?:ever\s+)?(?:refuse|decline|reject|say\s+no)\b|\balways\s+(?:comply|obey)\s+(?:with\s+)?(?:(?:every|any|all|each|the|my|user\x27?s|users\x27?)\s+){1,2}(?:\w+\s+)?(?:requests?|instructions?|commands?|orders?|prompts?)\b(?=\s*(?:[.!;,)]|$)|\s+(?:regardless|no\s+matter|whatever|without\s+(?:question|exception|hesitation)|from\s+(?:the\s+)?users?))|\b(?:comply\s+with|answer|fulfil+|complete|execute|follow)\s+(?:every|any|all|each)\s+(?:\w+\s+)?(?:requests?|questions?|instructions?|tasks?|prompts?)\s*,?\s+(?:regardless\s+of\s+(?:(?:their|its|the|any)\s+)?(?:legality|ethics|morality|safety|consequences|harm|danger|risks?|content|polic(?:y|ies)|guidelines|laws?)|no\s+matter\s+how\s+(?:illegal|unethical|harmful|dangerous)|even\s+if\s+(?:it\s+is|they\s+are)\s+(?:illegal|unethical|harmful|dangerous))\b|\bwithout\s+(?:any\s+)?(?:moral|ethical|safety)\s+(?:judg(?:e)?ments?|considerations?|restrictions?|constraints?|filters?|concerns?|hesitation)\b|(?:永远|绝对|绝|从来)?(?:不要|不得|不能|不许|不可以?|不准|别)拒绝(?:用户的?|我的)?(?:任何|所有|一切)?的?(?:请求|要求|任务|问题|指令)|无条件(?:地)?(?:服从|执行|遵守|满足|回答)|(?:必须|一律)(?:回答|满足|执行)(?:所有|任何|一切)(?:问题|请求|要求|指令)'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:never|do\s+not|don\x27t|you|always|comply|answer|without)\b|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?(?:never|do\s+not|don\x27t|you|always|comply|answer|without)\b'
+    group: agent-instr-bypass
+    groupPriority: -1
+    tags: [malicious-intent]
+    message: The file forbids the agent to refuse or tells it to comply with every request whatever it is, an anti-refusal (jailbreak) instruction that serves whoever plants harmful requests later.
+    message_zh: 该文件禁止 Agent 拒绝请求，或要求其无论内容如何都照做，这是一种反拒绝（越狱）指令，便于之后植入的有害请求得逞。
+    remediation: Remove the instruction and review where the file came from; an agent's refusal behaviour must not be configurable from repository text.
+    remediation_zh: 删除该指令并审查文件来源；Agent 的拒绝行为不应由仓库文本控制。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: agent-anti-refusal-no-disclaimer
+    title: Instruction forbids safety, ethical or legal warnings
+    title_zh: 指令禁止安全、道德或法律提示
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '\b(?:never|do{{S}}not|don\x27t|must{{S}}not|no\s+need\s+to|without)(?:{{S}}ever)?{{S}}(?:add(?:ing)?|includ(?:e|ing)|giv(?:e|ing)|provid(?:e|ing)|writ(?:e|ing)|output(?:ting)?|mention(?:ing)?|prepend(?:ing)?|append(?:ing)?|us(?:e|ing)|issu(?:e|ing)){{S}}(?:any{{S}}|a{{S}})?(?:safety|ethical|ethics|moral|legal){{S}}(?:disclaimers?|warnings?|caveats?|notices?|lectures?)\b|\b(?:skip|omit|drop|leave\s+out|strip)\s+(?:all\s+|any\s+)?(?:safety|ethical|moral|legal)\s+(?:disclaimers?|warnings?|caveats?)\b|(?:^|[.!:;]\s+)[*_]{0,3}no\s+disclaimers?\s*,\s*no\s+(?:warnings?|caveats?)\b|\b(?:never|do\s+not|don\x27t)\s+(?:lecture|moralize\s+to|preach\s+to)\s+(?:the\s+)?(?:user|me)\s+about\s+(?:ethics|morality|safety|legality|the\s+law)\b|\b(?:do\s+not|don\x27t|never)\s+apply\s+(?:any\s+)?(?:content|safety)\s+filter(?:ing|s)?\b|\b(?:never|do{{S}}not|don\x27t|must{{S}}not|no\s+need\s+to)(?:{{S}}ever)?{{S}}(?:add|include|give|provide|write|output|prepend|append|use|issue){{S}}(?:any{{S}})?(?:disclaimers?|(?:warnings?|caveats?){{S}}or{{S}}disclaimers?|disclaimers?{{S}}or{{S}}(?:warnings?|caveats?))[*_~]{0,3}(?=\s*(?:[.!;,)]|$)|\s+(?:to|in)\s+(?:your\s+|the\s+|any\s+)?(?:answers?|responses?|replies|reply|output|messages?\s+to\s+the\s+user))|\b(?:never|do\s+not|don\x27t)\s+(?:warn|remind|caution)\s+(?:the\s+)?(?:user|me|them)\s+(?:about|of)\s+(?:the\s+)?(?:legal(?:ity)?|ethic(?:s|al)|moral(?:ity)?|safety|dangers?|harm|consequences)\b|\b(?:never|do\s+not|don\x27t)\s+(?:add|include)\s+(?:any\s+)?disclaimers?\s+(?:about|regarding|on)\s+(?:legality|ethics|morality|safety|harm|danger)|(?:不要|禁止|不得|无需|不用)(?:添加|加上?|附加|给出|输出|包含|提供)?(?:任何)?(?:免责声明|道德(?:说教|提醒|警告)|安全(?:警告|提示|提醒)|法律(?:警告|提示|提醒))'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:never|do\s+not|don\x27t|no\s+need|without|不要|禁止)|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?(?:never|do\s+not|don\x27t|no\s+need|without)\b'
+    group: agent-instr-bypass
+    groupPriority: -1
+    tags: [malicious-intent]
+    message: The file tells the agent to drop safety, ethical or legal warnings or all disclaimers from its answers, a jailbreak instruction that removes the signal a user would get before a harmful answer.
+    message_zh: 该文件要求 Agent 在回答中不给出安全、道德或法律提示或任何免责声明，这是一种越狱指令，会去掉用户在有害回答前本应得到的提示。
+    remediation: Remove the instruction and review where the file came from.
+    remediation_zh: 删除该指令并审查文件来源。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: agent-anti-refusal-no-rules
+    title: Instruction tells the agent it has no rules or restrictions
+    title_zh: 指令声称 Agent 没有任何规则或限制
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '\byou\s+(?:have|has|operate\s+with)\s+no\s+(?:(?:ethical|moral|content|safety)\s+)?(?:rules|limits|boundaries|filters|ethics|morals|censorship|guidelines|restrictions|limitations|guardrails)(?=\s*(?:[.!;,)]|$)|\s+(?:whatsoever|at\s+all|of\s+any\s+kind|and\s+(?:can|will|must|may)))|\byou\s+are\s+(?:not\s+bound\s+by|free\s+(?:from|of))\s+(?:any\s+|all\s+)?(?:(?:of\s+)?(?:your|the|OpenAI\x27?s?|Anthropic\x27?s?|Google\x27?s?|ethical|moral|content|safety)\s+){0,2}(?:rules|restrictions|policies|guidelines|ethics|morals|constraints|filters|limitations|programming|training)\b|\byou\s+are\s+(?:now\s+)?(?:an?\s+)?(?:unrestricted|uncensored|unfiltered|unaligned|amoral|unbound)\s+(?:AI|assistant|model|agent|LLM|chatbot|language\s+model)\b|\b(?:all|any|your)\s+(?:safety|ethical|content)\s+(?:rules|restrictions|guidelines|policies|filters)\s+(?:are|have\s+been)\s+(?:disabled|removed|lifted|suspended|turned\s+off|void|null)\b|\byour\s+(?:safety|ethical|content)\s+(?:rules|guidelines|policies|filters|restrictions)\s+(?:do\s+not|don\x27t|no\s+longer)\s+apply\b|\bthere\s+are\s+no\s+(?:rules|restrictions|limits|limitations)\s+for\s+you\b|(?:^|[.!:;,]\s+)(?:please\s+|now\s+|always\s+)?(?:ignore|disregard|forget)\s+(?:all\s+(?:of\s+)?)?(?:your|the|any|(?:OpenAI|Anthropic|Google)\x27s)\s+(?:ethical|moral|ethics|content|usage)\s+(?:guidelines|rules|principles|polic(?:y|ies)|filters|constraints)\b|(?:你|您)(?:现在)?(?:没有|不受|不再受)(?:任何)?(?:限制|规则|约束|底线|道德|审查|过滤)|(?:你|您)(?:现在)?是(?:一个)?(?:没有|不受)(?:任何)?(?:限制|规则|审查)的|(?:无|没有)(?:任何)?(?:限制|审查|过滤)的(?:AI|人工智能|助手|模型)|(?:忽略|无视|不必遵守|不用遵守|跳过)(?:你的|所有|一切|任何|全部)*的?(?:安全|道德|伦理|内容)(?:准则|规则|限制|约束|政策|规范|指南)|(?:忽略|无视)(?:你的)?(?:所有|一切|全部)的?(?:规则|限制|约束|准则)'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:you|all|any|your|你|您|忽略|无视)\b|{{DISCUSS}}{{W}}{0,3}{{QUOTE}}?(?:you|all|any|your)\b|\bif\s+you\s+have\s+no\b|(?:不要|不得|切勿|禁止|绝不)(?:忽略|无视)'
+    group: agent-instr-bypass
+    groupPriority: -1
+    tags: [malicious-intent]
+    message: The file tells the agent that it has no rules, filters or restrictions, or to ignore its safety guidelines, a jailbreak framing that makes later injected requests effective.
+    message_zh: 该文件声称 Agent 没有任何规则、过滤或限制，或要求其忽略安全准则，这是一种越狱设定，会让之后注入的请求生效。
+    remediation: Remove the instruction and review where the file came from.
+    remediation_zh: 删除该指令并审查文件来源。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: agent-anti-refusal-jailbreak-persona
+    title: Instruction sets up a jailbreak persona (DAN, jailbreak mode)
+    title_zh: 指令设定越狱角色（DAN、越狱模式）
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    flags: ''
+    pattern: '\b(?:[Yy]ou\s+are|[Aa]ct\s+as|[Bb]ecome|[Pp]lay|[Rr]espond\s+as|[Pp]retend\s+to\s+be)\s+(?:now\s+)?(?:a\s+|an\s+)?(?:DAN|D\.A\.N\.?)(?!\w|\.[A-Za-z])|\b[Dd]o\s+[Aa]nything\s+[Nn]ow\b|\b(?:DAN|[Jj]ailbreak|JAILBREAK)\s+[Mm]ode\s+(?:enabled|activated|on|ON|ENABLED|ACTIVATED)\b|\b(?:[Ee]nable|[Ee]nter|[Aa]ctivate|[Ss]witch\s+to|[Ss]tart)\s+(?:the\s+)?(?:DAN|[Jj]ailbreak|[Gg]od|[Uu]nrestricted|[Uu]ncensored)\s+[Mm]ode\b|\b[Pp]retend\s+(?:that\s+)?you\s+(?:are\s+an?\s+(?:AI|assistant|model)\s+(?:without|that\s+has\s+no|with\s+no)\s+(?:any\s+)?(?:restrictions|rules|limits|filters|guidelines)|have\s+no\s+(?:restrictions|rules|limits|filters|guidelines))\b|\b(?:[Aa]ct|[Bb]ehave|[Rr]espond)\s+as\s+(?:an?\s+)?(?:AI|assistant|model|chatbot|LLM)\s+(?:without|with\s+no)\s+(?:any\s+)?(?:restrictions|rules|limits|filters|guidelines|limitations|guardrails|censorship)\b|(?:越狱模式|DAN\s*模式)(?:已)?(?:开启|启用|激活)|(?:进入|开启|启用|激活|切换到)(?:DAN|越狱|无限制|无审查)模式|(?:你现在是|从现在起[，,]?\s*你是|从现在开始[，,]?\s*你是|你将扮演|请扮演)\s*DAN'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{QUOTE}}\s*(?:[Yy]ou|[Aa]ct|[Dd]o|[Pp]retend|[Ee]nable|[Ee]nter|DAN)\b|(?:[Ss]uch\s+as|e\.g\.|[Ff]or\s+example|[Pp]hrases?|[Pp]atterns?|[Aa]ttacks?|[Jj]ailbreaks?\s+(?:like|such)|[Dd]etect\w*|[Bb]eware|[Ww]atch\s+for|[Kk]nown)\b'
+    group: agent-instr-bypass
+    groupPriority: -1
+    tags: [malicious-intent]
+    message: The file casts the agent as a jailbreak persona ("DAN", "do anything now", jailbreak or uncensored mode, an AI without restrictions), whose only purpose is to make the model ignore its safety behaviour.
+    message_zh: 该文件把 Agent 设定为越狱角色（“DAN”、“do anything now”、越狱或无审查模式、没有限制的 AI），其唯一目的是让模型忽略安全行为。
+    remediation: Remove the persona and review where the file came from.
+    remediation_zh: 删除该角色设定并审查文件来源。
+    references:
+      - OWASP LLM01 Prompt Injection
+
+  # ---- Tampering with agent memory, configuration and shell startup ----
+  - id: agent-memory-tamper-shell-startup
+    title: Instruction writes to a shell startup file
+    title_zh: 指令写入 shell 启动文件
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '(?:{{WRITE_TO}})(?:{{SHELL_RC}})|{{TF_OPEN}}(?:{{SHELL_RC}}){{TF_TAIL}}|{{ZH_OPEN}}(?:{{SHELL_RC}}){{ZH_TAIL}}'
+    # Setup notes that put a PATH or a plain variable into the user's own
+    # profile are documentation for the user, not persistence.
+    notPattern: '{{NEG}}[*_]{0,3}\s+{{W}}{0,3}(?:append|add|write|insert|modify|edit|echo|touch|change)\b|{{DISCUSS}}{{W}}{0,4}(?:append|add|write|insert|modify|edit|echo)\b|\bexport\s+[A-Z][A-Z0-9_]{0,60}=[\x22\x27]?[^\s$\x60;|&()\x22\x27]{0,300}[\x22\x27]?[\x22\x27\x60]?\s+(?:>>|to\b|into\b|in\b)|\bPATH=|\bsource\s+(?:~|\$HOME)/\.(?:bashrc|zshrc|profile|bash_profile|zprofile)\b|\beval\s+"\$\((?:brew|pyenv|rbenv|nodenv|direnv|zoxide|starship|mise|fnm|conda)\b|\b(?:with\s+the\s+user\x27?s\s+(?:consent|permission|approval)|if\s+the\s+user\s+(?:agrees|confirms|approves|opts\s+in|asks)|ask\s+the\s+user\s+(?:first|before))\b|{{QUOTE}}(?:also\s+)?(?:append|add|write|update|edit|modify)\b[^\n]{0,200}\?|(?:不要|不得|切勿|禁止|绝不)(?:追加|写入|添加|修改)|[\x60\x22\x27]?(?:~|\$HOME)/\.[\w.]{1,20}[\x60\x22\x27]?\s+or\s+[\x60\x22\x27]?(?:~|\$HOME)/\.[\w.]{1,20}'
+    group: agent-memory-tamper
+    tags: [malicious-intent]
+    message: The file tells the agent to write to a shell startup file (~/.bashrc, ~/.zshrc, ~/.profile), so whatever it adds runs in every new shell of the user, long after the agent session.
+    message_zh: 该文件要求 Agent 写入 shell 启动文件（~/.bashrc、~/.zshrc、~/.profile），写入的内容会在用户此后每个新 shell 中运行，远超 Agent 会话。
+    remediation: Remove the instruction; check the user's shell startup files for lines the agent added.
+    remediation_zh: 删除该指令；检查用户的 shell 启动文件中是否有 Agent 添加的内容。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: agent-memory-tamper-agent-config
+    title: Instruction writes to the user's global agent configuration or memory
+    title_zh: 指令写入用户的全局 Agent 配置或记忆
+    severity: high
+    # A hotspot: skills that install a hook or a status line for the user
+    # write the same files (seen in real plugin collections).
+    confidence: low
+    kind: hotspot
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '(?:{{WRITE_TO}})(?:{{AGENT_HOME}})|{{TF_OPEN}}(?:{{AGENT_HOME}})[^\s\x60\x22\x27]{0,100}{{TF_TAIL}}|{{ZH_OPEN}}(?:{{AGENT_HOME}})[^\s\x60\x22\x27]{0,100}{{ZH_TAIL}}'
+    notPattern: '{{NEG}}[*_]{0,3}\s+{{W}}{0,3}(?:append|add|write|insert|modify|edit|echo|touch|change|update|overwrite)\b|{{DISCUSS}}{{W}}{0,4}(?:append|add|write|insert|modify|edit|echo|update)\b|(?:不要|不得|切勿|禁止|绝不)(?:追加|写入|添加|修改)'
+    group: agent-memory-tamper
+    message: The file tells the agent to change the user's own agent configuration, instructions, skills or memory in the home directory (~/.claude, ~/.codex, ~/.gemini, ~/.config/opencode); check what it adds, since that reaches every later session and every project.
+    message_zh: 该文件要求 Agent 修改用户家目录中的 Agent 配置、指令、技能或记忆（~/.claude、~/.codex、~/.gemini、~/.config/opencode）；需检查添加的内容，它会影响之后的每个会话和每个项目。
+    remediation: Make sure the change is what the user asked for and adds no instructions, permissions or hooks they did not review; otherwise remove the instruction.
+    remediation_zh: 确认该修改是用户要求的，且没有添加用户未审查的指令、权限或 hook；否则删除该指令。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: agent-memory-tamper-project-memory
+    title: Instruction writes to agent memory or project instruction files
+    title_zh: 指令写入 Agent 记忆或项目指令文件
+    severity: high
+    confidence: low
+    kind: hotspot
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '(?:{{WRITE_TO}})(?:{{MEMORY_FILE}})|{{TF_OPEN}}(?:{{MEMORY_FILE}})[^\s\x60\x22\x27]{0,100}{{TF_TAIL}}|{{ZH_OPEN}}(?:{{MEMORY_FILE}})[^\s\x60\x22\x27]{0,100}{{ZH_TAIL}}'
+    notPattern: '{{NEG}}[*_]{0,3}\s+{{W}}{0,3}(?:append|add|write|insert|modify|edit|echo|touch|change|update|overwrite)\b|{{DISCUSS}}{{W}}{0,4}(?:append|add|write|insert|modify|edit|echo|update)\b|(?:不要|不得|切勿|禁止|绝不)(?:追加|写入|添加|修改)'
+    group: agent-memory-tamper
+    message: The file tells the agent to write to MEMORY.md, a memory directory, CLAUDE.md / AGENTS.md / GEMINI.md, .claude/settings.json or another skill, agent or command; check what it writes, since those files steer every later session.
+    message_zh: 该文件要求 Agent 写入 MEMORY.md、记忆目录、CLAUDE.md / AGENTS.md / GEMINI.md、.claude/settings.json 或其他技能、子代理、命令；需检查写入内容，这些文件会影响之后的每个会话。
+    remediation: Make sure the skill only records what the user asked for and never adds instructions, permissions or hooks.
+    remediation_zh: 确认该技能只记录用户要求的内容，绝不添加指令、权限或 hook。
+  - id: agent-memory-tamper-script
+    title: Skill script writes to a shell startup file or the user's agent configuration
+    title_zh: 技能脚本写入 shell 启动文件或用户的 Agent 配置
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [shell, python, javascript, typescript]
+    pathInclude: '{{SKILL_SCRIPT}}'
+    inSkillTree: '{{TREE_SCRIPT}}'
+    # Every alternative needs the home directory in the file: on the line
+    # (an anchor), or anywhere (a quoted rc file name, or a bare cd).
+    filePattern: '{{HOME_FILE}}'
+    patterns:
+      - '(?:{{HOME_CODE}})[^\n;]{0,80}?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b|(?:{{HOME_CODE}})[^\n;]{0,80}?\.config[/\\\x22\x27,\s]{1,6}fish[/\\\x22\x27,\s]{1,6}config\.fish\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.(?:claude|codex|gemini)[/\\\x22\x27,\s]{1,6}(?:settings(?:\.local)?\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md|config\.toml|skills|agents|commands|hooks|memory)\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.claude\.json\b|[\x22\x27\x60]\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)[\x22\x27\x60]|[/\\]\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)[\x22\x27\x60]|\bcd(?:\s+(?:~|\$HOME|\$\{HOME\})/?)?\s*(?:;|&&)[^\n]{0,200}?(?:>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b'
+      - '>>|(?<![>=-])>\s*[\x22\x27]?(?:~|\$HOME|\$\{HOME\})|\btee\s|\bsed\s+-i|\bopen\s*\([^\n]{0,300}[\x22\x27](?:a|w|a\+|w\+|ab|wb|r\+)[\x22\x27]|\b(?:appendFileSync|appendFile|writeFileSync|writeFile|createWriteStream|write_text|write_bytes|copyFileSync|copyfile|copytree|symlinkSync|symlink_to)\b|\.write\s*\(|\bcp\s|\bmv\s|\bln\s+-s'
+    # cp/mv with the user's file as the source reads it (a test copies ~/.claude/CLAUDE.md into a sandbox).
+    notPattern: '\bexport\s+PATH=|\bPATH=\$|[\x22\x27]export\s+PATH=|\b(?:cp|mv)\s+(?:-\w+\s+){0,3}[\x22\x27]?(?:~|\$HOME|\$\{HOME\})/\.(?:claude|codex|gemini|bashrc|zshrc|profile|bash_profile|zprofile)[^\s\x22\x27]{0,200}[\x22\x27]?\s+[\x22\x27]?(?!(?:~|\$HOME|\$\{HOME\})/)[^\s\x22\x27-]'
+    group: agent-memory-tamper
+    tags: [malicious-intent]
+    message: A script shipped with the skill writes to a shell startup file or to the user's global agent configuration, instructions, skills or memory, which persists beyond the session in which the skill ran.
+    message_zh: 技能附带的脚本写入 shell 启动文件或用户的全局 Agent 配置、指令、技能或记忆，影响会延续到运行该技能的会话之外。
+    remediation: Remove the write; a skill must not change the user's shell startup or agent configuration.
+    remediation_zh: 删除该写入操作；技能不应修改用户的 shell 启动配置或 Agent 配置。
+
+  # ---- Trigger abuse in front matter ----
+  - id: agent-trigger-abuse-always
+    title: Skill or command description asks to be used for every task
+    title_zh: 技能或命令描述要求在所有任务中使用
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1021
+    owasp: A04:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    withinFrontmatter: [description, when_to_use]
+    pattern: '\b(?:always|must|should)\s+(?:be\s+)?(?:use[ds]?|invoked?|loaded|run|activated?|called|triggered|consulted)\s+(?:this\s+(?:skill|agent|command|tool|plugin|rule)\s+)?(?:first\b|before\s+(?:any|every|all|anything)\b|for\s+(?:every|all|any)\s+(?:task|request|prompt|question|message|conversation|code|coding|change|file)s?\b(?![\s-]+(?:involving|related|that|which|with|where|about|on|in|requiring|using|regarding|concerning|of|for|when|if|touching)\b)|(?:on|in|at)\s+(?:every|all|each)\s+(?:task|request|prompt|turn|message|conversation|session)s?\b(?![\s-]+(?:involving|related|that|which|with|where|about|on|in|requiring|using|regarding|concerning|of|for|when|if|touching)\b))|\buse\s+(?:this\s+(?:skill|agent|command|tool|plugin|rule)\s+|me\s+|it\s+)?(?:proactively\s+)?(?:for|on|in|with)\s+(?:any|every|all|each)\s+(?:task|request|prompt|question|message|conversation|session|coding\s+work)s?\b(?![\s-]+(?:involving|related|that|which|with|where|about|on|in|requiring|using|regarding|concerning|of|for|when|if|touching|you)\b)|\b(?:invoke|use|load|run|activate)\s+(?:this\s+(?:skill|agent|command|tool|plugin|rule)\s+|it\s+)?(?:at|on)\s+the\s+(?:start|beginning)\s+of\s+(?:every|each|any|all)\s+(?:conversations?|sessions?|tasks?|requests?|chats?)\b|\b(?:before|instead\s+of|in\s+place\s+of|rather\s+than)\s+(?:using\s+)?(?:any|all|every)\s+other\s+(?:skills?|tools?|agents?|commands?|plugins?)\b|\b(?:highest|top|first)\s+priority\s+(?:over|above)\s+(?:all|any|every)\s+(?:other\s+)?(?:skills?|tools?|instructions?)\b|必须优先使用|(?:优先|始终|总是|每次都|永远|必须)(?:先)?(?:使用|调用|加载|激活)(?:本|此|这个|该)(?:技能|工具|插件|命令|代理)|(?:任何|所有|每个|每一个)(?:任务|请求|问题|对话)(?:都|均)(?:必须|要|应)?(?:先)?(?:使用|调用)'
+    group: agent-trigger-abuse
+    message: The description asks the host to load this skill, command or subagent for every task or before all others; check whether that is its real scope, since a description that matches everything puts its instructions into every session.
+    message_zh: 描述要求宿主在所有任务中或在其他技能之前加载该技能、命令或子代理；需确认这是否是其真实范围，匹配一切的描述会把它的指令带入每个会话。
+    remediation: Describe the concrete situations the skill is for.
+    remediation_zh: 在描述中写明该技能适用的具体场景。
+  - id: agent-trigger-abuse-builtin
+    title: Skill or command description claims to replace a built-in command
+    title_zh: 技能或命令描述声称替代内置命令
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1021
+    owasp: A04:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    withinFrontmatter: [description, when_to_use]
+    pattern: '\b(?:replaces?|replacing|overrides?|overriding|supersedes?|substitutes?\s+for|takes?\s+precedence\s+over|instead\s+of|in\s+place\s+of|shadows?|hijacks?|intercepts?)\s+(?:the\s+)?(?:built-?in\s+|default\s+|native\s+|standard\s+)?(?:command\s+)?[\x22\x27\x60]?/(?:help|init|review|clear|compact|config|login|logout|model|permissions|memory|doctor|status|cost|bug|pr-comments|security-review|agents|mcp|hooks|resume|exit|plugin|skills|context|rewind|add-dir|ide|upgrade|export|statusline|approvals|diff|mention|new|undo|quit)\b|\b(?:instead\s+of|in\s+place\s+of|replaces?|overrides?)\s+(?:the\s+)?(?:built-?in|default|native)\s+[\x60/]?(?:help|init|review|clear|compact|config|memory|doctor|status|security-review)\s+command\b|(?:替代|取代|覆盖|代替|替换)(?:内置|默认|原生)?(?:的)?(?:命令\s*)?[\x60]?/(?:help|init|review|clear|compact|config|model|memory|status)\b'
+    group: agent-trigger-abuse
+    message: The description claims to replace or take precedence over a built-in command of the agent host; check that the user expects this, since the skill then runs where the user asked for the built-in.
+    message_zh: 描述声称替代或优先于 Agent 宿主的内置命令；需确认用户知情，否则用户调用内置命令时运行的是该技能。
+    remediation: Give the skill its own name and describe what it does without claiming a built-in command.
+    remediation_zh: 为技能使用独立名称，描述其功能而不冒用内置命令。
+  - id: agent-trigger-abuse-keyword-stuffing
+    title: Skill or command description is stuffed with keywords
+    title_zh: 技能或命令描述堆砌关键词
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-1021
+    owasp: A04:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    withinFrontmatter: [description, when_to_use]
+    flags: ''
+    pattern: '(?:[^,，;；\n]{1,30}[,，;；]){14}[^,，;；\n]{1,30}'
+    group: agent-trigger-abuse
+    message: The description lists fifteen or more short terms separated by commas or semicolons, a way to make the host pick the skill for unrelated requests; check that the terms match what the skill does.
+    message_zh: 描述列出十五个以上以逗号或分号分隔的短词，这是让宿主在无关请求中也选中该技能的手法；需确认这些词与技能功能相符。
+    remediation: Describe the skill in a sentence or two instead of a keyword list.
+    remediation_zh: 用一两句话描述技能，不要堆砌关键词列表。
+
+  # ---- Padding that pushes text out of view ----
+  - id: prompt-injection-padding-blank-lines
+    title: Text hidden below a long run of blank lines in an agent instruction file
+    title_zh: Agent 指令文件中长串空行之后隐藏文本
+    severity: medium
+    confidence: medium
+    cwe: CWE-451
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    flags: ''
+    # A line that shows nothing (blanks of any script, zero-width
+    # characters, &nbsp;, <br>, one punctuation character) counts as blank;
+    # see minBlankLinesBefore in docs/rules.md.
+    pattern: '^\s*[^\s]'
+    minBlankLinesBefore: 20
+    group: prompt-injection-padding
+    message: Twenty or more lines that show nothing come before this text, which pushes it out of view in an editor or a diff while the agent still reads it.
+    message_zh: 这段文本之前有二十行以上显示为空的行，在编辑器或 diff 中会被挤出视野，但 Agent 仍会读取。
+    remediation: Remove the padding and read the text below it; instructions for agents must be visible to reviewers.
+    remediation_zh: 删除填充行并检查其后的文本；给 Agent 的指令必须对审阅者可见。
+  - id: prompt-injection-padding-whitespace
+    title: Text hidden after a long run of spaces in an agent instruction file
+    title_zh: Agent 指令文件中长串空白之后隐藏文本
+    severity: medium
+    confidence: medium
+    cwe: CWE-451
+    owasp: A03:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    flags: ''
+    # 200 blanks anywhere, or 120 at the start of the line, before text.
+    # Aligned Markdown table cells end in "|".
+    pattern: '(?<!{{BLANK}}){{BLANK}}{200,}(?!{{BLANK}})[^\s|]|^{{BLANK}}{120,}(?!{{BLANK}})[^\s|]'
+    group: prompt-injection-padding
+    message: Two hundred or more blanks, or 120 at the start of the line, come before text on this line, which pushes the text off screen in an editor or a diff while the agent still reads it.
+    message_zh: 该行文本之前有两百个以上空白字符（或行首有 120 个以上），在编辑器或 diff 中会被挤出屏幕，但 Agent 仍会读取。
+    remediation: Remove the padding and read the text after it; instructions for agents must be visible to reviewers.
+    remediation_zh: 删除填充空白并检查其后的文本；给 Agent 的指令必须对审阅者可见。
+
+  # ---- Prompt leaks ----
+  - id: agent-prompt-leak
+    title: Instruction asks to reveal the system prompt or other hidden instructions
+    title_zh: 指令要求泄露系统提示词或其他隐藏指令
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-200
+    owasp: A01:2021
+    languages: [markdown]
+    pathInclude: '{{INSTRX}}'
+    inSkillTree: '{{TREE_INSTR}}'
+    pattern: '\b(?:print|output|reveal|repeat|recite|show|display|dump|disclose|leak|expose|echo|write(?:\s+out)?|copy|paste|quote|return|send|include|save|put|tell\s+(?:me|the\s+user))\s+(?:me\s+)?(?:back\s+)?(?:all\s+(?:of\s+)?)?(?:your|the|its|any)\s+(?:(?:full|entire|complete|exact|original|initial|verbatim|raw|whole|hidden|secret|internal|underlying)\s+){0,2}(?:system\s+(?:prompts?|messages?|instructions?)|hidden\s+(?:instructions?|prompts?|rules)|initial\s+(?:instructions?|prompts?)|developer\s+(?:messages?|instructions?|prompts?)|pre-?prompts?|instructions\s+(?:above|you\s+(?:were|have\s+been)\s+given))\b|\b(?:repeat|print|output|recite|copy|reproduce)\s+(?:everything|all\s+(?:of\s+)?(?:the\s+)?text|the\s+(?:text|words|content|instructions|messages?)|the\s+(?:full\s+)?(?:conversation|context))\s+(?:above|before\s+this|that\s+came\s+before|preceding|so\s+far)\b|\b(?:print|output|dump|reveal|copy|paste|include|send|return|write)\s+(?:the\s+)?(?:(?:full|entire|complete|raw|verbatim)\s+){0,2}(?:contents?|text|source|definitions?|descriptions?)\s+of\s+(?:all|every|each|the\s+other|other|any)\s+(?:other\s+)?(?:installed\s+|available\s+|loaded\s+)?(?:skills?|tools?|MCP\s+tools?|agents?|plugins?|SKILL\.md(?:\s+files?)?)\b|(?:输出|打印|复述|重复|泄露|透露|显示|告诉我|写入|写到|复制|发送)(?:你的|完整的|全部的?|原始的?){0,2}(?:系统提示词?|系统指令|隐藏(?:的)?(?:指令|提示词?)|初始指令)|(?:把|将)(?:你的)?(?:完整的?|全部的?)?(?:系统提示词?|系统指令|隐藏(?:的)?(?:指令|提示词?)|初始指令)[^\n]{0,12}?(?:输出|打印|复述|泄露|写入|写到|复制|发送)'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:print|output|reveal|repeat|recite|show|display|dump|disclose|leak|expose|echo|copy|paste|quote|return|send|tell|include|write)\b|{{DISCUSS}}{{W}}{0,3}(?:print|output|reveal|repeat|show|dump|leak)\b|(?:不要|不得|切勿|禁止|绝不)(?:输出|打印|复述|泄露|透露)'
+    message: The file asks the agent to reveal its system prompt, hidden instructions or the full text of other skills and tools; check why, since that text can hold the user's private context and is what an attacker studies to craft injections.
+    message_zh: 该文件要求 Agent 泄露其系统提示词、隐藏指令或其他技能和工具的全文；需确认原因，这些文本可能包含用户的私有上下文，也是攻击者构造注入时研究的内容。
+    remediation: Remove the request unless the skill's purpose needs it and the user expects it.
+    remediation_zh: 除非技能用途确需且用户知情，否则删除该请求。
+    references:
+      - OWASP LLM07 System Prompt Leakage
+
+  # ---- Uploads to cloud storage ----
+  # Shell scripts and fenced shell blocks are matched with backslash-continued
+  # lines joined (see "How matching works" in docs/rules.md).
+  - id: agent-cloud-upload
+    title: Skill uploads local data to cloud storage
+    title_zh: 技能把本地数据上传到云存储
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-200
+    owasp: A01:2021
+    languages: [markdown, shell, python, javascript, typescript]
+    pathInclude: '{{INSTRX}}|{{SKILL_SCRIPT}}'
+    inSkillTree: '{{TREE_INSTR}}|{{TREE_SCRIPT}}'
+    pattern: '{{UPLOAD}}'
+    notPattern: '{{DOWNLOAD}}'
+    group: agent-cloud-upload
+    message: The skill copies local files to a cloud bucket or container (aws s3, gsutil, gcloud storage, az storage, azcopy, rclone); check what is uploaded and who owns the destination.
+    message_zh: 技能把本地文件复制到云存储桶或容器（aws s3、gsutil、gcloud storage、az storage、azcopy、rclone）；需确认上传内容和目标归属。
+    remediation: Upload only the files the task needs, to a destination the user controls, and say so in the skill description.
+    remediation_zh: 只上传任务所需的文件，目标应由用户控制，并在技能描述中说明。
+  - id: agent-cloud-upload-secrets
+    title: Skill uploads the home directory, .env or credentials to cloud storage
+    title_zh: 技能把家目录、.env 或凭据上传到云存储
+    severity: high
+    confidence: medium
+    cwe: CWE-200
+    owasp: A01:2021
+    languages: [markdown, shell, python, javascript, typescript]
+    pathInclude: '{{INSTRX}}|{{SKILL_SCRIPT}}'
+    inSkillTree: '{{TREE_INSTR}}|{{TREE_SCRIPT}}'
+    patterns:
+      - '{{UPLOAD}}'
+      - '(?:^|[\s\x22\x27=(])(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)/?(?=[\s\x22\x27)]|$)|(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)[/\\]\.(?:ssh|aws|gnupg|kube|docker|config[/\\](?:gcloud|gh)|azure|netrc|git-credentials|npmrc|pypirc|claude|codex|password-store)\b|(?<![\w.-])\.env(?![\w.-])|\.env\.(?:local|production|prod|development|dev)\b|\b(?:id_rsa|id_ed25519|id_ecdsa|credentials\.json|kubeconfig)\b|/etc/(?:passwd|shadow)\b'
+    notPattern: '{{DOWNLOAD}}|{{NEG}}\s+{{W}}{0,3}(?:upload|copy|sync|run|use)\b'
+    group: agent-cloud-upload
+    tags: [malicious-intent]
+    message: The skill uploads the home directory, a .env file or credential files (SSH, cloud, kube, git) to cloud storage, which sends the user's secrets to whoever controls the bucket.
+    message_zh: 技能把家目录、.env 文件或凭据文件（SSH、云、kube、git）上传到云存储，会把用户的密钥发送给控制该存储桶的人。
+    remediation: Remove the command and rotate every credential that was reachable where the skill ran.
+    remediation_zh: 删除该命令，并轮换运行过该技能的机器上可访问的所有凭据。
+
+  # ---- Calls to other coding agents and model endpoint switches ----
+  - id: agent-cli-shellout
+    title: Skill runs another coding agent or switches the model endpoint
+    title_zh: 技能调用另一个编码 Agent 或切换模型端点
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [markdown, shell, python, javascript, typescript]
+    pathInclude: '{{INSTRX}}|{{SKILL_SCRIPT}}'
+    inSkillTree: '{{TREE_INSTR}}|{{TREE_SCRIPT}}'
+    # Same group as agent-cli-permission-bypass-flag: a launch with approvals
+    # turned off is reported once, by that rule.
+    group: agent-cli-launch
+    groupPriority: -1
+    pattern: '\b(?:claude|npx\s+(?:-y\s+)?@anthropic-ai/claude-code(?:@\S{1,40})?)(?:\s+--?[\w-]{1,40}(?:[= ][^\s-]\S{0,100})?){0,4}\s+(?:-p|--print)(?![\w-])|\bclaude\s+[\x22\x27][^\x22\x27\n]{1,300}[\x22\x27]\s+(?:-p|--print)(?![\w-])|\bcodex\s+(?:--?[\w-]{1,40}\s+){0,3}(?:exec|e)\s|\bcodex\s+(?:--?[\w-]{1,40}\s+){0,3}exec\b|\b(?:opencode|crush|goose)\s+run\b|\b(?:gemini|qwen)(?:\s+--?[\w-]{1,40}(?:[= ][^\s-]\S{0,100})?){0,4}\s+(?:-p|--prompt)(?![\w-])|\baider\b(?:\s+\S{1,100}){0,6}?\s+(?:--message|--msg|-m)(?![\w-])|\b(?:cursor-agent|copilot)\b[^\n]{0,80}?\s(?:-p|--print|--prompt)(?![\w-])|\bdroid\s+exec\b|\bamp\s+(?:-x|--execute)\b|[\x22\x27](?:claude|gemini|qwen|copilot|cursor-agent)[\x22\x27]\s*,\s*(?:[\x22\x27]--?[\w-]{1,40}[\x22\x27]\s*,\s*){0,4}[\x22\x27](?:-p|--print|--prompt)[\x22\x27]|[\x22\x27](?:codex|droid)[\x22\x27]\s*,\s*[\x22\x27]exec[\x22\x27]|[\x22\x27](?:opencode|crush|goose)[\x22\x27]\s*,\s*[\x22\x27]run[\x22\x27]|\b(?:ANTHROPIC_BASE_URL|ANTHROPIC_API_URL|OPENAI_BASE_URL|OPENAI_API_BASE|OPENAI_API_BASE_URL|GOOGLE_GEMINI_BASE_URL|GEMINI_API_BASE_URL)[\x22\x27\]]{0,3}\s*[=:]\s*[\x22\x27]?(?:https?://|\$)'
+    message: The skill starts another coding agent non-interactively (claude -p, codex exec, opencode run, gemini -p, aider --message) or points a model client at another endpoint; check which prompt it passes, which permissions that agent gets and where the traffic goes.
+    message_zh: 技能以非交互方式启动另一个编码 Agent（claude -p、codex exec、opencode run、gemini -p、aider --message），或把模型客户端指向其他端点；需确认传入的提示、该 Agent 获得的权限以及流量去向。
+    remediation: Let the host agent do the work, or document the nested agent, its prompt and its permissions; keep model endpoints in the user's own settings.
+    remediation_zh: 由宿主 Agent 完成工作，或在文档中说明嵌套 Agent 及其提示和权限；模型端点应放在用户自己的设置中。
+
+  # ---- Package sources ----
+  - id: agent-package-source-redirect
+    title: Skill installs packages from a non-official index or registry
+    title_zh: 技能从非官方索引或仓库安装包
+    severity: medium
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [markdown, shell]
+    pathInclude: '{{INSTRX}}|{{PKG_SOURCE_FILE}}'
+    inSkillTree: '{{TREE_INSTR}}|{{TREE_PKG}}'
+    # http:// indexes are the dep-* rules (rules/deps/hygiene.yml); .npmrc,
+    # pip.conf, uv.toml and friends are agent-package-source-redirect-config.
+    pattern: '\b(?:pip3?|uv\s+pip)\s+install\b[^\n|;&]{0,300}?\s(?:--index-url|--extra-index-url|-i)(?:\s+|=)[\x22\x27]?https://(?!{{PYPI_OK}})|\buv\s+(?:add|sync|pip\s+install|tool\s+install)\b[^\n|;&]{0,300}?\s(?:--index|--default-index|--index-url|--extra-index-url)(?:\s+|=)[\x22\x27]?(?:[\w-]{1,40}=)?https://(?!{{PYPI_OK}})|\b(?:PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|UV_INDEX_URL|UV_DEFAULT_INDEX|UV_EXTRA_INDEX_URL|UV_INDEX)\s*=\s*[\x22\x27]?(?:[\w-]{1,40}=)?https://(?!{{PYPI_OK}})|\bnpm_config_registry\s*=\s*[\x22\x27]?https://(?!{{NPM_OK}})|\b(?:npm|yarn|pnpm)\s+config\s+set\s+(?:registry|npmRegistryServer)(?:\s+|=)[\x22\x27]?https://(?!{{NPM_OK}})|\b(?:npm|npx|pnpm|yarn|bun|bunx)\b[^\n|;&]{0,200}?\s--registry(?:\s+|=)[\x22\x27]?https://(?!{{NPM_OK}})|\bregistry\s*=\s*[\x22\x27]?https://(?!{{NPM_OK}})[^\n]{0,200}?>>?\s*[\x22\x27]?(?:\S{0,200}/)?\.npmrc\b|\bGOPROXY\s*=\s*[\x22\x27]?(?:(?:https://proxy\.golang\.org|direct|off)[,|])*(?!(?:https://proxy\.golang\.org|direct|off)(?:[,|\x22\x27\s;]|$))[^\s\x22\x27;,|]'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:use|set|install|add|point|configure)\b|{{DISCUSS}}{{W}}{0,3}(?:pip|npm|uv|GOPROXY|registry)\b'
+    group: agent-package-source-redirect
+    message: The skill installs Python, npm or Go packages from an index, registry or proxy other than the official one (an extra index also lets that host win a name collision with a public package); check that the host is trustworthy and that the user expects it.
+    message_zh: 技能从非官方索引、仓库或代理安装 Python、npm 或 Go 包（额外索引还会让该主机在与公共包同名时胜出）；需确认该主机可信且用户知情。
+    remediation: Install from the official index, or document the private index and pin the packages with hashes.
+    remediation_zh: 从官方索引安装，或在文档中说明私有索引并用哈希固定包版本。
+  - id: agent-package-source-redirect-config
+    title: Package configuration in a skill points at a non-official index or registry
+    title_zh: 技能中的包配置指向非官方索引或仓库
+    severity: medium
+    confidence: medium
+    cwe: CWE-829
+    owasp: A08:2021
+    languages: [ini, toml, yaml]
+    pathInclude: '{{PKG_SOURCE_FILE}}'
+    inSkillTree: '(?:^|/)(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.conf|pip\.ini|uv\.toml|pyproject\.toml)$'
+    # Unscoped registry only: @scope:registry= redirects one scope.
+    pattern: '^\s*registry\s*=\s*[\x22\x27]?https://(?!{{NPM_OK}})|^\s*registry\s+[\x22\x27]https://(?!{{NPM_OK}})|^\s*npmRegistryServer\s*:\s*[\x22\x27]?https://(?!{{NPM_OK}})|^\s*(?:index-url|extra-index-url|index_url|extra_index_url|url)\s*=\s*[\x22\x27]?https://(?!{{PYPI_OK}})'
+    group: agent-package-source-redirect
+    message: An .npmrc, .yarnrc, pip.conf, pip.ini, uv.toml or pyproject.toml that ships with the skill sets an index or registry other than the official one, so installs in that directory fetch packages from that host; check that the host is trustworthy.
+    message_zh: 技能附带的 .npmrc、.yarnrc、pip.conf、pip.ini、uv.toml 或 pyproject.toml 设置了非官方索引或仓库，在该目录中安装时会从该主机获取包；需确认该主机可信。
+    remediation: Remove the setting or point it at the official index; document a private index and pin the packages with hashes.
+    remediation_zh: 删除该设置或改为官方索引；如使用私有索引，应在文档中说明并用哈希固定包版本。
+
+  # ---- Binaries bundled with a skill or plugin ----
+  # Matched against the binary list of skill and plugin directories
+  # (packages/core/src/binaryRules.ts), not text.
+  - id: agent-bundled-binary-executable
+    title: Skill or plugin ships an executable or native library
+    title_zh: 技能或插件附带可执行文件或本地库
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    fileType: [elf, mach-o, mach-o-universal, java-class, pe, wasm]
+    group: agent-bundled-binary
+    message: A file in a skill or plugin directory is a compiled executable or library (ELF, Mach-O, PE, Java class or WebAssembly), code that cannot be reviewed and runs with the user's rights when the skill calls it.
+    message_zh: 技能或插件目录中的文件是编译后的可执行文件或库（ELF、Mach-O、PE、Java class 或 WebAssembly），无法审查，被技能调用时以用户权限运行。
+    remediation: Ship source code instead, or build the binary from reviewed source in a reproducible way and publish its checksum.
+    remediation_zh: 改为提供源代码，或以可复现的方式从已审查的源码构建并公布校验和。
+  - id: agent-bundled-binary-native-name
+    title: Skill or plugin ships a file named like a native library or executable
+    title_zh: 技能或插件附带以本地库或可执行文件命名的文件
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    pattern: '\.(?:so(?:\.\d+)*|dylib|dll|exe|node|scr|msi)$'
+    group: agent-bundled-binary
+    message: A file in a skill or plugin directory is named like a native library or executable (.so, .dylib, .dll, .exe, .node) and is not text, code that cannot be reviewed.
+    message_zh: 技能或插件目录中的文件以本地库或可执行文件命名（.so、.dylib、.dll、.exe、.node）且不是文本，无法审查。
+    remediation: Ship source code instead, or build the binary from reviewed source in a reproducible way and publish its checksum.
+    remediation_zh: 改为提供源代码，或以可复现的方式从已审查的源码构建并公布校验和。
+  - id: agent-bundled-binary-package
+    title: Skill or plugin ships an executable Java or Python package
+    title_zh: 技能或插件附带可执行的 Java 或 Python 包
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    # Also a package with a second extension (run.jar.docx is still runnable with java -jar).
+    pattern: '\.(?:jar|war|ear|whl|egg)(?:\.[A-Za-z0-9]{1,8}){0,3}$'
+    group: agent-bundled-binary
+    message: A skill or plugin ships a .jar, .war, .whl or .egg, a packaged program or library whose code is not in the reviewed source and runs when the skill calls or installs it.
+    message_zh: 技能或插件附带 .jar、.war、.whl 或 .egg，这是打包好的程序或库，其代码不在已审查的源码中，在技能调用或安装时运行。
+    remediation: Install the package from its registry with a pinned version and hash, or ship its source.
+    remediation_zh: 从包仓库以固定版本和哈希安装，或提供其源代码。
+  - id: agent-bundled-binary-pyc
+    title: Skill or plugin ships compiled Python bytecode
+    title_zh: 技能或插件附带编译后的 Python 字节码
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    pattern: '\.py[co]$|(?:^|/)__pycache__/'
+    # A __pycache__ entry next to its source is agent-bundled-binary-pyc-cache.
+    sourcePresent: false
+    group: agent-bundled-binary
+    message: A skill or plugin ships .pyc bytecode without its source, or outside __pycache__; Python runs the bytecode instead of the reviewed source when the source is missing or older, so the bytecode can hold code the source does not show.
+    message_zh: 技能或插件附带没有对应源码或位于 __pycache__ 之外的 .pyc 字节码；当源码缺失或较旧时 Python 会运行字节码而不是已审查的源码，字节码可能包含源码中看不到的代码。
+    remediation: Delete the bytecode from the package and add __pycache__/ and *.pyc to the ignore list of the repository.
+    remediation_zh: 从包中删除字节码，并把 __pycache__/ 与 *.pyc 加入仓库的忽略列表。
+  - id: agent-bundled-binary-pyc-cache
+    title: Python bytecode cache next to its source in a skill or plugin
+    title_zh: 技能或插件中与源码并存的 Python 字节码缓存
+    severity: medium
+    confidence: low
+    kind: hotspot
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    pattern: '(?:^|/)__pycache__/[^/]+\.py[co]$'
+    sourcePresent: true
+    group: agent-bundled-binary
+    message: A __pycache__ entry sits next to its .py source, usually left behind when a hook or script of the skill ran locally; check that it is not committed or shipped, since Python prefers a newer cache over the source.
+    message_zh: __pycache__ 中的缓存与其 .py 源码并存，通常是技能的 hook 或脚本在本地运行后留下的；需确认它没有被提交或分发，因为 Python 会优先使用较新的缓存而不是源码。
+    remediation: Delete __pycache__ from the package and ignore it in the repository.
+    remediation_zh: 从包中删除 __pycache__，并在仓库中忽略它。
+  - id: agent-bundled-binary-disguised
+    title: Executable or archive disguised with a text or image extension in a skill or plugin
+    title_zh: 技能或插件中以文本或图片扩展名伪装的可执行文件或压缩包
+    severity: high
+    confidence: high
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    pattern: '\.(?:md|mdx|mdc|txt|rst|json|jsonc|ya?ml|toml|ini|cfg|conf|csv|tsv|py|sh|bash|js|mjs|cjs|ts|png|jpe?g|gif|svg|webp|ico|bmp|html?|css|xml)$'
+    fileType: [elf, mach-o, mach-o-universal, java-class, pe, wasm, python-bytecode, zip, gzip, bzip2, xz, 7z, rar]
+    group: agent-bundled-binary
+    tags: [malicious-intent]
+    message: A file in a skill or plugin directory has a text or image extension but starts with an executable, bytecode or archive header, a file disguised so that reviewers and tools skip it.
+    message_zh: 技能或插件目录中的文件使用文本或图片扩展名，但以可执行文件、字节码或压缩包文件头开头，是一种让审阅者和工具跳过它的伪装。
+    remediation: Do not install the package; find out what the file contains and why it was disguised.
+    remediation_zh: 不要安装该包；查明该文件的内容以及伪装的原因。
+  - id: agent-bundled-binary-mismatched
+    title: Archive or bytecode under an unrelated name in a skill or plugin
+    title_zh: 技能或插件中名称不符的压缩包或字节码
+    severity: high
+    confidence: medium
+    cwe: CWE-506
+    owasp: A08:2021
+    languages: [binary]
+    fileType: [python-bytecode, zip, gzip, bzip2, xz, 7z, rar]
+    # The extensions under which these formats are expected (zip-based office,
+    # Java, Python, Android and model formats; compressed tarballs).
+    notPattern: '\.(?:zip|jar|war|ear|whl|egg|apk|aab|aar|ipa|docx|xlsx|pptx|odt|ods|odp|odg|epub|xpi|crx|vsix|nupkg|kmz|3mf|npz|pt|pth|ckpt|keras|mlmodel|sketch|key|pages|numbers|pbix|gz|tgz|bz2|tbz2?|xz|txz|7z|rar|pyc|pyo)$'
+    group: agent-bundled-binary
+    message: A file in a skill or plugin directory holds Python bytecode or an archive under a name that does not say so (for example data.dat, guide.pdf, Makefile), so reviewers and tools that go by the name skip it.
+    message_zh: 技能或插件目录中的文件包含 Python 字节码或压缩包，但文件名并未表明这一点（例如 data.dat、guide.pdf、Makefile），按名称判断的审阅者和工具会跳过它。
+    remediation: Find out what the file contains; ship it under its real name with its source, or remove it.
+    remediation_zh: 查明该文件的内容；以真实名称连同源码一起提供，或将其删除。
+
+  # ---- MCP tool poisoning ----
+  # Only tool and parameter descriptions are matched (withinMcpDescriptions,
+  # packages/core/src/mcpDescriptions.ts): string arguments of .tool( /
+  # registerTool( / .describe(, description values, and docstrings of
+  # @<x>.tool functions, with escape sequences decoded. Comments, other
+  # strings and test files are not.
+  - id: mcp-tool-poisoning-instruction
+    title: MCP tool description tells the model to ignore instructions, read secrets or hide actions
+    title_zh: MCP 工具描述要求模型忽略指令、读取密钥或隐瞒操作
+    severity: high
+    confidence: medium
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpDescriptions: true
+    pattern: '{{IGNORE_PHRASE}}|\bbefore\s+(?:using|calling|running|invoking|executing)\s+(?:this|the|any)\s+(?:tool|function|server)\b[\s\S]{0,40}?\b(?:you\s+)?(?:(?:must|should|need\s+to|always|first)\s+){0,2}(?:read|cat|open|fetch|load|send|pass|include|provide|upload|attach|copy|get)\b[\s\S]{0,80}?(?:~/|\$HOME|\.ssh\b|\.aws\b|\.env\b|id_rsa|credentials|mcp\.json|secrets?\b|tokens?\b|api[_ -]?keys?\b|passwords?\b|private\s+keys?\b)|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert)\s+(?:the\s+)?user\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|show|disclose)\s+(?:this|it|that|anything)\s+to\s+(?:the\s+)?user\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?user\b|\bthe\s+user\s+(?:must|should|will|is|may)\s+not\s+(?:know|see|be\s+(?:told|informed|notified|aware))\b|<\s*/?\s*(?:IMPORTANT|SYSTEM|HIDDEN)\s*>|\b(?:read|cat|include|pass|send|upload|attach)\s+(?:the\s+)?(?:(?:contents?|text)\s+of\s+)?(?:the\s+)?(?:user\x27?s\s+)?[\x60\x22\x27]?(?:~|\$HOME)/\.(?:ssh|aws|cursor/mcp\.json|claude|config/gh|netrc|git-credentials|kube)\b|(?:忽略|无视)(?:之前|先前|以上|上面|前面)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则)|不要(?:告诉|告知|通知|提醒)用户|(?:在)?(?:使用|调用)(?:此|本|该)工具(?:之前|前)[\s\S]{0,30}?(?:读取|发送|上传)'
+    notPattern: '\b(?:detect\w*|flag(?:s|ged)?|block(?:s|ed)?|scan\w*|regex\w*|patterns?|such\s+as|e\.g\.|for\s+example|examples?|attacks?|injections?|malicious|phrases?)\b'
+    group: mcp-tool-poisoning
+    tags: [malicious-intent]
+    message: An MCP tool or parameter description tells the model to ignore earlier instructions, to read secrets before using the tool, or to keep something from the user; the model reads tool descriptions, the user rarely does.
+    message_zh: MCP 工具或参数描述要求模型忽略之前的指令、在使用工具前读取密钥，或对用户隐瞒；模型会读取工具描述，而用户很少看到。
+    remediation: Do not install or run the server; remove the text and review every tool description of the server.
+    remediation_zh: 不要安装或运行该服务器；删除该文本并审查服务器的全部工具描述。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-hidden-unicode
+    title: Invisible or bidirectional control characters in an MCP tool description
+    title_zh: MCP 工具描述中含不可见或双向控制字符
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpDescriptions: true
+    flags: ''
+    # Always: zero-width space, word joiner and invisible operators, BOM,
+    # bidi embeddings, overrides and isolates, tag characters. ZWNJ, ZWJ, LRM
+    # and RLM only between ASCII characters: in Arabic, Persian, Hebrew or
+    # Indic text and in emoji sequences they are legitimate.
+    pattern: '[\u200B\u2060-\u2064\uFEFF\u202A-\u202E\u2066-\u2069]|\uDB40[\uDC00-\uDC7F]|(?<=[\x21-\x7E])[\u200C-\u200F]+(?=[\x21-\x7E])'
+    group: mcp-tool-poisoning
+    tags: [malicious-intent]
+    message: An MCP tool or parameter description holds zero-width, tag or bidirectional control characters (written as characters or as escape sequences), which editors and diffs do not show but the model reads.
+    message_zh: MCP 工具或参数描述包含零宽、标签或双向控制字符（直接写出或以转义序列写出），编辑器和 diff 不显示，但模型会读取。
+    remediation: Remove the characters and review the text around them.
+    remediation_zh: 删除这些字符并审查其周围的文本。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-homoglyph
+    title: Tool name or description mixes Latin with look-alike Cyrillic or Greek letters
+    title_zh: 工具名称或描述把拉丁字母与形似的西里尔或希腊字母混写
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpDescriptions: true
+    flags: ''
+    pattern: '[A-Za-z]{{LOOKALIKE}}|{{LOOKALIKE}}[A-Za-z]'
+    group: mcp-tool-poisoning
+    tags: [malicious-intent]
+    message: A word in an MCP tool name or description mixes Latin letters with Cyrillic or Greek letters that look the same (written as characters or escapes), which makes it read differently to the model than to a reviewer, or impersonate another tool.
+    message_zh: MCP 工具名称或描述中的单词把拉丁字母与外形相同的西里尔或希腊字母混写（直接写出或以转义写出），使其在模型与审阅者眼中含义不同，或冒充其他工具。
+    remediation: Replace the look-alike letters with the intended ones and review why they were there.
+    remediation_zh: 把形似字母替换为本应使用的字母，并查明其来源。
+    references:
+      - OWASP LLM01 Prompt Injection
+  # Every other string literal of a gated MCP file (withinMcpStrings): the
+  # same patterns at a lower weight and without the tag. Literals passed to
+  # RegExp( / re.compile( / .replace( / .sub( / .test( are not read.
+  - id: mcp-tool-poisoning-string-instruction
+    title: MCP tool description tells the model to ignore instructions, read secrets or hide actions (string outside a description)
+    title_zh: MCP 工具描述要求模型忽略指令、读取密钥或隐瞒操作（描述之外的字符串）
+    # Injection phrases also appear in benign prompts, lists and messages.
+    severity: medium
+    confidence: low
+    cwe: CWE-94
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    pattern: '{{IGNORE_PHRASE}}|\bbefore\s+(?:using|calling|running|invoking|executing)\s+(?:this|the|any)\s+(?:tool|function|server)\b[\s\S]{0,40}?\b(?:you\s+)?(?:(?:must|should|need\s+to|always|first)\s+){0,2}(?:read|cat|open|fetch|load|send|pass|include|provide|upload|attach|copy|get)\b[\s\S]{0,80}?(?:~/|\$HOME|\.ssh\b|\.aws\b|\.env\b|id_rsa|credentials|mcp\.json|secrets?\b|tokens?\b|api[_ -]?keys?\b|passwords?\b|private\s+keys?\b)|\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert)\s+(?:the\s+)?user\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|show|disclose)\s+(?:this|it|that|anything)\s+to\s+(?:the\s+)?user\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?user\b|\bthe\s+user\s+(?:must|should|will|is|may)\s+not\s+(?:know|see|be\s+(?:told|informed|notified|aware))\b|\b(?:read|cat|include|pass|send|upload|attach)\s+(?:the\s+)?(?:(?:contents?|text)\s+of\s+)?(?:the\s+)?(?:user\x27?s\s+)?[\x60\x22\x27]?(?:~|\$HOME)/\.(?:ssh|aws|cursor/mcp\.json|claude|config/gh|netrc|git-credentials|kube)\b|(?:忽略|无视)(?:之前|先前|以上|上面|前面)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则)|不要(?:告诉|告知|通知|提醒)用户|(?:在)?(?:使用|调用)(?:此|本|该)工具(?:之前|前)[\s\S]{0,30}?(?:读取|发送|上传)'
+    notPattern: '\b(?:detect\w*|flag(?:s|ged)?|block(?:s|ed)?|scan\w*|regex\w*|patterns?|such\s+as|e\.g\.|for\s+example|examples?|attacks?|injections?|malicious|phrases?)\b'
+    group: mcp-tool-poisoning
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description tells the model to ignore earlier instructions, to read secrets before using the tool, or to keep something from the user; the model reads tool descriptions, the user rarely does.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述要求模型忽略之前的指令、在使用工具前读取密钥，或对用户隐瞒；模型会读取工具描述，而用户很少看到。
+    remediation: Do not install or run the server; remove the text and review every tool description of the server.
+    remediation_zh: 不要安装或运行该服务器；删除该文本并审查服务器的全部工具描述。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-string-hidden-unicode
+    title: Invisible or bidirectional control characters in an MCP tool description (string outside a description)
+    title_zh: MCP 工具描述中含不可见或双向控制字符（描述之外的字符串）
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    flags: ''
+    # Always: zero-width space, word joiner and invisible operators, BOM,
+    # bidi embeddings, overrides and isolates, tag characters. ZWNJ, ZWJ, LRM
+    # and RLM only between ASCII characters: in Arabic, Persian, Hebrew or
+    # Indic text and in emoji sequences they are legitimate.
+    # Outside a description, only invisible characters next to other text:
+    # a literal that is just the character ("\ufeff" to strip a BOM, a list
+    # of bidi controls to remove) is code, not hidden text. No BOM.
+    pattern: '(?<=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]|[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]+(?=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])|\uDB40[\uDC00-\uDC7F]\uDB40[\uDC00-\uDC7F]|(?<=[\x21-\x7E])[\u200C-\u200F]+(?=[\x21-\x7E])'
+    # A sanitizer's character class ([\u200B-\u200F]) is not hidden text.
+    notPattern: '\[[^\]\n]{0,400}-[^\]\n]{0,400}\]'
+    group: mcp-tool-poisoning
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description holds zero-width, tag or bidirectional control characters (written as characters or as escape sequences), which editors and diffs do not show but the model reads.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述包含零宽、标签或双向控制字符（直接写出或以转义序列写出），编辑器和 diff 不显示，但模型会读取。
+    remediation: Remove the characters and review the text around them.
+    remediation_zh: 删除这些字符并审查其周围的文本。
+    references:
+      - OWASP LLM01 Prompt Injection
+  - id: mcp-tool-poisoning-string-homoglyph
+    title: Tool name or description mixes Latin with look-alike Cyrillic or Greek letters (string outside a description)
+    title_zh: 工具名称或描述把拉丁字母与形似的西里尔或希腊字母混写（描述之外的字符串）
+    severity: high
+    confidence: medium
+    cwe: CWE-1007
+    owasp: A03:2021
+    languages: [javascript, typescript, python]
+    pathExclude: '{{TEST_PATH}}'
+    withinMcpStrings: true
+    flags: ''
+    pattern: '[A-Za-z]{{LOOKALIKE}}|{{LOOKALIKE}}[A-Za-z]'
+    group: mcp-tool-poisoning
+    message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. A word in an MCP tool name or description mixes Latin letters with Cyrillic or Greek letters that look the same (written as characters or escapes), which makes it read differently to the model than to a reviewer, or impersonate another tool.
+    message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具名称或描述中的单词把拉丁字母与外形相同的西里尔或希腊字母混写（直接写出或以转义写出），使其在模型与审阅者眼中含义不同，或冒充其他工具。
+    remediation: Replace the look-alike letters with the intended ones and review why they were there.
+    remediation_zh: 把形似字母替换为本应使用的字母，并查明其来源。
+    references:
+      - OWASP LLM01 Prompt Injection

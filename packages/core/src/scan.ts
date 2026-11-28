@@ -19,6 +19,7 @@ import {
   type Finding,
   type Severity,
 } from "./finding.js";
+import { scanBinaryRules } from "./binaryRules.js";
 import { inventory, type InventoryResult } from "./inventory.js";
 import { SOURCE_LIKE_LANGUAGES, type Language } from "./language.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
@@ -388,6 +389,7 @@ function buildCoverage(
     warnings,
     suppressed,
     pathContext: { lowering: pathContextLowering, files: pathContextFiles },
+    ...(inv.binaryListIncomplete.length > 0 ? { binaryListIncomplete: inv.binaryListIncomplete } : {}),
     ...(scope
       ? {
           scope: {
@@ -681,11 +683,14 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           ...(hit.rule.owasp ? [hit.rule.owasp] : []),
         ],
         provenance: { engine: "builtin-rules", rule: hit.rule.id, version: TOOL_VERSION },
+        ...(hit.tags ?? hit.rule.tags ? { tags: hit.tags ?? hit.rule.tags } : {}),
       });
 
     const ruleFindings: Finding[] = [];
     const ruleHotspots: Finding[] = [];
-    for (const hit of ruleScan.hits) {
+    // Binary files in skill and plugin directories (see `binaryRules.ts`).
+    const binaryHits = builtinEnabled ? scanBinaryRules(inv.binaries, ruleSet) : [];
+    for (const hit of [...ruleScan.hits, ...binaryHits]) {
       const finding = findingOfHit(hit);
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);

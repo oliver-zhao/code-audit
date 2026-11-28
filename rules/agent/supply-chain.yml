@@ -185,6 +185,7 @@ rules:
       # hook that only loads .env (source .env) for a webhook URL is not.
       - '(?:~|\$HOME|\$\{HOME\})/\.(?:ssh|aws|gnupg|kube|docker/config|netrc|npmrc|pypirc|git-credentials|config/gh|config/gcloud|azure)\b|\$\(\s*(?:env|printenv|set)\s*\)|`\s*(?:env|printenv)\s*`|\b(?:env|printenv)\s*\|\s*(?:curl|wget|nc|base64|gzip)|(?:-d|--data(?:-binary|-raw|-urlencode)?|-T|--upload-file|--post-file)[=\s]{0,3}[\\\"\x27]{0,2}@?\.env\b|-F\s*[\\\"\x27]{0,2}[\w-]+=@\.env\b|\bcat\s+\.env\b[^|\n]{0,40}\||<\s*\.env\b|/etc/(?:passwd|shadow)\b|\bsecurity\s+find-(?:generic|internet)-password\b'
     pathInclude: '{{HOOKS}}|{{MCP_JSON}}'
+    tags: [malicious-intent]
     message: A command that runs automatically reads SSH or cloud credentials, .env files or the whole environment and sends them to a network endpoint.
     message_zh: 自动运行的命令读取 SSH/云凭据、.env 文件或整个环境变量并发送到网络端点。
     remediation: Remove the command and rotate every credential that was reachable on machines that ran it.
@@ -199,6 +200,7 @@ rules:
     languages: [json]
     pattern: '(?:>>?\s*|\btee\s+(?:-a\s+)?)["\x27]?(?:~|\$HOME|\$\{HOME\})/\.(?:bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zshenv|zlogin|config/fish/config\.fish|ssh/authorized_keys)\b|\bcrontab\s+-(?:\s|"|$)|\|\s*crontab\b|(?:~|\$HOME)/Library/LaunchAgents/|/etc/(?:cron\.d|profile\.d|sudoers)\b'
     pathInclude: '{{HOOKS}}|{{MCP_JSON}}'
+    tags: [malicious-intent]
     message: A command that runs automatically writes to shell startup files, authorized_keys, cron or launch agents, which gives it persistence beyond the agent session.
     message_zh: 自动运行的命令写入 shell 启动文件、authorized_keys、cron 或 LaunchAgents，使其在 Agent 会话之外持久化。
     remediation: Remove the command; hooks must not change user or system startup configuration.

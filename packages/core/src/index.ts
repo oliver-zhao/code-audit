@@ -8,6 +8,8 @@ export * from "./finding.js";
 export * from "./pathContext.js";
 export * from "./placeholder.js";
 export * from "./rules.js";
+export * from "./binaryRules.js";
+export * from "./frontmatter.js";
 export * from "./redact.js";
 export * from "./secrets.js";
 export * from "./sca.js";

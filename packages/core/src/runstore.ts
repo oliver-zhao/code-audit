@@ -1258,7 +1258,7 @@ export function loadRun(
       `ignored an invalid human decision entry${item.findingId ? ` for ${printable(item.findingId, 40)}` : ""} ` +
       `in verdicts.json (${item.reason}); a person's decision is written only by the CLI`,
   );
-  notices.push(...verdictWarnings);
+  for (const warning of verdictWarnings) notices.push(warning);
   return {
     runDir,
     runId,

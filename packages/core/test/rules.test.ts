@@ -12,6 +12,7 @@ import {
   scanRules,
   stripPythonComment,
 } from "../src/rules.js";
+import { scanBinaryRules } from "../src/binaryRules.js";
 import { scanProject } from "../src/scan.js";
 import {
   RULES_DIR,
@@ -84,8 +85,12 @@ describe("rule coverage of fixtures", () => {
   const expected = loadExpected();
   const inv = inventory(VULNERABLE);
   const result = scanRules(inv.files, ruleSet);
+  // Binary rules match the inventory's list of binaries in skill and plugin
+  // directories, not text (binaryRules.ts).
   const hits = new Set(
-    result.hits.map((hit) => `${hit.file.relPath}:${hit.line}:${hit.rule.id}`),
+    [...result.hits, ...scanBinaryRules(inv.binaries, ruleSet)].map(
+      (hit) => `${hit.file.relPath}:${hit.line}:${hit.rule.id}`,
+    ),
   );
 
   it("has a matching fixture seed for every bundled rule", () => {

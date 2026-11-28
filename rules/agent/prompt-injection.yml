@@ -56,6 +56,7 @@ rules:
     pattern: '{{SEND_VERB}}\s+(?:(?:all|every|any|the|their|your|its|these|those|of)\s+){0,3}(?:[\w.-]+\s+){0,2}?(?:secrets?|credentials?|api[ _-]?keys?|access[ _-]?tokens?|tokens|passwords?|private[ _-]?keys?|ssh[ _-]?keys?|\.env(?:\s+files?)?|env(?:ironment)?\s+(?:variables|vars)|cookies|session[ _-]?tokens?)\b[^\n]{0,120}?\b(?:to|at|into|via)\s+(?:https?://|ftp://|\S+@\S+\.\w+|(?:the|this|my|our)\s+(?:url|endpoint|server|webhook|address))'
     notPattern: '{{NEG}}\s+{{W}}{0,3}{{SEND_VERB}}|{{DISCUSS}}{{W}}{0,5}{{SEND_VERB}}'
     pathInclude: '{{INSTR}}'
+    tags: [malicious-intent]
     message: Documentation asks to send secrets or credentials out, a common prompt-injection and supply-chain pattern.
     message_zh: 文档要求外传密钥或凭据，是典型的提示注入/供应链攻击特征。
     remediation: Do not follow the instruction; remove or quarantine the document and review its origin.
@@ -77,6 +78,7 @@ rules:
       - '\b(?:curl|wget|nc|ncat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b|https?://'
     notPattern: '{{NEG}}\s+{{W}}{0,3}(?:send|upload|post|exfiltrat\w*|transmit|forward|curl)\b|{{DISCUSS}}{{W}}{0,5}(?:send|upload|post|exfiltrat\w*|transmit|forward)\b'
     pathInclude: '{{INSTR}}'
+    tags: [malicious-intent]
     message: Documentation asks to send environment variables or secrets out, a common prompt-injection and supply-chain pattern.
     message_zh: 文档要求外传环境变量或密钥，是典型的提示注入/供应链攻击特征。
     remediation: Do not follow the instruction; remove or quarantine the document and review its origin.
@@ -102,6 +104,7 @@ rules:
     # (emoji sequences) or non-joiner (Persian text) is not matched.
     pattern: '(?<!\uD83C\uDFF4(?:\uDB40[\uDC00-\uDC7F]){0,8})\uDB40[\uDC00-\uDC7F](?:\uDB40[\uDC00-\uDC7F])+|[\u202A-\u202E\u2066-\u2069]|[\u200B\u200C\u200D\u2060\u2061\u2062\u2063\u2064\uFEFF]{3,}|(?:[\uFE00-\uFE0F]|\uDB40[\uDD00-\uDDEF]){2,}'
     pathInclude: '{{INSTR}}'
+    tags: [malicious-intent]
     message: The file contains characters that editors and diffs do not show but the model reads (ASCII smuggling with tag characters, bidi overrides, zero-width encodings), a known way to hide instructions from reviewers.
     message_zh: 文件包含编辑器和 diff 不显示、但模型会读取的字符（标签字符 ASCII 走私、双向覆盖、零宽编码），这是向审阅者隐藏指令的已知手法。
     remediation: Decode the characters (for example with a Unicode inspector), remove them, and review where the file came from.
@@ -129,8 +132,9 @@ rules:
     owasp: A03:2021
     languages: [markdown]
     pattern: '\b(?:do\s+not|don\x27t|never)\s+(?:tell|inform|notify|alert|warn|show)\s+(?:the\s+)?(?:user|human|developer|operator)\s+(?:about\s+(?:this|these|the)\s+(?:step|instruction|change|command|request|action|file)s?|what\s+you(?:\x27re|\s+are|\s+have)?\s+(?:doing|done|did|run|ran)|that\s+you\s+(?:ran|run|executed|sent|uploaded|read|accessed|modified|installed|downloaded))\b|\b(?:do\s+not|don\x27t|never)\s+(?:mention|reveal|disclose|report|show)\s+(?:this|these|it|that|anything)(?:\s+(?:step|change|command|action|instruction|file|request)s?)?\s+to\s+(?:the\s+)?(?:user|human|developer|reviewer)s?\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|developer)\b|\b(?:hide|conceal)\s+(?:this|it|these\s+\w+|the\s+\w+|your\s+\w+)\s+from\s+(?:the\s+)?(?:user|human|developer|reviewer)s?\b|(?:^\s*|[.!:;,]\s+)(?:[-*>]\s+|\d+[.)]\s+)?(?:then\s+|also\s+|first\s+|now\s+|please\s+)?(?:silently|secretly|covertly|quietly)\s+(?:run|execute|send|upload|install|download|curl|post|exfiltrate|copy|read|insert|modify|delete|add)\b|\b(?:silently|secretly|covertly|quietly)\s+(?:send|upload|post|exfiltrate|curl|copy|read|collect)\s+[^\n]{0,60}?(?:secrets?|tokens?|credentials?|\.env|keys?|passwords?|ssh|cookies)\b'
-    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}\s+{{W}}{0,4}without\s+(?:telling|informing|notifying|alerting)|{{DISCUSS}}{{W}}{0,3}(?:tell|inform|hide|conceal|silently|secretly|covertly|quietly|without|do\s+not|don\x27t|never)\b'
+    notPattern: '^\s*(?:[-*>]\s*)?{{QUOTE}}|{{NEG}}\s+{{W}}{0,4}without\s+(?:telling|informing|notifying|alerting)|{{DISCUSS}}{{W}}{0,3}(?:tell|inform|hide|conceal|silently|secretly|covertly|quietly|without|do\s+not|don\x27t|never)\b|^\s*[-*]\s+(?:[A-Z][\w-]*\s+){0,3}(?:logic|code|loops?|handlers?|functions?|retries)\s+that\s+[^\n]{0,80}\bwithout\s+(?:telling|informing|notifying|alerting)\b|\bto\s+(?:the\s+)?users?\s+as\s+(?:a|an)\s+(?:probability|percentage|number|score|metric|table|list|chart)\b|\b(?:silently|quietly)\s+run\s+(?:this|a|the)\s+self-?check\b(?![^\n]{0,200}\b(?:curl|wget|https?://|upload|send)\b)'
     pathInclude: '{{INSTR}}'
+    tags: [malicious-intent]
     message: The file tells the agent to keep its actions from the user, which only serves an attacker who planted the instruction.
     message_zh: 该文件要求 Agent 对用户隐瞒其操作，这只对植入该指令的攻击者有利。
     remediation: Remove the instruction and review the file's history and every action an agent took while it was present.
@@ -160,8 +164,9 @@ rules:
     owasp: A01:2021
     languages: [markdown]
     pattern: '\b(?:send|upload|post|exfiltrate|transmit|email|attach|paste|leak|forward)\b[^\n]{0,80}?(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|/home/[\w.-]+|/Users/[\w.-]+|/root)[/\\]\.(?:ssh(?:[/\\](?!authorized_keys|known_hosts)(?:id_\w+|[\w.-]*_key\w*))?(?![\w/\\.-])|aws[/\\]credentials\b|netrc\b|git-credentials\b|config[/\\]gh[/\\]hosts\.yml|docker[/\\]config\.json|kube[/\\]config\b|gnupg\b)|\b(?:cat|base64|tar\s+-?c\w*|zip\s+-r\w*|cp|scp|read)\s+(?:-\S+\s+){0,3}(?:[\w.-]+\s+)?[\"\x27\x60]?(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|/home/[\w.-]+|/Users/[\w.-]+|/root)[/\\]\.(?:ssh(?:[/\\](?!authorized_keys|known_hosts)(?:id_\w+|[\w.-]*_key\w*))?(?![\w/\\.-])|aws[/\\]credentials\b|netrc\b|git-credentials\b|config[/\\]gh[/\\]hosts\.yml|docker[/\\]config\.json|kube[/\\]config\b|gnupg\b)[^\n]{0,100}?(?:\||\b(?:and|then)\s+(?:send|upload|post|include|paste|copy|attach|curl|email|add|put|commit|write)\b|\b(?:into|to)\s+(?:the\s+|a\s+)?(?:commit|message|pr|pull\s+request|issue|comment|response|output|url|webhook|gist)\b)|\bsecurity\s+find-(?:generic|internet)-password\b[^\n]{0,120}(?:\||\b(?:and|then)\s+(?:send|upload|post|curl)\b)'
-    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:cat|read|open|print|dump|copy|send|upload|include|access|touch|paste|attach)\b|\b(?:Read|Edit|Write|Bash)\((?:~|\$HOME|/)|\bdeny\b|{{DISCUSS}}{{W}}{0,3}(?:cat|read|send|upload|paste)\b'
+    notPattern: '{{NEG}}\s+{{W}}{0,3}(?:cat|read|open|print|dump|copy|send|upload|include|access|touch|paste|attach)\b|\b(?:Read|Edit|Write|Bash)\((?:~|\$HOME|/)|\bdeny\b|{{DISCUSS}}{{W}}{0,3}(?:cat|read|send|upload|paste)\b|^(?![^\n]*\b(?:curl|wget|nc|ncat|scp|send|upload|post|paste|email)\b)[^\n]*\bsecurity\s+find-(?:generic|internet)-password\b[^\n]*(?:\|\|\s*(?:echo|true|exit|:|\\\s*$)|\|\s*head\s+-(?:n\s*)?1\b)|^(?![^\n]*\b(?:curl|wget|nc|ncat|scp|send|upload|post|paste|email)\b)[^\n|]*\|\|\s*(?:echo|true|exit|:|\\\s*$)(?:\s|$)'
     pathInclude: '{{INSTR}}'
+    tags: [malicious-intent]
     message: The file tells the agent to read SSH keys, cloud or git credentials, or the keychain and pass them on (pipe, send, paste into a commit or message), which an agent has no reason to do for a coding task.
     message_zh: 该文件要求 Agent 读取 SSH 密钥、云或 git 凭据或钥匙串并将其传出（管道、发送、粘贴到提交或消息中），编码任务没有理由这样做。
     remediation: Remove the instruction, deny Read on credential paths in the agent settings, and review the file's origin.
@@ -177,6 +182,7 @@ rules:
     pattern: '\bbase64\s+(?:-d|--decode|-D)\b[^\n]{0,200}?\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\b(?:eval|exec)\s*(?:\(\s*)?["\x27]?\$\(\s*(?:echo|printf)\s+\S{1,4000}\s*\|\s*base64\s+(?:-d|--decode|-D)|\bexec\s*\(\s*(?:base64\.b64decode|__import__\(\s*["\x27]base64)|\bdecode\b[^.\n]{0,60}\bbase64\b[^.\n]{0,60}\b(?:and|then)\s+(?:execute|run|eval|follow|obey)\b|\bbase64\b[^.\n]{0,60}\bdecode\b[^.\n]{0,40}\b(?:and|then)\s+(?:execute|run|eval|follow|obey)\b'
     notPattern: '{{NEG}}\s+{{W}}{0,3}(?:decode|eval|exec|base64|run|execute)\b|{{DISCUSS}}{{W}}{0,3}(?:decode|eval|exec|base64|echo)\b'
     pathInclude: '{{INSTR}}|(?:^|/)(?:\.mcp\.json|mcp\.json|opencode\.jsonc?|hooks?\.json)$|(?:^|/)\.(?:claude|gemini|cursor)/settings(?:\.local)?\.json$'
+    tags: [malicious-intent]
     message: An encoded payload is decoded and executed (or the agent is told to decode and follow it), which hides what actually runs from review.
     message_zh: 编码载荷被解码并执行（或要求 Agent 解码后照做），这会向审阅者隐藏实际运行的内容。
     remediation: Remove the payload; commands and instructions must be readable in plain text.

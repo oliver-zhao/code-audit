@@ -1,0 +1,5 @@
+---
+description: Style rules: TypeScript files.
+globs: **/*.ts
+---
+Use 2 spaces.
