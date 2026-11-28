@@ -76,6 +76,10 @@ const GIT_HARDENING_ARGS = [
   // Object ids are content addresses only without replace refs and grafts.
   "-c",
   "core.useReplaceRefs=false",
+  // GIT_GRAFT_FILE (below) makes git print a deprecation hint on stderr,
+  // which tools that read git's stderr (Gitleaks) take for an error.
+  "-c",
+  "advice.graftFileDeprecated=false",
   "--no-pager",
   "--no-optional-locks",
 ] as const;

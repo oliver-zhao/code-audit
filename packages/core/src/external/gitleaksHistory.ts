@@ -249,6 +249,9 @@ const GITLEAKS_GIT_CONFIG: ReadonlyArray<readonly [string, string]> = [
   ["core.attributesFile", os.devNull],
   ["diff.external", ""],
   ["log.showSignature", "false"],
+  // The shared git environment sets GIT_GRAFT_FILE; without this git prints
+  // a deprecation hint that the error detection would read as a failure.
+  ["advice.graftFileDeprecated", "false"],
   ...NO_FETCH_CONFIG,
 ];
 
