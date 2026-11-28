@@ -61,6 +61,7 @@ Usage:
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
                         [--since <git-ref>] [--ci] [--latest-link]
                         [--allow-sensitive-root]
+                        [--history[=<ref>|<ref>..<ref>|<ref>...<ref>]]
   code-audit baseline <run-id|run-dir> [--output <file>]
   code-audit status <run-id|run-dir> [--root <dir>] [--json]
   code-audit findings <run-id|run-dir> [--kind finding|hotspot|all]
@@ -125,6 +126,13 @@ Scan options:
   --no-baseline          do not use a baseline
   --fail-on-existing     findings already in the baseline count toward the exit code
   --since <git-ref>      report only findings in files changed since the ref
+  --history[=<range>]    also scan the git history for secrets (needs gitleaks;
+                         skipped without it): every commit reachable from any
+                         ref, or the range <ref>, <ref>..<ref> or <ref>...<ref>.
+                         Runs in an isolated clone; at most 10000 commits
+                         (CODE_AUDIT_HISTORY_MAX_COMMITS) and 5 minutes. A
+                         shallow clone is scanned only partially: fetch the full
+                         history first (fetch-depth: 0 in GitHub Actions)
   --ci                   CI output: annotations (GitHub Actions) and a Markdown summary
   --latest-link          also copy the reports to <out>/latest/
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
@@ -209,6 +217,7 @@ interface ScanArgs {
   includePlaceholders: boolean;
   untrusted: boolean;
   allowSensitiveRoot: boolean;
+  history?: boolean | string;
 }
 
 function parseScanArgs(args: string[]): ScanArgs {
@@ -236,6 +245,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let includePlaceholders = false;
   let untrusted = false;
   let allowSensitive = false;
+  let history: boolean | string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -341,6 +351,13 @@ function parseScanArgs(args: string[]): ScanArgs {
       untrusted = true;
     } else if (arg === "--allow-sensitive-root") {
       allowSensitive = true;
+    } else if (arg === "--history") {
+      // Only `--history=<range>` takes a range: a bare `--history` never
+      // consumes the next argument (the target path).
+      history = true;
+    } else if (arg.startsWith("--history=")) {
+      // Validated by scanProject before anything is written (exit code 2).
+      history = arg.slice("--history=".length);
     } else if (arg.startsWith("-")) {
       throw new CliError(`unknown argument: ${arg}`);
     } else if (!root) {
@@ -376,6 +393,7 @@ function parseScanArgs(args: string[]): ScanArgs {
     includePlaceholders,
     untrusted,
     allowSensitiveRoot: allowSensitive,
+    ...(history !== undefined ? { history } : {}),
   };
 }
 
@@ -406,6 +424,7 @@ async function runScan(args: string[]): Promise<number> {
     includeDev: parsed.includeDev,
     includePlaceholders: parsed.includePlaceholders,
     untrusted: parsed.untrusted,
+    ...(parsed.history !== undefined ? { history: parsed.history } : {}),
   });
 
   const run = result.run as {
@@ -460,6 +479,16 @@ async function runScan(args: string[]): Promise<number> {
             : ""
         } / ${result.coverage.stats.skippedFiles} skipped, LOC ${result.coverage.stats.loc}`,
         `Rules: ${result.coverage.rulesCount}`,
+        ...(result.coverage.history
+          ? [
+              `Git history: ${result.coverage.history.status} (${result.coverage.history.range ?? "all refs"}): ${result.coverage.history.detail}`,
+              ...(result.coverage.history.status === "failed" || result.coverage.history.status === "partial"
+                ? [
+                    `WARNING: the git history scan is ${result.coverage.history.status} (${result.coverage.history.detail}); secrets in the history may be missing from this result`,
+                  ]
+                : []),
+            ]
+          : []),
         ...renderRunScopeText({ baseline, scope }),
         // Headline, low-confidence candidates, hotspots, suppressed (never
         // hidden) and the line that explains the exit code.

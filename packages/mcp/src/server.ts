@@ -377,6 +377,7 @@ function compactFinding(finding: {
   language?: string;
   evidence: string;
   message?: string;
+  history?: { commit: string; date: string; stillPresent: boolean; occurrences: number };
 }): Record<string, unknown> {
   return {
     id: finding.id,
@@ -394,6 +395,16 @@ function compactFinding(finding: {
     evidence: wrapContent(finding.evidence.slice(0, 240)),
     ...(finding.message
       ? { message: wrapContent(finding.message.slice(0, 300)) }
+      : {}),
+    ...(finding.history
+      ? {
+          history: {
+            commit: finding.history.commit,
+            date: finding.history.date,
+            still_present: finding.history.stillPresent,
+            occurrences: finding.history.occurrences,
+          },
+        }
       : {}),
   };
 }
@@ -414,6 +425,11 @@ async function startAudit(base: ServerBase, args: Record<string, unknown>): Prom
   if (typeof args.baseline === "string" && args.baseline.trim()) {
     baselinePath = resolveInside(validated.root, args.baseline);
   }
+  // `history`: true or a revision range, validated before the run starts
+  // (the same check as `--history=<range>`).
+  const { parseHistoryOption } = await import("@code-audit/core");
+  const historyOption = parseHistoryOption(args.history);
+  const history = historyOption ? (historyOption.range ?? true) : undefined;
   const now = new Date();
   const runId = makeRunId(now);
   // Created below the audit root one component at a time; a `.audit` that is
@@ -478,6 +494,7 @@ async function startAudit(base: ServerBase, args: Record<string, unknown>): Prom
     profile: args.profile === "quick" ? "quick" : "standard",
     since: typeof args.since === "string" && args.since.trim() ? args.since : undefined,
     latestLink: args.latestLink === true,
+    ...(history !== undefined ? { history } : {}),
   })
     .then((result) => {
       trackedRuns.set(runId, {
@@ -888,6 +905,12 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
           .boolean()
           .optional()
           .describe("Also copy the report files to <root>/.audit/latest/."),
+        history: z
+          .union([z.boolean(), z.string()])
+          .optional()
+          .describe(
+            "Also scan the git history for secrets with Gitleaks (skipped when gitleaks is not installed): true for every commit reachable from any ref, or a revision range <ref>, <ref>..<ref> or <ref>...<ref> (refs of [A-Za-z0-9._/-], not starting with '-'). Runs in an isolated clone; at most 10000 commits and 5 minutes. Findings carry history { commit, date, stillPresent, occurrences }; no author data is reported.",
+          ),
       },
     },
     safeTool((args) => startAudit(base, args)),

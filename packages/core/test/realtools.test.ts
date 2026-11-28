@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   findExecutable,
@@ -17,6 +19,17 @@ import {
   loadExpected,
   makeTempDir,
 } from "./helpers.js";
+import {
+  FAKE_KEY_1,
+  FAKE_KEY_2,
+  GIT_TEST_ENV,
+  commitAll,
+  makeExtPromisorRepository,
+  makeHostileRepository,
+  makeReplacedRepository,
+  newRepo as newHistoryRepo,
+  write,
+} from "./historyRepo.js";
 
 // These tests exercise the real scanners in .tools/bin (or on PATH). They skip
 // themselves when a tool is absent so the suite still passes on a machine
@@ -256,4 +269,149 @@ describe.skipIf(!hasAll)("real external tools", () => {
     const sum = durations.reduce((total, value) => total + value, 0);
     expect(result.durationMs).toBeLessThan(sum);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// `scan --history` with the real Gitleaks (only gitleaks is needed).
+
+describe.skipIf(!gitleaks)("real gitleaks: git history scan", () => {
+  it("reports a committed, deleted and re-committed-over secret once, stillPresent=false", async () => {
+    const repo = newHistoryRepo(temp, "history-deleted");
+    write(repo, "config.py", `x = 1\naws_key = "${FAKE_KEY_1}"\n`);
+    const added = commitAll(repo, "add a key");
+    fs.rmSync(path.join(repo, "config.py"));
+    commitAll(repo, "remove the key");
+    write(repo, "app.py", "print('again')\n");
+    commitAll(repo, "commit again");
+    const result = await scanProject({
+      root: repo,
+      out: path.join(temp, "history-deleted-out"),
+      offline: true,
+      formats: ["json", "md", "sarif"],
+      engines: ["builtin", "gitleaks"],
+      pathEnv,
+      history: true,
+    });
+    expect(result.coverage.history?.status).toBe("ok");
+    const history = result.findings.filter((finding) => finding.history);
+    expect(history).toHaveLength(1);
+    expect(history[0]?.file).toBe("config.py");
+    expect(history[0]?.ruleId).toBe("gitleaks-aws-access-token");
+    expect(history[0]?.history).toMatchObject({ commit: added, stillPresent: false, occurrences: 1 });
+    const outputs = fs
+      .readdirSync(result.runDir)
+      .map((name) => fs.readFileSync(path.join(result.runDir, name), "utf8"))
+      .join("\n");
+    expect(outputs).not.toContain(FAKE_KEY_1);
+    expect(outputs).not.toContain("Synthetic Author");
+    expect(outputs).not.toContain("synthetic-author@example.invalid");
+  }, 120_000);
+
+  it("adds the history to a secret that is still there, without a second finding", async () => {
+    const repo = newHistoryRepo(temp, "history-present");
+    write(repo, "live.py", `k = "${FAKE_KEY_2}"\n`);
+    const added = commitAll(repo, "add");
+    write(repo, "app.py", "print(1)\n");
+    commitAll(repo, "more");
+    const result = await scanProject({
+      root: repo,
+      out: path.join(temp, "history-present-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin", "gitleaks"],
+      pathEnv,
+      history: true,
+    });
+    const onLive = result.findings.filter((finding) => finding.file === "live.py");
+    expect(onLive).toHaveLength(1);
+    expect(onLive[0]?.history).toMatchObject({ commit: added, stillPresent: true });
+    expect(result.coverage.history?.annotated).toBe(1);
+  }, 120_000);
+
+  it("finds a secret whose commit a replace ref hides, and never fetches from an ext:: promisor", async () => {
+    const replaced = makeReplacedRepository(temp, "history-replaced");
+    const result = await scanProject({
+      root: replaced.repo,
+      out: path.join(temp, "history-replaced-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv,
+      history: true,
+      untrusted: true,
+    });
+    expect(result.coverage.history?.status).toBe("ok");
+    const found = result.findings.filter((finding) => finding.history?.commit === replaced.secretCommit);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.file).toBe("a.py");
+
+    const promisor = makeExtPromisorRepository(temp, "history-ext");
+    await expect(
+      scanProject({
+        root: promisor.repo,
+        out: path.join(temp, "history-ext-ref-out"),
+        offline: true,
+        formats: ["json"],
+        engines: ["builtin", "gitleaks"],
+        pathEnv,
+        history: "evil",
+      }),
+    ).rejects.toThrow(/unknown git ref/);
+    const all = await scanProject({
+      root: promisor.repo,
+      out: path.join(temp, "history-ext-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin", "gitleaks"],
+      pathEnv,
+      history: true,
+    });
+    expect(fs.existsSync(promisor.marker)).toBe(false);
+    expect(all.coverage.history?.status).not.toBe("ok");
+  }, 120_000);
+
+  it("runs no program of a hostile repository and scans refs it hides", async () => {
+    const hostile = makeHostileRepository(temp, "history-hostile");
+    const result = await scanProject({
+      root: hostile.repo,
+      out: path.join(temp, "history-hostile-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin", "gitleaks"],
+      pathEnv,
+      history: true,
+    });
+    expect(fs.existsSync(hostile.marker)).toBe(false);
+    expect(result.coverage.history?.status).toBe("ok");
+    // The secret is only in a commit of `refs/hidden/side`, which the
+    // repository's `uploadpack.hideRefs` hides from a plain clone.
+    const hidden = result.findings.filter(
+      (finding) => finding.history?.commit === hostile.hiddenCommit,
+    );
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]?.file).toBe("side.py");
+    expect(hidden[0]?.history?.stillPresent).toBe(false);
+
+    // A range limits the scan: `main` does not contain that commit.
+    const ranged = await scanProject({
+      root: hostile.repo,
+      out: path.join(temp, "history-hostile-range-out"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv,
+      history: "main",
+    });
+    expect(fs.existsSync(hostile.marker)).toBe(false);
+    expect(ranged.findings.some((finding) => finding.history)).toBe(false);
+    expect(ranged.coverage.history?.range).toBe("main");
+
+    // Control: the configuration is live - plain git does run the program.
+    spawnSync("git", ["log", "-p", "-1", "--textconv", "--", "a.py"], {
+      cwd: hostile.repo,
+      env: GIT_TEST_ENV,
+      encoding: "utf8",
+    });
+    expect(fs.existsSync(hostile.marker)).toBe(true);
+  }, 120_000);
 });

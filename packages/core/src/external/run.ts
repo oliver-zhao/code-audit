@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { killProcessTree } from "./cleanup.js";
 
 export interface RunToolOptions {
   cwd?: string;
@@ -7,7 +8,16 @@ export interface RunToolOptions {
   maxOutputBytes?: number;
   /** Extra environment variables. Only PATH/HOME/LANG/TMPDIR are forwarded by default. */
   env?: Record<string, string | undefined>;
+  /** Called with the child process right after it was started. */
+  onSpawn?: (child: ChildProcess) => void;
 }
+
+/**
+ * After a timeout, how long to wait for the child's output pipes to close
+ * before giving up on them: a grandchild that holds the pipes must not hold
+ * up the caller.
+ */
+export const KILL_GRACE_MS = 2000;
 
 export interface RunToolResult {
   exitCode: number;
@@ -75,9 +85,12 @@ export function runTool(
         cwd: options.cwd,
         shell: false,
         windowsHide: true,
-        timeout: timeoutMs,
+        // No `timeout` here: the timer below kills the tool together with
+        // everything it started (a SIGTERM to the tool alone would orphan
+        // its children first).
         env: minimalEnv(options.env),
       });
+      options.onSpawn?.(child);
     } catch (error) {
       resolve({
         exitCode: -1,
@@ -134,7 +147,16 @@ export function runTool(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      // The tool and its descendants (it stays in code-audit's process
+      // group, so a host that kills that group takes it down as well).
+      killProcessTree(child);
+      // Do not wait for ever on pipes that another process still holds.
+      const grace = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(-1);
+      }, KILL_GRACE_MS);
+      if (typeof grace.unref === "function") grace.unref();
     }, timeoutMs);
     if (typeof timer.unref === "function") timer.unref();
 

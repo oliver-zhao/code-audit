@@ -68,8 +68,12 @@ function mergePairUnadjusted(a: Finding, b: Finding): Finding {
   const primary = higherConfidence(bySeverity, bySeverity === a ? b : a);
   const engines = mergeEngines(a, b);
   const rules = [...new Set([...rulesOf(a), ...rulesOf(b)])];
+  // Git history of the secret (`scan --history`), whichever engine's
+  // result carried it.
+  const history = a.history ?? b.history;
   return {
     ...primary,
+    ...(history ? { history } : {}),
     severity: bySeverity.severity,
     confidence: higherConfidence(a, b).confidence,
     provenance: {

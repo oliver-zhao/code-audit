@@ -78,14 +78,24 @@ import {
 } from "./baseline.js";
 import { listChangedFiles } from "./git.js";
 import {
+  HISTORY_ENGINE,
+  sweepStaleTempEntries,
+  withHistoryNote,
   crossEngineDedupe,
   defaultOpengrepRulesDir,
   findTool,
+  historyMaxCommits,
   mergeScaFindings,
+  parseHistoryOption,
+  prepareHistoryTarget,
   runGitleaks,
+  runGitleaksHistory,
   runOsvScanner,
   runSemgrep,
   selectSastTool,
+  type HistoryCandidate,
+  type HistoryScanResult,
+  type HistoryTarget,
   type ToolInfo,
 } from "./external/index.js";
 
@@ -171,6 +181,14 @@ export interface ScanOptions {
    * (all but `.git`) and the tool's own adapter files.
    */
   untrusted?: boolean;
+  /**
+   * Also scan the git history for secrets with Gitleaks (`--history`): true
+   * for every commit reachable from any ref, or a revision range `<ref>`,
+   * `<ref>..<ref>` or `<ref>...<ref>`. Needs gitleaks; skipped without it.
+   */
+  history?: boolean | string;
+  /** Time limit of the history scan in milliseconds (testing). */
+  historyTimeoutMs?: number;
 }
 
 /** True when `file` is `root` or lies below it (both absolute). */
@@ -371,6 +389,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const noInlineIgnore = untrusted || options.noInlineIgnore === true;
   const builtinEnabled = selected.has("builtin");
   const pathEnv = options.pathEnv;
+  // `--history[=<range>]`, validated before anything is written.
+  const historyOption = parseHistoryOption(options.history);
 
   const runId = options.runId ?? makeRunId(started);
   // The run directory is created below the audit root (or below an `--out`
@@ -439,6 +459,19 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }
 
   async function executeScan(): Promise<ScanResult> {
+    // History scan: the repository and the refs are checked first, so that a
+    // wrong range fails before the scan does any work. Without gitleaks the
+    // history scan is skipped (recorded in coverage), not an error.
+    let historyPlan: { info: ToolInfo; target: HistoryTarget } | undefined;
+    if (historyOption) {
+      const info = await findTool("gitleaks", { pathEnv });
+      if (info) {
+        historyPlan = {
+          info,
+          target: await prepareHistoryTarget(validated.root, historyOption.range, { pathEnv }),
+        };
+      }
+    }
     const inv = inventory(validated.root, { ownRunDirs: [runDir], untrusted });
     const ruleScan = builtinEnabled
       ? scanRules(inv.files, ruleSet, { inlineIgnore: !noInlineIgnore })
@@ -530,6 +563,15 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
 
     const warnings = [...inv.warnings, ...ruleScan.warnings, ...secretScan.warnings];
     warnings.push(...outputWarnings);
+    // Temporary entries that killed Gitleaks / history runs left behind.
+    if (historyOption || selected.has("gitleaks")) {
+      const swept = sweepStaleTempEntries();
+      if (swept > 0) {
+        warnings.push(
+          `removed ${swept} stale temporary entr${swept === 1 ? "y" : "ies"} of earlier code-audit runs (code-audit-history-* / code-audit-gitleaks-*) from the system temporary directory`,
+        );
+      }
+    }
     if (ruleScan.suppressed.length > 0) {
       warnings.push(
         `${ruleScan.suppressed.length} candidate(s) suppressed by inline code-audit:ignore comments in the audited repository; they are listed under suppressed findings (use --no-inline-ignore to report them as active)`,
@@ -604,6 +646,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       warnings: string[];
       reportedFiles: string[];
       tool?: ExternalToolRecord;
+      /** Gitleaks: SHA-256 of the secret of each finding (memory only). */
+      secretHashes?: Map<Finding, string>;
     }
 
     const runSastEngine = async (): Promise<EngineOutcome> => {
@@ -730,6 +774,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         warnings: result.warnings,
         reportedFiles: [],
         tool,
+        secretHashes: result.secretHashes,
       };
     };
 
@@ -737,7 +782,29 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     if (selected.has("opengrep") || selected.has("semgrep")) externalTasks.push(runSastEngine);
     if (selected.has("osv-scanner")) externalTasks.push(runOsvEngine);
     if (selected.has("gitleaks")) externalTasks.push(runGitleaksEngine);
+    // The history scan runs alongside the other external engines.
+    const historyStarted = Date.now();
+    const historyPromise: Promise<HistoryScanResult> | undefined = historyPlan
+      ? (() => {
+          const limit = historyMaxCommits();
+          if (limit.warning) warnings.push(limit.warning);
+          return runGitleaksHistory({
+            root: validated.root,
+            target: historyPlan.target,
+            toolPath: historyPlan.info.path,
+            version: historyPlan.info.version,
+            range: historyOption?.range ?? null,
+            untrusted,
+            maxCommits: limit.value,
+            timeoutMs: options.historyTimeoutMs,
+            pathEnv,
+          });
+        })()
+      : undefined;
     const outcomes = await Promise.all(externalTasks.map((task) => task()));
+    // Current Gitleaks results by rule, file and secret (hash, in memory),
+    // so that a secret of the history that is still there is reported once.
+    const currentSecretIndex = new Map<string, number[]>();
     for (const outcome of outcomes) {
       engines.push(outcome.engine);
       for (const warning of outcome.warnings) warnings.push(warning);
@@ -748,8 +815,88 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         osvReportedFiles = outcome.reportedFiles;
       } else {
         for (const finding of outcome.findings) {
+          const hash = outcome.secretHashes?.get(finding);
+          if (hash !== undefined) {
+            const key = `${finding.ruleId}\0${finding.file}\0${hash}`;
+            const list = currentSecretIndex.get(key) ?? [];
+            list.push(externalSastSecrets.length);
+            currentSecretIndex.set(key, list);
+          }
           externalSastSecrets.push(redactExternalEvidence(finding, ruleScan));
         }
+      }
+    }
+
+    // ---- Git history (`--history`) ----
+    // A secret the current scan reported again gets the history on that
+    // finding; every other one is a finding of its own. They never take part
+    // in the cross-engine merge: a removed secret shares only a file name
+    // and a line number with whatever is on that line today. First pass: the
+    // same Gitleaks rule for the same value in the same file (by hash).
+    const unmatchedHistory: HistoryCandidate[] = [];
+    let historyCoverage: CoverageReport["history"];
+    if (historyOption && !historyPromise) {
+      historyCoverage = {
+        status: "skipped",
+        range: historyOption.range,
+        detail: "gitleaks not found on PATH",
+        commits: 0,
+        maxCommits: 0,
+        results: 0,
+        findings: 0,
+        annotated: 0,
+      };
+      engines.push({
+        name: HISTORY_ENGINE,
+        enabled: false,
+        status: "skipped",
+        detail: "gitleaks not found on PATH",
+      });
+      warnings.push("external tool not found: gitleaks (history scan skipped)");
+    } else if (historyOption && historyPromise) {
+      const history = await historyPromise;
+      const durationMs = Date.now() - historyStarted;
+      let annotated = 0;
+      for (const candidate of history.candidates) {
+        const indexes = candidate.matchKey ? currentSecretIndex.get(candidate.matchKey) : undefined;
+        if (indexes && indexes.length > 0) {
+          for (const index of indexes) {
+            const current = externalSastSecrets[index];
+            if (!current) continue;
+            externalSastSecrets[index] = withHistoryNote(current, candidate.history);
+          }
+          annotated += 1;
+          continue;
+        }
+        unmatchedHistory.push(candidate);
+      }
+      for (const warning of history.warnings) warnings.push(warning);
+      if (history.status !== "ok") {
+        warnings.push(`history scan ${history.status}: ${history.detail}`);
+      }
+      historyCoverage = {
+        status: history.status,
+        range: history.range,
+        detail: singleLineText(history.detail, 500),
+        commits: history.commits,
+        maxCommits: history.maxCommits,
+        results: history.results,
+        findings: unmatchedHistory.length,
+        annotated,
+      };
+      engines.push({
+        name: HISTORY_ENGINE,
+        enabled: true,
+        status: history.status,
+        detail: singleLineText(history.detail, 500),
+        durationMs,
+      });
+      if (historyPlan && !externalTools.some((entry) => entry.name === "gitleaks")) {
+        externalTools.push({
+          name: "gitleaks",
+          path: historyPlan.info.path,
+          ...(historyPlan.info.version ? { version: historyPlan.info.version } : {}),
+        });
       }
     }
 
@@ -842,14 +989,46 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     };
 
     const mergedSca = mergeScaFindings(scaResult.findings, externalSca).map(withDevScope);
-    const mergedSastSecrets = crossEngineDedupe([
+    let mergedSastSecrets = crossEngineDedupe([
       ...ruleFindings,
       ...secretScan.findings.map(withPlaceholderPolicy),
       ...externalSastSecrets.map(withPlaceholderPolicy),
     ]);
+    // Second pass of the history: a value that is still in the file, on a
+    // line where the current scan reports a secret (any engine, for example
+    // the built-in detectors when Gitleaks did not run on the working tree),
+    // is that finding.
+    const historyFindings: Finding[] = [];
+    let historyLineMatches = 0;
+    for (const candidate of unmatchedHistory) {
+      const lines = candidate.workingLines;
+      let matched = false;
+      if (lines.length > 0) {
+        mergedSastSecrets = mergedSastSecrets.map((finding) => {
+          if (
+            matched ||
+            finding.history ||
+            finding.category !== "secrets" ||
+            finding.file !== candidate.finding.file ||
+            !lines.some((line) => line >= finding.startLine && line <= finding.endLine)
+          ) {
+            return finding;
+          }
+          matched = true;
+          return withHistoryNote(finding, candidate.history);
+        });
+      }
+      if (matched) historyLineMatches += 1;
+      else historyFindings.push(candidate.finding);
+    }
+    if (historyCoverage) {
+      historyCoverage.findings = historyFindings.length;
+      historyCoverage.annotated += historyLineMatches;
+    }
     const merged = dedupeFindings(
       disambiguateFingerprints([
         ...mergedSastSecrets,
+        ...historyFindings.map(withPlaceholderPolicy),
         ...mergedSca,
         ...inlineSuppressedFindings,
       ]),
@@ -953,7 +1132,10 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       };
       const beforeFindings = findings.length;
       const beforeHotspots = hotspots.length;
-      findings = findings.filter((finding) => inScope(finding.file));
+      // History results have their own scope: the range of `--history`.
+      findings = findings.filter(
+        (finding) => finding.provenance.engine === HISTORY_ENGINE || inScope(finding.file),
+      );
       hotspots = hotspots.filter((hotspot) => inScope(hotspot.file));
       outOfScope =
         beforeFindings - findings.length + (beforeHotspots - hotspots.length);
@@ -1003,7 +1185,11 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       );
     }
     for (const control of EXTERNAL_CONTROL_FILES) {
-      if (!control.engines.some((engine) => selected.has(engine))) continue;
+      // The history scan reads the project's Gitleaks files too (not with
+      // --untrusted).
+      const historyReads =
+        historyPlan !== undefined && !untrusted && control.engines.includes("gitleaks");
+      if (!control.engines.some((engine) => selected.has(engine)) && !historyReads) continue;
       const present = control.files.filter((name) => fs.existsSync(path.join(validated.root, name)));
       if (present.length > 0) {
         warnings.push(
@@ -1030,6 +1216,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       { outOfScope, sinceRef, changedFileCount: changedFiles?.size ?? 0 },
       !includeTests,
     );
+    if (historyCoverage) coverage.history = historyCoverage;
 
     // The path classification comes from the audited repository. Counts go
     // into the run so every report can show how much it changed.
@@ -1082,6 +1269,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         includeDev,
         includePlaceholders,
         untrusted,
+        history: historyOption ? (historyOption.range ?? true) : false,
       },
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),

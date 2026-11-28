@@ -522,3 +522,16 @@ function canonicalDir(dir: string): string {
 export function isGitRepository(root: string): boolean {
   return fs.existsSync(path.join(root, ".git"));
 }
+/**
+ * The hardening flags every git invocation of this package starts with (see
+ * `GIT_HARDENING_ARGS`), for other modules that run git themselves (the
+ * history scan). A copy: callers cannot change the shared list.
+ */
+export function gitHardeningArgs(): string[] {
+  return [...GIT_HARDENING_ARGS];
+}
+
+/** The environment hardening of every git invocation (see `GIT_ENV`). A copy. */
+export function gitHardenedEnv(): Record<string, string> {
+  return { ...GIT_ENV };
+}

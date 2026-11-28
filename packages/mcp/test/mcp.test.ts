@@ -158,6 +158,13 @@ describe("MCP server", () => {
     expect(traversal.code).toBe("PATH_OUTSIDE_ROOT");
   });
 
+  it("rejects an audit_start history range that could inject options", async () => {
+    for (const history of ["--output=/tmp/x", "a;b", "HEAD~1", ""]) {
+      const error = await callError("audit_start", { root: project, offline: true, history });
+      expect(error.message, history).toContain("--history");
+    }
+  });
+
   it("starts a scan in the background and reports completion", async () => {
     const started = await call("audit_start", {
       root: project,

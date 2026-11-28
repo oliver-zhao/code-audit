@@ -16,6 +16,13 @@ import { localizeRule, type LoadedRule } from "./rules.js";
 import { compareVersions, normalizePackageName, versionComparator } from "./sca.js";
 import { countPathContexts } from "./pathContext.js";
 import { redactText } from "./redact.js";
+import {
+  HISTORY_ENGINE,
+  HISTORY_MESSAGE_ZH,
+  HISTORY_REMEDIATION_ZH,
+  HISTORY_ROTATE_NOTE,
+  HISTORY_ROTATE_NOTE_ZH,
+} from "./external/gitleaksHistory.js";
 
 export type ReportLang = "zh" | "en";
 
@@ -96,6 +103,16 @@ const EN = {
   yes: "yes",
   no: "no",
   scopeNote: "Scope",
+  historyScan: "Git history",
+  historyIncomplete:
+    "the git history scan is {status} ({detail}); secrets in the history may be missing from this report",
+  historyScanLine: "{status} ({range}): {detail}",
+  historyAllRefs: "all refs",
+  historyFinding:
+    "**Git history**: added in commit `{commit}`{date} · {occurrences} · still in the working tree: {present}. Rotate the credential: deleting the file or rewriting the history is not enough.",
+  historyOn: " on {date}",
+  historyOccurrencesOne: "1 result",
+  historyOccurrences: "{n} results",
   scopeChanged: "files changed since {ref} ({n} files)",
   scopeChangedOne: "files changed since {ref} (1 file)",
   baselineSummary: "Baseline",
@@ -331,6 +348,15 @@ const ZH: Labels = {
   yes: "是",
   no: "否",
   scopeNote: "范围",
+  historyScan: "Git 历史",
+  historyIncomplete: "git 历史扫描结果为 {status}（{detail}）；本报告可能遗漏历史中的密钥",
+  historyScanLine: "{status}（{range}）：{detail}",
+  historyAllRefs: "所有引用",
+  historyFinding:
+    "**Git 历史**：首次加入于提交 `{commit}`{date} · {occurrences} · 当前工作区仍存在：{present}。必须轮换该凭据：仅删除文件或改写历史并不够。",
+  historyOn: "（{date}）",
+  historyOccurrencesOne: "1 条结果",
+  historyOccurrences: "{n} 条结果",
   scopeChanged: "自 {ref} 以来变更的文件（{n} 个）",
   scopeChangedOne: "自 {ref} 以来变更的文件（1 个）",
   baselineSummary: "基线对比",
@@ -2189,8 +2215,26 @@ export function renderMarkdown(input: ReportContext): string {
   const ruleText = (
     finding: Finding,
   ): { title: string; message: string; remediation: string } => {
+    const text = baseRuleText(finding);
+    // A current finding that is also in the git history: rotate.
+    if (!finding.history || finding.provenance.engine === HISTORY_ENGINE) return text;
+    const plain = text.remediation.replace(` ${HISTORY_ROTATE_NOTE}`, "").replace(HISTORY_ROTATE_NOTE, "");
+    const note = context.lang === "zh" ? HISTORY_ROTATE_NOTE_ZH : HISTORY_ROTATE_NOTE;
+    return { ...text, remediation: `${plain}${plain ? " " : ""}${note}` };
+  };
+  const baseRuleText = (
+    finding: Finding,
+  ): { title: string; message: string; remediation: string } => {
     const rule = ruleById.get(finding.ruleId);
     if (rule) return localizeRule(rule, context.lang);
+    // A secret that only the history scan reported.
+    if (context.lang === "zh" && finding.provenance.engine === HISTORY_ENGINE) {
+      return {
+        title: "Gitleaks（git 历史）：历史提交中的凭据",
+        message: HISTORY_MESSAGE_ZH,
+        remediation: HISTORY_REMEDIATION_ZH,
+      };
+    }
     const builtin = context.lang === "zh" ? BUILTIN_FINDING_TEXT_ZH[finding.ruleId] : undefined;
     // Only the detector's own findings: an agent-added finding that reuses
     // the rule id keeps the text its author wrote.
@@ -2284,6 +2328,16 @@ export function renderMarkdown(input: ReportContext): string {
   lines.push(
     ...renderHeadlineMarkdown(summary, context.lang, { reviewed: context.agentReviewed === true }),
   );
+  const incompleteHistory = context.coverage.history;
+  if (incompleteHistory && (incompleteHistory.status === "failed" || incompleteHistory.status === "partial")) {
+    lines.push(
+      `> **${l.warningWord}:** ${fmt(l.historyIncomplete, {
+        status: escapeMarkdown(incompleteHistory.status),
+        detail: escapeMarkdown(singleLineText(incompleteHistory.detail, 300)),
+      })}`,
+      "",
+    );
+  }
 
   // Top risks: one entry per rule or per vulnerable package.
   interface RiskItem {
@@ -2416,6 +2470,18 @@ export function renderMarkdown(input: ReportContext): string {
       )}`,
     );
   }
+  const historyCoverage = context.coverage.history;
+  if (historyCoverage) {
+    lines.push(
+      `- ${l.historyScan}: ${fmt(l.historyScanLine, {
+        status: escapeMarkdown(historyCoverage.status),
+        range: historyCoverage.range
+          ? `\`${escapeMarkdown(historyCoverage.range)}\``
+          : l.historyAllRefs,
+        detail: escapeMarkdown(singleLineText(historyCoverage.detail, 300)),
+      })}`,
+    );
+  }
   if (context.baseline) {
     lines.push(
       `- ${l.baselineSummary}: ${fmt(l.baselineCounts, {
@@ -2501,6 +2567,23 @@ export function renderMarkdown(input: ReportContext): string {
       const ownMessage = hasRule ? "" : ruleText(finding).message;
       if (finding !== first && ownMessage && ownMessage !== text.message) {
         lines.push(`${l.message}: ${escapeMarkdown(oneLine(ownMessage, 500))}`, "");
+      }
+      const history = finding.history;
+      if (history) {
+        lines.push(
+          fmt(l.historyFinding, {
+            commit: escapeMarkdown(singleLineText(history.commit, 64).slice(0, 12)),
+            date: history.date
+              ? fmt(l.historyOn, { date: escapeMarkdown(singleLineText(history.date, 40).slice(0, 10)) })
+              : "",
+            occurrences:
+              history.occurrences === 1
+                ? l.historyOccurrencesOne
+                : fmt(l.historyOccurrences, { n: history.occurrences }),
+            present: history.stillPresent ? l.yes : l.no,
+          }),
+          "",
+        );
       }
       lines.push(codeBlock(truncate(finding.evidence, 800)), "");
     }
@@ -3144,6 +3227,16 @@ export function renderSarif(input: ReportContext): string {
         : {}),
       ...(confidenceOriginal ? { confidenceOriginal } : {}),
       ...(adjustments.length > 0 ? { adjustments } : {}),
+      ...(finding.history
+        ? {
+            history: {
+              commit: finding.history.commit,
+              date: finding.history.date,
+              stillPresent: finding.history.stillPresent,
+              occurrences: finding.history.occurrences,
+            },
+          }
+        : {}),
       countsTowardExitCode: countsTowardExitCode(finding, summary.thresholds),
     },
     // SARIF 3.27.23: an empty array states "not suppressed"; a suppressed
