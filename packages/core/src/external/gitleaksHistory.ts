@@ -33,6 +33,7 @@
  * scan ends, also on error, timeout, SIGINT, SIGTERM, SIGHUP and exit.
  */
 import { createHash, scrypt } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -266,9 +267,39 @@ const GITLEAKS_GIT_CONFIG: ReadonlyArray<readonly [string, string]> = [
  * entry exposes every ref again. git runs this string through `sh`; it is a
  * constant.
  */
-const UPLOAD_PACK_COMMAND = [
+/**
+ * `--no-lazy-fetch` exists since git 2.44; an older git rejects it ("unknown
+ * option") and every history command fails. There, GIT_NO_LAZY_FETCH is
+ * unknown too, and the protocol overrides (`NO_FETCH_CONFIG`) refuse every
+ * transport a lazy fetch could use.
+ */
+let lazyFetchFlagSupported: boolean | undefined;
+function noLazyFetchFlag(pathEnv?: string): string[] {
+  if (lazyFetchFlagSupported === undefined) {
+    lazyFetchFlagSupported = false;
+    try {
+      const out = execFileSync("git", ["--version"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...gitHardenedEnv(), PATH: pathEnv ?? process.env.PATH ?? "" },
+      });
+      const match = /git version (\d+)\.(\d+)/.exec(out);
+      if (match) {
+        const major = Number(match[1]);
+        const minor = Number(match[2]);
+        lazyFetchFlagSupported = major > 2 || (major === 2 && minor >= 44);
+      }
+    } catch {
+      lazyFetchFlagSupported = false;
+    }
+  }
+  return lazyFetchFlagSupported ? ["--no-lazy-fetch"] : [];
+}
+
+function uploadPackCommand(pathEnv?: string): string {
+  return [
   "git",
-  "--no-lazy-fetch",
+  ...noLazyFetchFlag(pathEnv),
   "--no-replace-objects",
   "-c core.fsmonitor=false",
   `-c core.hooksPath=${os.devNull}`,
@@ -276,7 +307,8 @@ const UPLOAD_PACK_COMMAND = [
   "-c transfer.hideRefs=!refs",
   ...NO_FETCH_CONFIG.map(([key, value]) => `-c ${key}=${value}`),
   "upload-pack",
-].join(" ");
+  ].join(" ");
+}
 
 const ALLOWED_GIT = new Set(["rev-parse", "clone", "rev-list", "cat-file", "for-each-ref", "update-ref"]);
 
@@ -304,7 +336,7 @@ function runHistoryGit(
     "git",
     [
       ...lead,
-      "--no-lazy-fetch",
+      ...noLazyFetchFlag(options.pathEnv),
       "--no-replace-objects",
       ...gitHardeningArgs(),
       ...NO_FETCH_ARGS,
@@ -904,7 +936,7 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
         "--quiet",
         "--template=",
         "--upload-pack",
-        UPLOAD_PACK_COMMAND,
+        uploadPackCommand(options.pathEnv),
         "--",
         options.target.topLevel,
         mirror,

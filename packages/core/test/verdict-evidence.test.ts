@@ -527,7 +527,7 @@ describe("verdict storage stays bounded (H2, harness t4)", () => {
     // findings.json carries a short history, not 50 full rationales.
     const findingsJson = fs.statSync(path.join(ctx.runDir, "findings.json")).size;
     expect(findingsJson).toBeLessThan(2_000_000);
-  });
+  }, 120_000); // 50 verdicts, each re-rendering a large run: slow hosts need more than the default.
 
   it("refuses a verdict that would make verdicts.json unreadable, and writes nothing", () => {
     const file = path.join(ctx.runDir, "verdicts.json");

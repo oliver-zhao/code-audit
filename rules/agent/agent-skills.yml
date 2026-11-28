@@ -696,7 +696,7 @@ rules:
     # of bidi controls to remove) is code, not hidden text. No BOM.
     pattern: '(?<=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]|[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]+(?=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])|\uDB40[\uDC00-\uDC7F]\uDB40[\uDC00-\uDC7F]|(?<=[\x21-\x7E])[\u200C-\u200F]+(?=[\x21-\x7E])'
     # A sanitizer's character class ([\u200B-\u200F]) is not hidden text.
-    notPattern: '\[[^\]\n]{0,400}-[^\]\n]{0,400}\]'
+    notPattern: '\[[^\]\n\[-]{0,400}-[^\]\n\[]{0,400}\]'
     group: mcp-tool-poisoning
     message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description holds zero-width, tag or bidirectional control characters (written as characters or as escape sequences), which editors and diffs do not show but the model reads.
     message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述包含零宽、标签或双向控制字符（直接写出或以转义序列写出），编辑器和 diff 不显示，但模型会读取。
