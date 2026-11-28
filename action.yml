@@ -1,0 +1,237 @@
+# code-audit GitHub Action (composite).
+#
+# Scans the checked-out repository with code-audit built from this Action's
+# own source ($GITHUB_ACTION_PATH; nothing is downloaded from npm), uploads
+# SARIF to code scanning, and leaves the data for pull request comments in an
+# artifact. The comments themselves are posted by a separate, privileged
+# workflow (`uses: <owner>/code-audit/comment@<sha>`, see
+# examples/workflows/code-audit-comment.yml and docs/github-action.md).
+#
+# Security notes:
+# - Every scan runs with --untrusted: nothing in the checked-out code can
+#   lower the result. The ignore file and the baseline are read from a commit
+#   the pull request cannot change (the base commit for pull_request events,
+#   the pushed commit otherwise), copied to $RUNNER_TEMP and passed with
+#   --ignore-file / --baseline, which apply under --untrusted only because
+#   they are outside the scanned directory.
+# - Inputs reach the shell only through environment variables and are
+#   validated before use.
+# - Third-party actions are pinned to full commit SHAs; the comment names the
+#   release. Update both together.
+name: code-audit
+description: Deterministic security scan (SAST rules, secrets, dependency advisories) with SARIF upload and pull request comment data.
+author: Oliver Zhao
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: "."
+  fail-on:
+    description: Lowest severity that fails the step (info, low, medium, high, critical).
+    required: false
+    default: high
+  min-confidence:
+    description: Lowest confidence that counts (low, medium, high).
+    required: false
+    default: medium
+  mode:
+    description: "diff (only findings on lines changed by the pull request) or full. Default: diff for pull_request events, full otherwise."
+    required: false
+    default: ""
+  baseline:
+    description: Path of a baseline file in the repository (for example .code-audit-baseline.json). It is read from the base commit of a pull request, never from the pull request itself.
+    required: false
+    default: ""
+  engines:
+    description: Comma-separated engines (builtin, opengrep, semgrep, osv-scanner, gitleaks). External engines must be installed on the runner.
+    required: false
+    default: builtin
+  offline:
+    description: "true: no OSV.dev queries for dependency advisories."
+    required: false
+    default: "false"
+  upload-sarif:
+    description: Upload the SARIF report to GitHub code scanning (needs security-events write; fails softly for pull requests from forks).
+    required: false
+    default: "true"
+  comment:
+    description: Upload the data for pull request comments as an artifact (pull_request events only).
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded results artifact.
+    required: false
+    default: code-audit-results
+  version:
+    description: Expected code-audit version. Empty means the version of this Action; any other value must equal it (code-audit is not published to npm yet).
+    required: false
+    default: ""
+
+outputs:
+  findings-count:
+    description: Findings at or above min-confidence (after the diff filter).
+    value: ${{ steps.result.outputs.findings-count }}
+  new-findings-count:
+    description: Findings not in the baseline (equal to findings-count without a baseline).
+    value: ${{ steps.result.outputs.new-findings-count }}
+  sarif-file:
+    description: Path of the SARIF report (paths relative to the repository root).
+    value: ${{ steps.result.outputs.sarif-file }}
+  exit-code:
+    description: Exit code of the scan (0 clean, 1 findings reached fail-on, 2 error).
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js for code-audit
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "22"
+        # Never read the scanned repository's package.json for caching.
+        package-manager-cache: false
+
+    - name: Check inputs
+      id: prep
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_MIN_CONFIDENCE: ${{ inputs.min-confidence }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_ENGINES: ${{ inputs.engines }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_VERSION: ${{ inputs.version }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/action/prepare.sh"
+
+    - name: Set up pnpm
+      uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      with:
+        # The Action's own package.json (packageManager), never the scanned
+        # repository's. Relative to the workspace, as the input requires.
+        package_json_file: ${{ steps.prep.outputs.package-json }}
+
+    - name: Build code-audit
+      shell: bash
+      env:
+        SRC: ${{ steps.prep.outputs.src }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        cd "$SRC"
+        pnpm install --frozen-lockfile
+        pnpm build
+        built="$(node packages/cli/dist/index.js --version)"
+        if [ -n "$INPUT_VERSION" ] && [ "$INPUT_VERSION" != "$built" ]; then
+          echo "::error::code-audit: input version $INPUT_VERSION was requested but this Action is code-audit $built; use the Action ref of that release"
+          exit 2
+        fi
+        echo "code-audit $built"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SRC: ${{ steps.prep.outputs.src }}
+        OUT: ${{ steps.prep.outputs.out }}
+        TARGET: ${{ steps.prep.outputs.target }}
+        MODE: ${{ steps.prep.outputs.mode }}
+        BASE_SHA: ${{ steps.prep.outputs.base-sha }}
+        IGNORE_FILE: ${{ steps.prep.outputs.ignore-file }}
+        BASELINE_FILE: ${{ steps.prep.outputs.baseline-file }}
+        FAIL_ON: ${{ steps.prep.outputs.fail-on }}
+        MIN_CONFIDENCE: ${{ steps.prep.outputs.min-confidence }}
+        ENGINES: ${{ steps.prep.outputs.engines }}
+        OFFLINE: ${{ steps.prep.outputs.offline }}
+      run: |
+        set -uo pipefail
+        args=(scan "$TARGET" --untrusted --ci --latest-link --out "$OUT"
+              --format md,json,sarif --fail-on "$FAIL_ON"
+              --min-confidence "$MIN_CONFIDENCE" --engines "$ENGINES")
+        if [ "$OFFLINE" = "true" ]; then args+=(--offline); fi
+        if [ "$MODE" = "diff" ]; then args+=(--since "$BASE_SHA" --diff-lines); fi
+        if [ -n "$IGNORE_FILE" ]; then args+=(--ignore-file "$IGNORE_FILE"); fi
+        if [ -n "$BASELINE_FILE" ]; then args+=(--baseline "$BASELINE_FILE"); fi
+        set +e
+        node "$SRC/packages/cli/dist/index.js" "${args[@]}"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ -f "$OUT/latest/results.sarif" ]; then
+          echo "sarif-file=$OUT/latest/results.sarif" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "$code" -ge 2 ]; then
+          echo "::error::code-audit could not complete the scan (exit code $code)"
+        fi
+
+    - name: Prepare results
+      id: result
+      if: always() && steps.scan.outputs.exit-code != '' && steps.scan.outputs.exit-code != '2'
+      shell: bash
+      env:
+        SRC: ${{ steps.prep.outputs.src }}
+        OUT: ${{ steps.prep.outputs.out }}
+        CODE_AUDIT_PR_NUMBER: ${{ steps.prep.outputs.pr-number }}
+        CODE_AUDIT_HEAD_SHA: ${{ steps.prep.outputs.head-sha }}
+        CODE_AUDIT_BASE_SHA: ${{ steps.prep.outputs.base-sha }}
+        CODE_AUDIT_MODE: ${{ steps.prep.outputs.mode }}
+        CODE_AUDIT_EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+        # Finding paths are relative to `path`; comments and code scanning
+        # need them relative to the repository root.
+        CODE_AUDIT_PATH_PREFIX: ${{ steps.prep.outputs.path-prefix }}
+        CODE_AUDIT_REPO_ROOT: ${{ steps.prep.outputs.repo-root }}
+        CODE_AUDIT_SARIF_IN: ${{ steps.prep.outputs.out }}/latest/results.sarif
+        CODE_AUDIT_SARIF_OUT: ${{ steps.prep.outputs.out }}/latest/results-repo.sarif
+      run: node "$SRC/scripts/action/prepare.mjs" "$OUT/latest/findings.json" "$OUT/latest/comment-data.json"
+
+    - name: Upload SARIF to code scanning
+      if: always() && steps.prep.outputs.upload-sarif == 'true' && steps.result.outputs.sarif-file != ''
+      # A pull request from a fork gets a read-only token: the upload fails
+      # there. That must not fail the job; the artifact still has the SARIF.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+      with:
+        sarif_file: ${{ steps.result.outputs.sarif-file }}
+        category: code-audit
+
+    - name: Note on the SARIF upload
+      if: always() && steps.prep.outputs.upload-sarif == 'true' && steps.prep.outputs.fork == 'true'
+      shell: bash
+      run: echo "::notice::code-audit - this pull request comes from a fork, so its token cannot upload SARIF to code scanning; the results are in the artifact and in the job summary."
+
+    - name: Upload results artifact
+      if: always() && steps.prep.outputs.comment == 'true' && steps.result.outcome == 'success'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.prep.outputs.artifact-name }}
+        path: |
+          ${{ steps.prep.outputs.out }}/latest/comment-data.json
+          ${{ steps.prep.outputs.out }}/latest/results-repo.sarif
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Result
+      if: always()
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+      run: |
+        case "$CODE" in
+          0) exit 0 ;;
+          1) echo "::error::code-audit: findings reached the fail-on threshold"; exit 1 ;;
+          *) exit 2 ;;
+        esac

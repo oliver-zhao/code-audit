@@ -571,7 +571,7 @@ guarantees are in [docs/security-model.md](docs/security-model.md).
 | `--min-confidence <c>` | `medium` | Lowest confidence (`low`, `medium`, `high`) counted in the headline and the exit code. |
 | `--lang en\|zh` | `en` | Report language. |
 | `--rules <dir>` | bundled rules | Load built-in-format rules from another directory. |
-| `--ignore-file <path>` | `<path>/.code-audit-ignore` | Ignore file to apply. |
+| `--ignore-file <path>` | `<path>/.code-audit-ignore` | Ignore file to apply; a missing file is an error. Under `--untrusted` an explicit ignore file or `--baseline` applies only when it lies outside the scanned directory and its git work tree, and the summary names it. |
 | `--no-ignore-file` | off | Apply no ignore file. |
 | `--no-inline-ignore` | off | Do not honour `code-audit:ignore` comments. |
 | `--include-tests` | off | Do not lower confidence in test, docs, example, vendored and generated paths. |
@@ -582,7 +582,8 @@ guarantees are in [docs/security-model.md](docs/security-model.md).
 | `--no-baseline` | off | Use no baseline. |
 | `--fail-on-existing` | off | Findings already in the baseline count toward the exit code. |
 | `--since <git-ref>` | off | Report only findings in files changed since the ref. |
-| `--ci` | off | CI output (annotations, Markdown summary). |
+| `--diff-lines` | off | With `--since`: report only findings on lines added or changed since the ref (dependency and secret findings are kept per file; a file with unusual line breaks counts as changed in full). |
+| `--history[=<range>]` | off | Also scan the git history for secrets with Gitleaks, in an isolated clone (all refs, or `<ref>`, `<ref>..<ref>`, `<ref>...<ref>`). A shallow clone is scanned only partially: fetch the full history first (`fetch-depth: 0` in GitHub Actions). || `--ci` | off | CI output (annotations, Markdown summary). |
 | `--latest-link` | off | Also copy the reports to `<out>/latest/`. |
 | `--allow-sensitive-root` | off | Audit a credential or configuration directory (`~/.ssh`, `~/.aws`, `~/.config`, `/etc`, ...) or one below it; refused without the flag. Not available over MCP. |
 | `--profile quick\|standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups (like `--no-external --offline`), for pre-commit hooks; an explicit `--engines` still applies. `standard`: every installed engine and OSV.dev lookups. |

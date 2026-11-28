@@ -76,7 +76,7 @@ import {
   type BaselineDocument,
   type BaselineEntry,
 } from "./baseline.js";
-import { listChangedFiles } from "./git.js";
+import { gitWorkTreeRoot, listChangedFiles, listChangedLines, type FileLineChanges } from "./git.js";
 import {
   HISTORY_ENGINE,
   sweepStaleTempEntries,
@@ -157,6 +157,12 @@ export interface ScanOptions {
   failOnExisting?: boolean;
   /** Only report findings in files changed since this git ref. */
   since?: string;
+  /**
+   * With `since`: keep only findings whose line range touches a line that is
+   * new or changed since the ref (Myers line diff). Dependency and secret
+   * findings are kept per file. Requires `since`.
+   */
+  diffLines?: boolean;
   /** Write the baseline to this path instead of the default location. */
   baselineOutput?: string;
   /** Copy the produced report files to `<out>/latest/` after a successful write. */
@@ -201,6 +207,78 @@ function isInsideRoot(root: string, file: string): boolean {
   }
   const relative = path.relative(root, real);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** Real path with the file system's own spelling (case), or the resolved path. */
+function canonicalPath(file: string): string {
+  try {
+    return fs.realpathSync.native(file);
+  } catch {
+    // A missing file: canonicalise the nearest existing parent.
+    const parent = path.dirname(path.resolve(file));
+    if (parent === path.resolve(file)) return path.resolve(file);
+    return path.join(canonicalPath(parent), path.basename(file));
+  }
+}
+
+/** True when `file` is `tree` or lies below it, compared canonically. */
+function isInsideTree(tree: string, file: string, caseInsensitive: boolean): boolean {
+  const fold = (value: string): string => {
+    const normalized = value.normalize("NFC");
+    return caseInsensitive ? normalized.toLowerCase() : normalized;
+  };
+  const relative = path.relative(fold(canonicalPath(tree)), fold(canonicalPath(file)));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Whether the file system that holds `dir` ignores letter case: the same
+ * path with its case swapped names the same file. Decided by looking, not by
+ * platform; when it cannot be decided (no letter in the path) the answer is
+ * "insensitive", which only ever refuses more operator files.
+ */
+function isCaseInsensitiveFileSystem(dir: string): boolean {
+  let real: string;
+  try {
+    real = fs.realpathSync.native(dir);
+  } catch {
+    return true;
+  }
+  const swapped = [...real]
+    .map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()))
+    .join("");
+  if (swapped === real) return true;
+  try {
+    const a = fs.statSync(real);
+    const b = fs.statSync(swapped);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The first `.git` that is a file (not a directory) in `root` or a parent of
+ * it up to `top` (inclusive); `undefined` when there is none. Without a work
+ * tree only `root` itself is checked.
+ */
+function gitFileBetween(root: string, top: string | undefined): string | undefined {
+  let dir = canonicalPath(root);
+  const stop = top === undefined ? dir : canonicalPath(top);
+  for (let depth = 0; depth < 256; depth += 1) {
+    const candidate = path.join(dir, ".git");
+    try {
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isDirectory()) return candidate;
+    } catch {
+      // no .git here
+    }
+    if (dir === stop) return undefined;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
 }
 
 /**
@@ -250,7 +328,12 @@ function buildCoverage(
   engines: CoverageEngine[],
   warnings: string[],
   suppressed: CoverageReport["suppressed"],
-  scope?: { outOfScope: number; sinceRef?: string; changedFileCount: number },
+  scope?: {
+    outOfScope: number;
+    sinceRef?: string;
+    changedFileCount: number;
+    diffLines?: { filtered: number; wholeFiles: number };
+  },
   pathContextLowering = true,
 ): CoverageReport {
   const pathContextFiles = Object.fromEntries(
@@ -299,6 +382,13 @@ function buildCoverage(
             since: scope.sinceRef ?? null,
             changedFiles: scope.changedFileCount,
             outOfScope: scope.outOfScope,
+            ...(scope.diffLines
+              ? {
+                  diffLines: true,
+                  diffLinesFiltered: scope.diffLines.filtered,
+                  diffLinesWholeFiles: scope.diffLines.wholeFiles,
+                }
+              : {}),
           },
         }
       : {}),
@@ -371,6 +461,9 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const started = (options.now ?? (() => new Date()))();
   const startedMs = Date.now();
   const validated = validateAuditRoot(options.root);
+  if (options.diffLines === true && !options.since) {
+    throw new Error("--diff-lines requires --since <git-ref>");
+  }
   const formats = options.formats ?? ALL_FORMATS;
   const profile = options.profile ?? "standard";
   const lang = options.lang ?? "en";
@@ -384,8 +477,78 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const selected = resolveEngines(options);
   // `--untrusted`: nothing the audited repository contains may lower the result.
   const untrusted = options.untrusted === true;
-  const noIgnoreFile = untrusted || options.noIgnoreFile === true;
-  const noBaseline = untrusted || options.noBaseline === true;
+  // An ignore file named explicitly (`--ignore-file`) by whoever runs the scan
+  // still applies under `--untrusted` when it lies OUTSIDE the audited
+  // repository (a CI maintainer's file, e.g. taken from the base commit of a
+  // pull request). One inside the audit root, or inside the git work tree
+  // that contains the root (a monorepo checkout scanned in a subdirectory),
+  // belongs to the repository and is not read. Symbolic links are resolved.
+  const explicitIgnoreFile =
+    options.noIgnoreFile !== true && typeof options.ignoreFile === "string" && options.ignoreFile !== ""
+      ? options.ignoreFile
+      : undefined;
+  const explicitBaseline =
+    options.noBaseline !== true && typeof options.baseline === "string" && options.baseline !== ""
+      ? options.baseline
+      : undefined;
+  const operatorFileNotes: string[] = [];
+  const workTree =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? await gitWorkTreeRoot(validated.root, { pathEnv: options.pathEnv })
+      : undefined;
+  // A `.git` FILE (a gitfile: linked worktree, submodule, or one pointing at
+  // any other repository) between the root and its work tree's top level
+  // makes the repository boundary unknowable: refuse operator files.
+  const gitFileAt =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? gitFileBetween(validated.root, workTree)
+      : undefined;
+  if (gitFileAt !== undefined) {
+    operatorFileNotes.push(
+      `--ignore-file and --baseline are not applied with --untrusted: ${gitFileAt} is a file (a gitfile), not a directory, so the boundary of the audited repository cannot be determined`,
+    );
+  }
+  // Paths are compared in canonical form (real path with the file system's
+  // spelling); on a case-insensitive file system also without case.
+  const caseInsensitive =
+    untrusted && (explicitIgnoreFile !== undefined || explicitBaseline !== undefined)
+      ? isCaseInsensitiveFileSystem(validated.root)
+      : false;
+  const outsideRepository = (file: string): boolean =>
+    gitFileAt === undefined &&
+    path.isAbsolute(file) &&
+    !isInsideTree(validated.root, file, caseInsensitive) &&
+    (workTree === undefined || !isInsideTree(workTree, file, caseInsensitive));
+  const operatorIgnoreFile =
+    untrusted && explicitIgnoreFile !== undefined && outsideRepository(explicitIgnoreFile);
+  const refusedIgnoreFile = untrusted && explicitIgnoreFile !== undefined && !operatorIgnoreFile;
+  const noIgnoreFile = options.noIgnoreFile === true || (untrusted && !operatorIgnoreFile);
+  // The same for a baseline named explicitly (`--baseline`): applied under
+  // `--untrusted` only when it is an absolute path outside the repository.
+  const operatorBaseline =
+    untrusted && explicitBaseline !== undefined && outsideRepository(explicitBaseline);
+  const refusedBaseline = untrusted && explicitBaseline !== undefined && !operatorBaseline;
+  const noBaseline = options.noBaseline === true || (untrusted && !operatorBaseline);
+  // A file named explicitly that will be used must exist and be readable: it
+  // is never reported as applied when nothing was loaded. (A baseline named
+  // without --untrusted keeps its own error from readBaseline.)
+  const assertReadable = (file: string, flag: string): void => {
+    try {
+      if (!fs.statSync(file).isFile()) throw new Error("not a file");
+      fs.accessSync(file, fs.constants.R_OK);
+    } catch {
+      throw new Error(`${flag} file not found or not readable: ${file}`);
+    }
+  };
+  if (explicitIgnoreFile !== undefined && (!untrusted || operatorIgnoreFile)) {
+    const candidate = path.isAbsolute(explicitIgnoreFile)
+      ? path.resolve(explicitIgnoreFile)
+      : path.resolve(validated.root, explicitIgnoreFile);
+    assertReadable(candidate, "--ignore-file");
+  }
+  if (operatorBaseline && explicitBaseline !== undefined) {
+    assertReadable(path.resolve(explicitBaseline), "--baseline");
+  }
   const noInlineIgnore = untrusted || options.noInlineIgnore === true;
   const builtinEnabled = selected.has("builtin");
   const pathEnv = options.pathEnv;
@@ -1055,6 +1218,30 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       noIgnoreFile,
     });
     let ignoreEntries: IgnoreEntry[] = [];
+    for (const note of operatorFileNotes) warnings.push(note);
+    if (refusedBaseline) {
+      warnings.push(
+        "--baseline is not applied with --untrusted: it is inside the audited directory or its git work tree, or not an absolute path (name a file outside the repository)",
+      );
+    }
+    if (refusedIgnoreFile) {
+      warnings.push(
+        "--ignore-file is not applied with --untrusted: it is inside the audited directory or its git work tree, or not an absolute path (name a file outside the repository)",
+      );
+    }
+    // An operator file that lowers the result under --untrusted is always
+    // named, so a reader of the run sees why findings are suppressed or
+    // counted as existing.
+    if (operatorIgnoreFile && explicitIgnoreFile) {
+      warnings.push(
+        `--untrusted: applied the ignore file given with --ignore-file: ${path.resolve(explicitIgnoreFile)}`,
+      );
+    }
+    if (operatorBaseline && explicitBaseline) {
+      warnings.push(
+        `--untrusted: applied the baseline given with --baseline: ${path.resolve(explicitBaseline)}`,
+      );
+    }
     if (ignorePath) {
       const loaded = loadIgnoreFile(ignorePath);
       ignoreEntries = loaded?.entries ?? [];
@@ -1105,6 +1292,11 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     let changedFiles: Set<string> | undefined;
     let sinceRef: string | undefined;
     let outOfScope = 0;
+    let diffLinesFiltered = 0;
+    // Findings left out only because they are on unchanged lines: they are
+    // still in the file, so a baseline entry for them is not "fixed".
+    const diffFilteredFingerprints = new Set<string>();
+    let diffLinesWholeFiles = 0;
     if (options.since) {
       const scope = await listChangedFiles(validated.root, options.since, {
         pathEnv,
@@ -1139,6 +1331,45 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       hotspots = hotspots.filter((hotspot) => inScope(hotspot.file));
       outOfScope =
         beforeFindings - findings.length + (beforeHotspots - hotspots.length);
+
+      // ---- --diff-lines: keep findings that touch a new or changed line ----
+      if (options.diffLines === true) {
+        const lineScope = await listChangedLines(validated.root, scope.ref, scope.files, {
+          pathEnv,
+        });
+        for (const warning of lineScope.warnings) warnings.push(warning);
+        const lineChanges = new Map<string, FileLineChanges>();
+        for (const [file, change] of lineScope.files) lineChanges.set(canonical(file), change);
+        const touchesChange = (finding: Finding): boolean => {
+          // Dependencies and secrets: per file (a manifest or lockfile line
+          // is rarely where the risk is introduced; a secret must never be
+          // dropped because a neighbouring line changed).
+          if (finding.category === "sca" || isCredentialFinding(finding)) return true;
+          const change = lineChanges.get(canonical(finding.file));
+          // In scope without a line diff (submodule or nested repository).
+          if (!change?.lines) return true;
+          const start = Math.max(1, finding.startLine);
+          const end = Math.max(start, finding.endLine);
+          // A file-level finding (line 0 or no range) is kept.
+          if (finding.startLine < 1) return true;
+          for (let line = start; line <= end; line += 1) {
+            if (change.lines.has(line)) return true;
+            if (line - start > 10_000) return true;
+          }
+          return false;
+        };
+        const beforeLineFindings = findings.length;
+        const beforeLineHotspots = hotspots.length;
+        findings = findings.filter((finding) => {
+          if (touchesChange(finding)) return true;
+          diffFilteredFingerprints.add(finding.fingerprint);
+          return false;
+        });
+        hotspots = hotspots.filter(touchesChange);
+        diffLinesFiltered =
+          beforeLineFindings - findings.length + (beforeLineHotspots - hotspots.length);
+        diffLinesWholeFiles = [...lineScope.files.values()].filter((change) => !change.lines).length;
+      }
     }
 
     // ---- Baseline: mark new/existing and compute fixed ----
@@ -1158,8 +1389,10 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         baselineDoc = readBaseline(resolved);
         baselinePath = resolved;
         const comparison = compareBaseline(baselineDoc, findings);
-        baselineCounts = comparison.counts;
-        baselineFixed = comparison.fixed;
+        baselineFixed = comparison.fixed.filter(
+          (entry) => !diffFilteredFingerprints.has(entry.fingerprint),
+        );
+        baselineCounts = { ...comparison.counts, fixed: baselineFixed.length };
         findings = findings.map((finding) => {
           const state = comparison.states.get(finding.fingerprint);
           return state ? { ...finding, baselineState: state } : finding;
@@ -1213,7 +1446,14 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
       engines,
       warnings,
       ruleScan.suppressed,
-      { outOfScope, sinceRef, changedFileCount: changedFiles?.size ?? 0 },
+      {
+        outOfScope,
+        sinceRef,
+        changedFileCount: changedFiles?.size ?? 0,
+        ...(options.diffLines === true && sinceRef
+          ? { diffLines: { filtered: diffLinesFiltered, wholeFiles: diffLinesWholeFiles } }
+          : {}),
+      },
       !includeTests,
     );
     if (historyCoverage) coverage.history = historyCoverage;
@@ -1270,6 +1510,14 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         includePlaceholders,
         untrusted,
         history: historyOption ? (historyOption.range ?? true) : false,
+        // `--untrusted` with an operator's ignore file outside the repository.
+        ...(operatorIgnoreFile && explicitIgnoreFile
+          ? { operatorIgnoreFile: path.resolve(explicitIgnoreFile) }
+          : {}),
+        ...(operatorBaseline && explicitBaseline
+          ? { operatorBaseline: path.resolve(explicitBaseline) }
+          : {}),
+        ...(options.diffLines === true ? { diffLines: true } : {}),
       },
       startedAt: started.toISOString(),
       finishedAt: finished.toISOString(),
@@ -1306,7 +1554,19 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
           }
         : {}),
       ...(sinceRef
-        ? { scope: { since: sinceRef, changedFiles: changedFiles?.size ?? 0 } }
+        ? {
+            scope: {
+              since: sinceRef,
+              changedFiles: changedFiles?.size ?? 0,
+              ...(options.diffLines === true
+                ? {
+                    diffLines: true,
+                    diffLinesFiltered,
+                    diffLinesWholeFiles,
+                  }
+                : {}),
+            },
+          }
         : {}),
       warnings,
     };

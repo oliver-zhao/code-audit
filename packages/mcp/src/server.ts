@@ -430,6 +430,9 @@ async function startAudit(base: ServerBase, args: Record<string, unknown>): Prom
   const { parseHistoryOption } = await import("@code-audit/core");
   const historyOption = parseHistoryOption(args.history);
   const history = historyOption ? (historyOption.range ?? true) : undefined;
+  if (args.diffLines === true && !(typeof args.since === "string" && args.since.trim())) {
+    throw new Error("INVALID_ARGUMENT: diffLines requires since (a git ref to compare with)");
+  }
   const now = new Date();
   const runId = makeRunId(now);
   // Created below the audit root one component at a time; a `.audit` that is
@@ -493,6 +496,7 @@ async function startAudit(base: ServerBase, args: Record<string, unknown>): Prom
     untrusted: args.untrusted === true,
     profile: args.profile === "quick" ? "quick" : "standard",
     since: typeof args.since === "string" && args.since.trim() ? args.since : undefined,
+    diffLines: args.diffLines === true,
     latestLink: args.latestLink === true,
     ...(history !== undefined ? { history } : {}),
   })
@@ -901,6 +905,12 @@ export function createAuditServer(options: AuditServerOptions = {}): McpServer {
           .string()
           .optional()
           .describe("Only report findings in files changed since this git ref."),
+        diffLines: z
+          .boolean()
+          .optional()
+          .describe(
+            "With since: only report findings on lines added or changed since the ref (dependency and secret findings are kept per file). Refused without since.",
+          ),
         latestLink: z
           .boolean()
           .optional()

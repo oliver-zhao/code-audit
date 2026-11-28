@@ -11,6 +11,7 @@ Current for this version of the code.
 | [rules.md](rules.md) | How built-in rules work, the rule file schema, adding a rule, the finding / hotspot policy. |
 | [mcp.md](mcp.md) | The MCP server: tools, arguments, result shapes. |
 | [security-model.md](security-model.md) | Threat model, guarantees and non-guarantees, repository-controlled mechanisms. |
+| [github-action.md](github-action.md) | The GitHub Action: inputs, outputs, diff mode, permissions, fork pull requests, comments, threat model. |
 | [../CHANGELOG.md](../CHANGELOG.md) | Changes per release. |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, tests, rule contributions. |
 | [../SECURITY.md](../SECURITY.md) | Reporting a vulnerability. |

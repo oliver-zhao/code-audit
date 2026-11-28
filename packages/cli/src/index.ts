@@ -59,7 +59,7 @@ Usage:
                         [--no-inline-ignore] [--include-tests] [--include-dev]
                         [--include-placeholders] [--untrusted]
                         [--baseline <file>] [--no-baseline] [--fail-on-existing]
-                        [--since <git-ref>] [--ci] [--latest-link]
+                        [--since <git-ref> [--diff-lines]] [--ci] [--latest-link]
                         [--allow-sensitive-root]
                         [--history[=<ref>|<ref>..<ref>|<ref>...<ref>]]
   code-audit baseline <run-id|run-dir> [--output <file>]
@@ -133,6 +133,9 @@ Scan options:
                          (CODE_AUDIT_HISTORY_MAX_COMMITS) and 5 minutes. A
                          shallow clone is scanned only partially: fetch the full
                          history first (fetch-depth: 0 in GitHub Actions)
+  --diff-lines           with --since: report only findings on lines added or
+                         changed since the ref (dependency and secret findings
+                         are kept per file)
   --ci                   CI output: annotations (GitHub Actions) and a Markdown summary
   --latest-link          also copy the reports to <out>/latest/
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
@@ -148,6 +151,9 @@ Auditing a repository you do not trust:
                --include-tests --include-dev --include-placeholders, scans
                default-excluded directories (build, dist, vendor, ...; not .git)
                and the tool's own adapter files and earlier reports.
+               An --ignore-file or --baseline given as an absolute path
+               OUTSIDE the target still applies (a file kept by the CI
+               maintainer, e.g. taken from the base commit of a PR).
 
 Exit codes:
   0  completed and no finding reached the thresholds
@@ -210,6 +216,7 @@ interface ScanArgs {
   noBaseline: boolean;
   failOnExisting: boolean;
   since?: string;
+  diffLines: boolean;
   ci: boolean;
   latestLink: boolean;
   includeTests: boolean;
@@ -238,6 +245,7 @@ function parseScanArgs(args: string[]): ScanArgs {
   let noBaseline = false;
   let failOnExisting = false;
   let since: string | undefined;
+  let diffLines = false;
   let ci = false;
   let latestLink = false;
   let includeTests = false;
@@ -337,6 +345,8 @@ function parseScanArgs(args: string[]): ScanArgs {
     } else if (arg === "--since") {
       since = takeValue(args, index + 1, arg);
       index += 1;
+    } else if (arg === "--diff-lines") {
+      diffLines = true;
     } else if (arg === "--ci") {
       ci = true;
     } else if (arg === "--latest-link") {
@@ -368,6 +378,9 @@ function parseScanArgs(args: string[]): ScanArgs {
   }
 
   if (!root) throw new CliError("scan requires a target path");
+  if (diffLines && since === undefined) {
+    throw new CliError("--diff-lines requires --since <git-ref>");
+  }
   return {
     root,
     profile,
@@ -386,6 +399,7 @@ function parseScanArgs(args: string[]): ScanArgs {
     noBaseline,
     failOnExisting,
     since,
+    diffLines,
     ci,
     latestLink,
     includeTests,
@@ -395,6 +409,19 @@ function parseScanArgs(args: string[]): ScanArgs {
     allowSensitiveRoot: allowSensitive,
     ...(history !== undefined ? { history } : {}),
   };
+}
+
+/** `WARNING:` lines for operator files applied under --untrusted. */
+function operatorFileLines(run: Record<string, unknown>): string[] {
+  const args = (run.args ?? {}) as { operatorIgnoreFile?: unknown; operatorBaseline?: unknown };
+  const lines: string[] = [];
+  if (typeof args.operatorIgnoreFile === "string") {
+    lines.push(`WARNING: --untrusted, but the ignore file given with --ignore-file was applied: ${args.operatorIgnoreFile}`);
+  }
+  if (typeof args.operatorBaseline === "string") {
+    lines.push(`WARNING: --untrusted, but the baseline given with --baseline was applied: ${args.operatorBaseline}`);
+  }
+  return lines;
 }
 
 async function runScan(args: string[]): Promise<number> {
@@ -419,6 +446,7 @@ async function runScan(args: string[]): Promise<number> {
     noBaseline: parsed.noBaseline,
     failOnExisting: parsed.failOnExisting,
     since: parsed.since,
+    diffLines: parsed.diffLines,
     latestLink: parsed.latestLink,
     includeTests: parsed.includeTests,
     includeDev: parsed.includeDev,
@@ -429,7 +457,7 @@ async function runScan(args: string[]): Promise<number> {
 
   const run = result.run as {
     baseline?: { path: string; entries: number; new: number; existing: number; fixed: number };
-    scope?: { since: string; changedFiles: number };
+    scope?: { since: string; changedFiles: number; diffLines?: boolean; diffLinesFiltered?: number };
   };
   const baseline = run.baseline;
   const scope = run.scope;
@@ -490,6 +518,8 @@ async function runScan(args: string[]): Promise<number> {
             ]
           : []),
         ...renderRunScopeText({ baseline, scope }),
+        // --untrusted with an operator's ignore file or baseline: always named.
+        ...operatorFileLines(result.run),
         // Headline, low-confidence candidates, hotspots, suppressed (never
         // hidden) and the line that explains the exit code.
         ...renderSummaryText(summary),

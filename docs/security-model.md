@@ -72,10 +72,17 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   blob id of every working file is computed by code-audit itself
   (`sha1`/`sha256` of `"blob <size>\0"` + bytes) and compared with the tree.
   Every invocation also overrides `core.fsmonitor`, `core.hooksPath`,
-  `core.pager`, `diff.external`, `core.attributesFile` and
-  `protocol.allow`, and runs with `GIT_CONFIG_NOSYSTEM=1`,
-  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and a minimal
-  environment. Tests plant a marker program in each of `filter.*.clean`,
+  `core.pager`, `diff.external`, `core.attributesFile`, `protocol.allow`
+  and - because `protocol.<name>.allow` takes precedence over
+  `protocol.allow` and the repository can set it - `protocol.<name>.allow`
+  for `ext`, `file`, `fd`, `ssh`, `git`, `http` and `https`, plus
+  `core.useReplaceRefs=false`; and runs with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`,
+  `GIT_NO_LAZY_FETCH=1` (a partial clone never fetches a missing tree or
+  blob from its promisor remote; git 2.44 and later, older git is held by
+  the protocol overrides), `GIT_NO_REPLACE_OBJECTS=1` and
+  `GIT_GRAFT_FILE=/dev/null` (`refs/replace/` and `info/grafts` cannot swap
+  the object behind an id), and a minimal environment. Tests plant a marker program in each of `filter.*.clean`,
   `process`, `smudge`, `textconv`, `diff.external`, `core.fsmonitor`,
   `core.sshCommand`, an alias, `core.hooksPath`, `uploadpack`, pager, editor
   and credential-helper settings, and `include` / `includeIf` files; none is
@@ -86,6 +93,29 @@ without `--untrusted`. Each is covered by tests in `packages/core/test`
   configuration is not read, a `safe.directory` entry there does not apply
   - in a repository owned by another user, `--since` fails with git's
   ownership message instead of scanning.
+  `--diff-lines` (with `--since`) adds one more command, allowed in exactly
+  one form: `git cat-file blob <oid>`, with the full object id that
+  `ls-tree` listed for a file of the ref. It prints the object as stored -
+  without `--textconv` or `--filters` git runs no textconv, filter or EOL
+  conversion - under the same hardening as every other call (no lazy
+  fetch, every transport refused, no replace refs or grafts). The working
+  file is read by code-audit, and the line diff (Myers, `lineDiff.ts`) is
+  computed in-process on lines split at `\n` (`\r\n` is the same as `\n`).
+  The engines do not number lines the same way when other line breaks are
+  present: the regex engine also ends a line at a lone `\r`, the YAML engine
+  counts `\n` only, and external engines such as Opengrep or Semgrep number
+  lines themselves. So a file whose old or new text contains a lone `\r`,
+  U+2028, U+2029, U+0085, `\v` or `\f` counts as changed in full
+  (`ambiguous-line-breaks` in the warning) instead of risking a finding on
+  a line the diff thinks is unchanged. A file over 20,000 lines, over 16 MiB, with more than
+  5,000 changed lines, or that cannot be read counts as changed in full; the
+  new lines next to a pure deletion count as changed. The marker tests
+  above are repeated for `--diff-lines` (filters, textconv, fsmonitor,
+  external diff, an alias for `cat-file`, a blob:none partial clone whose
+  promisor remote is an `ext::` program with the blob deleted, and a
+  tree:0 partial clone with `protocol.ext.allow=always` in `.git/config`
+  for both `--since` and `--diff-lines`), plus a `git replace` of the old
+  blob.
 - **No LLM.** No model is called by the scan, the CLI or the MCP server.
 - **Network.** The only network use is the dependency lookup at OSV.dev
   (package ecosystem, name and version; and advisory ids), skipped with
@@ -279,6 +309,51 @@ vetting, or a pull request from outside the project. Expect more findings:
 vendored and build directories are read in full. The external engines'
 own configuration files are still honoured by those engines; the scan warns
 when one is present.
+
+An `--ignore-file` or `--baseline` named on the command line still applies
+under `--untrusted` when it is an **absolute path outside the audit root and
+outside the git work tree that contains the root**: that file comes from
+whoever runs the scan (the GitHub Action copies them from the base commit
+of a pull request to `$RUNNER_TEMP`), not from the repository. A path inside
+the root or inside its work tree (found with the same hardened `git
+rev-parse --show-toplevel`; a monorepo checkout scanned in a subdirectory
+is one work tree) - relative, absolute, or through a symbolic link that
+resolves there - is not applied, and the scan warns. An applied file is
+always named: a `WARNING:` line in the terminal summary, a warning in
+`run.json` (and in the CI annotations and step summary), and
+`args.operatorIgnoreFile` / `args.operatorBaseline` in `run.json`.
+
+Paths are compared in canonical form (the real path with the file system's
+own spelling, Unicode NFC). Whether the file system ignores letter case is
+detected by looking (the same path with its case swapped names the same
+file), not assumed from the platform; on such a file system the comparison
+ignores case. When the root, or a directory between it and the work tree's
+top level, has a `.git` **file** (a gitfile: a linked worktree, a
+submodule, or a pointer to any other repository), the repository boundary
+cannot be known and operator files are refused with a warning that names
+that file. When the root is not inside a git work tree at all (an extracted
+archive, a plain directory), only the root itself is the boundary: an
+operator file in a parent directory is applied. Keep operator files outside
+any copy of the code you scan (the Action uses `$RUNNER_TEMP`).
+
+An `--ignore-file` that does not exist or cannot be read is an error (exit
+code 2), with or without `--untrusted`; so is an operator `--baseline` under
+`--untrusted`. A file is never reported as applied when nothing was loaded.
+
+Known limits:
+
+- Linked worktrees and submodules (`.git` is a file): under `--untrusted`
+  every operator ignore file and baseline is refused (fail closed), so a
+  scan of a `git worktree add` checkout, or of a submodule directory, runs
+  without them and findings they would suppress come back.
+- Third-party git remote helpers (git older than 2.44 only): the protocol
+  overrides list the transports git ships (`ext`, `file`, `fd`, `ssh`, `git`,
+  `http`, `https`, `ftp`, `ftps`). A remote helper installed on `PATH` (for
+  example `git-remote-gcrypt`) that the repository enables with
+  `protocol.<name>.allow=always` is not in the list; on git 2.44 and later
+  `GIT_NO_LAZY_FETCH=1` keeps any promisor fetch from starting it. MCP `audit_start` has no ignore-file argument and
+accepts a baseline only inside the root, so neither applies there under
+`untrusted`.
 
 Text from the repository cannot shape the report either: every file name,
 ignore reason, package name, advisory title and warning is rendered as a
