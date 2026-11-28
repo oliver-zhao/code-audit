@@ -455,9 +455,30 @@ export function mcpDescriptionValues(content: string, language: string): McpDesc
     if (previous?.kind === "id" && (previous.text === "from" || previous.text === "import")) return true;
     return isPunct(previous, "(") && (isId(tokens[index - 2], "require") || isId(tokens[index - 2], "import"));
   };
+  // Arguments of regular-expression and replace calls are patterns, not text
+  // a model reads: RegExp(, re.compile(, re.sub(, .replace(, .test(, ...
+  const REGEX_CALLS = new Set([
+    "RegExp", "compile", "sub", "subn", "replace", "replaceAll", "test", "match", "matchAll",
+    "search", "split", "fullmatch", "findall", "finditer", "translate", "strip", "lstrip", "rstrip",
+  ]);
+  const patternArgument = new Set<number>();
+  {
+    const stack: boolean[] = [];
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index] as Token;
+      if (token.kind === "punct" && "([{".includes(token.text)) {
+        const callee = tokens[index - 1];
+        stack.push(token.text === "(" && callee?.kind === "id" && REGEX_CALLS.has(callee.text));
+      } else if (token.kind === "punct" && ")]}".includes(token.text)) {
+        stack.pop();
+      } else if (token.kind === "string" && stack[stack.length - 1]) {
+        patternArgument.add(index);
+      }
+    }
+  }
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index] as Token;
-    if (token.kind !== "string") continue;
+    if (token.kind !== "string" || patternArgument.has(index)) continue;
     if (!seen.has(token.start) && !isImportSpecifier(index)) {
       const expression = stringExpression(tokens, index, python);
       emit(expression.parts, "string");

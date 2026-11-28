@@ -149,8 +149,12 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    `from mcp...`, `FastMCP`) or uses one of the registration forms
    (case-sensitive), so a tool module without the import is covered. Rules
    with `withinMcpStrings` see every other string literal of such a file
-   (the agent rules report those at confidence medium, and only the
-   invisible-character variant keeps `malicious-intent`). A description is
+   (the agent rules report those without `malicious-intent`: the instruction
+   variant at medium severity and low confidence, the invisible-character
+   variant only when the character sits next to other text and not inside a
+   `[...]` character class with a range). Arguments of `RegExp(`,
+   `re.compile(`, `re.sub(`, `.replace(`, `.test(` and similar calls are
+   patterns, not text, and are not read as strings. A description is
    examined up to 1 MiB. A constant imported from a module that is itself
    not an MCP file is not followed.
 8. Hits of rules that share a `group` and overlap in one expression collapse
@@ -215,9 +219,12 @@ file one by one, the rest counted in one warning; a rule scan lists at most
 A directory that holds `SKILL.md` (in any case, also as a symbolic link),
 `plugin.json` or `.claude-plugin/plugin.json` is the root of a skill or
 plugin tree, and so is the audit root when it holds one. A `SKILL.md` that
-is a symbolic link to a text file inside the audit root is read through the
-link as the skill's instruction file (with a warning); one that points
-outside the root is not read, and the run gets a warning. The inventory records for every file inside a tree the nearest tree root
+is a symbolic link starts a tree too. Any instruction file (`SKILL.md`,
+`CLAUDE.md`, `AGENTS.md`, subagents, commands, `.cursorrules` and the other
+instruction paths, also those of a tree) that is a symbolic link to a text
+file inside the audit root is read through the link, under the link's path
+(with a warning); one that points outside the root is not read, and the run
+gets a warning. The inventory records for every file inside a tree the nearest tree root
 (`skillTreeRoot`). Inside a tree:
 
 - a rule with `inSkillTree` also applies to a file whose path relative to the

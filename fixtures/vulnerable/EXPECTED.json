@@ -9697,6 +9697,132 @@
       "kind": "finding"
     },
     {
+      "file": "agents/review/rv12/scripts/i.js",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.js",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.js",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.py",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.py",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.py",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.sh",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv12/scripts/i.sh",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/py/guard.py",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/py/guard.py",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/py/guard.py",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/src/guard.ts",
+      "line": 3,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/src/guard.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/src/guard.ts",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-string-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv13/src/guard.ts",
+      "line": 12,
+      "ruleId": "mcp-tool-poisoning-string-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv15/agentsdir/.claude/agents/a.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/review/rv15/claude/CLAUDE.md",
+      "line": 1,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
       "file": "agents/review/rv4/claudeplugin/scripts/setup.sh",
       "line": 2,
       "ruleId": "agent-memory-tamper-script",

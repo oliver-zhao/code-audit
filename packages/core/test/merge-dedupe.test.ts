@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { createFinding, type Finding } from "../src/finding.js";
 import { crossEngineDedupe, crossEngineDedupeReference } from "../src/external/merge.js";
+import { safeLine, safeLineRange } from "../src/external/lines.js";
 
 /** Small deterministic generator (mulberry32). */
 function random(seed: number): () => number {
@@ -117,5 +118,56 @@ describe("crossEngineDedupe (indexed)", () => {
     const elapsed = performance.now() - started;
     expect(result.length).toBeGreaterThan(0);
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describe("crossEngineDedupe with non-finite or unsafe line numbers", () => {
+  it("returns, and matches the definition, for Infinity, NaN, 2^53 and 2^60", () => {
+    const base = {
+      ruleId: "r",
+      title: "t",
+      category: "sast",
+      severity: "high",
+      confidence: "medium",
+      cwe: "CWE-95",
+      file: "a.py",
+      evidence: "e",
+      message: "m",
+      remediation: "r",
+    } as const;
+    const make = (engine: string, startLine: number, endLine: number): Finding => ({
+      ...createFinding({ ...base, startLine: 1, endLine: 1, provenance: { engine, rule: "r" } } as Parameters<typeof createFinding>[0]),
+      startLine,
+      endLine,
+    });
+    const input = [
+      make("opengrep", Infinity, Infinity),
+      make("semgrep", Infinity, Infinity),
+      make("opengrep", Number.NaN, Number.NaN),
+      make("builtin-rules", 2 ** 60, 2 ** 60),
+      make("semgrep", 2 ** 60, 2 ** 60 + 5),
+      make("opengrep", 2 ** 53, 2 ** 53),
+      make("builtin-rules", 1, Infinity),
+      make("semgrep", 5, 5),
+      make("opengrep", -Infinity, 3),
+    ];
+    const started = performance.now();
+    const result = crossEngineDedupe(input);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(result).toEqual(crossEngineDedupeReference(input));
+  });
+
+  it("parses only positive safe integers as external line numbers", () => {
+    expect([1, 7.9, 0, -3, Infinity, Number.NaN, 2 ** 60, "5", undefined].map(safeLine)).toEqual([
+      1, 7, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    ]);
+    const warnings: string[] = [];
+    const note = (field: string): void => {
+      warnings.push(field);
+    };
+    expect(safeLineRange(JSON.parse("1e309"), 4, note)).toEqual({ startLine: 1, endLine: 4 });
+    expect(safeLineRange(10, 2 ** 60, note)).toEqual({ startLine: 10, endLine: 10 });
+    expect(safeLineRange(10, 3, note)).toEqual({ startLine: 10, endLine: 10 });
+    expect(warnings).toEqual(["start line", "end line"]);
   });
 });

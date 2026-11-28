@@ -98,6 +98,22 @@ export const BINARY_LIST_MAX_ENTRIES = 20_000;
  */
 const BINARY_LIST_ROOT_SKIPPED_DIRS = new Set([".git", "node_modules", ".venv", "venv", ".audit", ".code-audit"]);
 
+/**
+ * Instruction files that agent hosts load (the `{{INSTR}}` paths of
+ * rules/agent plus `commands/*.md`), matched case-insensitively. A symbolic
+ * link at such a path is read through the link (see `inventory`).
+ */
+const INSTRUCTION_PATH =
+  /(?:^|\/)(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|AGENT|GEMINI|SKILL|QWEN|CRUSH|WARP)\.md$|(?:^|\/)(?:\.cursorrules|\.windsurfrules|\.clinerules|\.rules)$|(?:^|\/)\.github\/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)\/.+\.md)$|(?:^|\/)\.(?:claude|opencode|codex|agents|cursor|windsurf|clinerules|roo|kilocode|continue|kiro|junie|gemini|qwen|dsh|amazonq|augment|trae)\/.+\.mdc?$|(?:^|\/)plugins\/[^/]+\/(?:agents|commands|skills)\/.+\.md$|(?:^|\/)commands\/[^/]+\.md$/i;
+/** Instruction files of a skill or plugin tree, relative to the tree root. */
+const TREE_INSTRUCTION_PATH = /(?:^|\/)SKILL\.md$|(?:^|\/)(?:agents|commands)\/[^/]+\.md$|(?:^|\/)skills\/.+\.md$/i;
+
+function isInstructionPath(rel: string, treeRoot: string | undefined): boolean {
+  if (INSTRUCTION_PATH.test(rel)) return true;
+  if (treeRoot === undefined) return false;
+  return TREE_INSTRUCTION_PATH.test(treeRoot === "" ? rel : rel.slice(treeRoot.length + 1));
+}
+
 /** Interpreter named on a `#!` line, for extensionless scripts in skill trees. */
 const SHEBANG = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?)?(?:\S*\/)?(bash|sh|zsh|ksh|dash|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|tsx|ts-node)\b/;
 
@@ -797,10 +813,12 @@ export function inventory(
       const rel = toPosixRelative(root, abs);
 
       if (entry.isSymbolicLink()) {
-        // A SKILL.md that is a link is read through the link when its target
-        // is a file inside the audit root (it is the skill's instruction
-        // file); a link that leaves the root is not read and is reported.
-        if (entry.name.toLowerCase() === "skill.md") {
+        // An instruction file (SKILL.md, CLAUDE.md, AGENTS.md, a subagent, a
+        // command, .cursorrules, ...) that is a link is read through the link
+        // when its target is a text file inside the audit root: hosts open it
+        // with a plain read. A link that leaves the root is not read and is
+        // reported.
+        if (isInstructionPath(rel, treeRoot)) {
           const linked = readLinkedInstructionFile(abs);
           if (linked) {
             files.push({
@@ -816,12 +834,12 @@ export function inventory(
             });
             totalLoc += linked.loc;
             warnings.push(
-              `${rel} is a symbolic link to ${toPosixRelative(root, linked.target)}; it was read through the link as the skill's instruction file`,
+              `${rel} is a symbolic link to ${toPosixRelative(root, linked.target)}; it was read through the link as an instruction file`,
             );
             continue;
           }
           warnings.push(
-            `${rel} is a symbolic link to a file outside the audit root or to something that is not a text file; it was not read, but its directory is treated as a skill tree`,
+            `${rel} is a symbolic link to a file outside the audit root or to something that is not a text file; it was not read${entry.name.toLowerCase() === "skill.md" ? ", but its directory is treated as a skill tree" : ""}`,
           );
         }
         skipped.push({

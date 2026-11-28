@@ -1,3 +1,4 @@
+import { safeLineRange } from "./lines.js";
 import { splitLines } from "../redact.js";
 import { createFinding, type Confidence, type Finding, type Severity } from "../finding.js";
 import { PathJailError, resolveInside, toPosixRelative } from "../pathJail.js";
@@ -191,14 +192,11 @@ export async function runSemgrep(options: {
       throw error;
     }
     const relative = toPosixRelative(options.root, resolved);
-    const startLine =
-      typeof raw.start?.line === "number" && raw.start.line > 0
-        ? Math.trunc(raw.start.line)
-        : 1;
-    const endLine =
-      typeof raw.end?.line === "number" && raw.end.line >= startLine
-        ? Math.trunc(raw.end.line)
-        : startLine;
+    const { startLine, endLine } = safeLineRange(raw.start?.line, raw.end?.line, (field, value) =>
+      warnings.push(
+        `${options.engine} result ${checkId} in ${relative} has an invalid ${field} (${String(value).slice(0, 40)}); line 1 or the start line was used`,
+      ),
+    );
     const metadata = raw.extra?.metadata ?? {};
     const cwe = firstCwe(metadata.cwe);
     findings.push(

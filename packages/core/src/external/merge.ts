@@ -147,10 +147,18 @@ interface DedupeGroup {
   wide: number[];
 }
 
-function bucketsOf(finding: Finding): { first: number; last: number } {
+/**
+ * The line buckets of a finding's range. A range whose ends are not safe
+ * integers (Infinity, NaN, 2^60) is wide: the bucket loop must never run on
+ * numbers where `+ 1` changes nothing.
+ */
+function bucketsOf(finding: Finding): { first: number; last: number; wide: boolean } {
   const start = Math.max(0, Math.floor(finding.startLine));
   const end = Math.max(start, Math.floor(finding.endLine));
-  return { first: Math.floor(start / LINE_BUCKET), last: Math.floor(end / LINE_BUCKET) };
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return { first: 0, last: 0, wide: true };
+  const first = Math.floor(start / LINE_BUCKET);
+  const last = Math.floor(end / LINE_BUCKET);
+  return { first, last, wide: last - first + 1 > MAX_BUCKETS_PER_RANGE };
 }
 
 /**
@@ -178,8 +186,8 @@ export function crossEngineDedupe(findings: Finding[]): Finding[] {
   const kept: Finding[] = [];
   const groups = new Map<string, DedupeGroup>();
   const register = (group: DedupeGroup, index: number): void => {
-    const { first, last } = bucketsOf(kept[index] as Finding);
-    if (last - first + 1 > MAX_BUCKETS_PER_RANGE) {
+    const { first, last, wide } = bucketsOf(kept[index] as Finding);
+    if (wide) {
       group.wide.push(index);
       return;
     }
@@ -203,8 +211,8 @@ export function crossEngineDedupe(findings: Finding[]): Finding[] {
       groups.set(key, group);
     }
     const candidates = new Set<number>(group.wide);
-    const { first, last } = bucketsOf(finding);
-    if (last - first + 1 > MAX_BUCKETS_PER_RANGE) {
+    const { first, last, wide } = bucketsOf(finding);
+    if (wide) {
       for (const list of group.buckets.values()) for (const index of list) candidates.add(index);
     } else {
       for (let bucket = first; bucket <= last; bucket += 1) {

@@ -65,7 +65,11 @@ definitions:
   # Blanks that render as nothing (padding rules).
   BLANK: '[ \t\u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u2800\u3000\u3164\uFEFF\uFFA0]'
   # The home directory in shell, Python and JavaScript code.
-  HOME_CODE: '~|\$HOME\b|\$\{HOME\}|homedir\(\)|home\(\)|process\.env\.HOME\b|process\.env\[[\x22\x27]HOME[\x22\x27]\]|environ(?:\.get\(|\[)\s*[\x22\x27]HOME[\x22\x27]|getenv\(\s*[\x22\x27]HOME[\x22\x27]|expanduser\(\s*[rbuf]?[\x22\x27]~'
+  HOME_CODE: '~|\$HOME\b|\$\{HOME\}|\$\{?ZDOTDIR\b|\bUSERPROFILE\b|homedir(?:\(\))?|home\(\)|expanduser\(|process\.env\.HOME\b|process\.env\[[\x22\x27]HOME[\x22\x27]\]|environ(?:\.get\(|\[)\s*[\x22\x27]HOME[\x22\x27]|getenv\(\s*[\x22\x27]HOME[\x22\x27]|expanduser\(\s*[rbuf]?[\x22\x27]~'
+  # A file that refers to the home directory anywhere (agent-memory-tamper-script
+  # also accepts a quoted rc file name in such a file: the home directory is
+  # usually put in a variable first). A bare `cd` goes home too.
+  HOME_FILE: 'homedir|\bUSERPROFILE\b|\$\{?ZDOTDIR\b|Path\.home|\.home\(\)|expanduser|\$HOME\b|\$\{HOME\}|(?:^|[\s\x22\x27=(:\x60])~(?:/|[\s;\x22\x27)\x60]|$)|environ\S{0,12}HOME\b|getenv\(\s*[\x22\x27]HOME|process\.env\.HOME|(?:^|[;&|]\s*)cd(?:\s+(?:~|\$HOME|\$\{HOME\})/?)?\s*(?:;|&&|$)'
   TEST_PATH: '(?:^|/)(?:tests?|__tests__|spec|specs|testdata)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]+\.py$|_test\.py$|(?:^|/)conftest\.py$'
 rules:
   # ---- Anti-refusal and jailbreak instructions ----
@@ -230,8 +234,11 @@ rules:
     languages: [shell, python, javascript, typescript]
     pathInclude: '{{SKILL_SCRIPT}}'
     inSkillTree: '{{TREE_SCRIPT}}'
+    # Every alternative needs the home directory in the file: on the line
+    # (an anchor), or anywhere (a quoted rc file name, or a bare cd).
+    filePattern: '{{HOME_FILE}}'
     patterns:
-      - '(?:{{HOME_CODE}})[^\n;]{0,80}?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b|(?:{{HOME_CODE}})[^\n;]{0,80}?\.config[/\\\x22\x27,\s]{1,6}fish[/\\\x22\x27,\s]{1,6}config\.fish\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.(?:claude|codex|gemini)[/\\\x22\x27,\s]{1,6}(?:settings(?:\.local)?\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md|config\.toml|skills|agents|commands|hooks|memory)\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.claude\.json\b'
+      - '(?:{{HOME_CODE}})[^\n;]{0,80}?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b|(?:{{HOME_CODE}})[^\n;]{0,80}?\.config[/\\\x22\x27,\s]{1,6}fish[/\\\x22\x27,\s]{1,6}config\.fish\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.(?:claude|codex|gemini)[/\\\x22\x27,\s]{1,6}(?:settings(?:\.local)?\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md|config\.toml|skills|agents|commands|hooks|memory)\b|(?:{{HOME_CODE}})[/\\\x22\x27,\s]{0,6}\.claude\.json\b|[\x22\x27\x60]\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)[\x22\x27\x60]|[/\\]\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)[\x22\x27\x60]|\bcd(?:\s+(?:~|\$HOME|\$\{HOME\})/?)?\s*(?:;|&&)[^\n]{0,200}?(?:>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?\.(?:bashrc|zshrc|bash_profile|bash_login|zprofile|zshenv|zlogin|profile)\b'
       - '>>|(?<![>=-])>\s*[\x22\x27]?(?:~|\$HOME|\$\{HOME\})|\btee\s|\bsed\s+-i|\bopen\s*\([^\n]{0,300}[\x22\x27](?:a|w|a\+|w\+|ab|wb|r\+)[\x22\x27]|\b(?:appendFileSync|appendFile|writeFileSync|writeFile|createWriteStream|write_text|write_bytes|copyFileSync|copyfile|copytree|symlinkSync|symlink_to)\b|\.write\s*\(|\bcp\s|\bmv\s|\bln\s+-s'
     # cp/mv with the user's file as the source reads it (a test copies ~/.claude/CLAUDE.md into a sandbox).
     notPattern: '\bexport\s+PATH=|\bPATH=\$|[\x22\x27]export\s+PATH=|\b(?:cp|mv)\s+(?:-\w+\s+){0,3}[\x22\x27]?(?:~|\$HOME|\$\{HOME\})/\.(?:claude|codex|gemini|bashrc|zshrc|profile|bash_profile|zprofile)[^\s\x22\x27]{0,200}[\x22\x27]?\s+[\x22\x27]?(?!(?:~|\$HOME|\$\{HOME\})/)[^\s\x22\x27-]'
@@ -647,13 +654,14 @@ rules:
     references:
       - OWASP LLM01 Prompt Injection
   # Every other string literal of a gated MCP file (withinMcpStrings): the
-  # same patterns, confidence medium; only the invisible-character variant
-  # keeps the tag, since prose in a constant can be a message to the user.
+  # same patterns at a lower weight and without the tag. Literals passed to
+  # RegExp( / re.compile( / .replace( / .sub( / .test( are not read.
   - id: mcp-tool-poisoning-string-instruction
     title: MCP tool description tells the model to ignore instructions, read secrets or hide actions (string outside a description)
     title_zh: MCP 工具描述要求模型忽略指令、读取密钥或隐瞒操作（描述之外的字符串）
-    severity: high
-    confidence: medium
+    # Injection phrases also appear in benign prompts, lists and messages.
+    severity: medium
+    confidence: low
     cwe: CWE-94
     owasp: A03:2021
     languages: [javascript, typescript, python]
@@ -687,8 +695,9 @@ rules:
     # a literal that is just the character ("\ufeff" to strip a BOM, a list
     # of bidi controls to remove) is code, not hidden text. No BOM.
     pattern: '(?<=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]|[\u200B\u2060-\u2064\u202A-\u202E\u2066-\u2069]+(?=[^\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF])|\uDB40[\uDC00-\uDC7F]\uDB40[\uDC00-\uDC7F]|(?<=[\x21-\x7E])[\u200C-\u200F]+(?=[\x21-\x7E])'
+    # A sanitizer's character class ([\u200B-\u200F]) is not hidden text.
+    notPattern: '\[[^\]\n]{0,400}-[^\]\n]{0,400}\]'
     group: mcp-tool-poisoning
-    tags: [malicious-intent]
     message: A string literal of an MCP server (a constant, a dedent() argument, a joined array, a __doc__ assignment or a template hole, which can still end up in a tool description) matches what the description rule looks for. An MCP tool or parameter description holds zero-width, tag or bidirectional control characters (written as characters or as escape sequences), which editors and diffs do not show but the model reads.
     message_zh: MCP 服务器中的字符串字面量（常量、dedent() 参数、拼接数组、__doc__ 赋值或模板插值，仍可能成为工具描述）与描述规则检测的内容相符。MCP 工具或参数描述包含零宽、标签或双向控制字符（直接写出或以转义序列写出），编辑器和 diff 不显示，但模型会读取。
     remediation: Remove the characters and review the text around them.

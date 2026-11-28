@@ -1,3 +1,4 @@
+import { safeLineRange } from "./lines.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -283,14 +284,11 @@ export async function runGitleaks(options: {
       throw error;
     }
     const relative = toPosixRelative(options.root, resolved);
-    const startLine =
-      typeof entry.StartLine === "number" && entry.StartLine > 0
-        ? Math.trunc(entry.StartLine)
-        : 1;
-    const endLine =
-      typeof entry.EndLine === "number" && entry.EndLine >= startLine
-        ? Math.trunc(entry.EndLine)
-        : startLine;
+    const { startLine, endLine } = safeLineRange(entry.StartLine, entry.EndLine, (field, value) =>
+      warnings.push(
+        `gitleaks result in ${relative} has an invalid ${field} (${String(value).slice(0, 40)}); line 1 or the start line was used`,
+      ),
+    );
     const rawMatch = entry.Match ?? entry.Secret ?? "";
     const redacted = rawMatch ? redactSecret(rawMatch) : "[redacted secret]";
     const description = entry.Description ?? "Gitleaks detected a credential";
