@@ -902,6 +902,19 @@ describe("CLI install command", () => {
     expect(tree(project)).toEqual(["app.py"]);
   });
 
+  it("names only the files that hold the absolute MCP command in the do-not-commit warning", () => {
+    const project = makeProject("install-absolute-codex");
+    const result = runEnv(["install", "--host", "codex", "--project", project, "--absolute"], BARE_PATH);
+    expect(result.status).toBe(0);
+    const bundled = path.join(BIN_DIR, "code-audit-mcp");
+    expect(fs.readFileSync(path.join(project, ".codex", "config.toml"), "utf8")).toContain(bundled);
+    expect(fs.readFileSync(path.join(project, "AGENTS.md"), "utf8")).not.toContain(bundled);
+    const warning = result.stderr.split("\n").find((line) => line.includes("machine-specific path")) ?? "";
+    expect(warning).toContain(".codex/config.toml now contains the machine-specific path");
+    expect(warning).toContain("do not commit that file");
+    expect(warning).not.toContain("AGENTS.md");
+  });
+
   it("warns when code-audit-mcp is not on PATH and honours --mcp-command/--absolute", () => {
     const project = makeProject("install-command");
     const missing = runEnv(

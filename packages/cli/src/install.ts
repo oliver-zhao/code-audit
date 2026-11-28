@@ -1368,6 +1368,12 @@ function pruneEmptyDirs(project: string, start: string): void {
 /* ------------------------------------------------------------------ */
 
 /** One file change. `after === undefined` removes the file. */
+/** True when `text` holds `command` as written or escaped in a JSON or TOML string. */
+function containsCommand(text: string | undefined, command: string): boolean {
+  if (text === undefined) return false;
+  return text.includes(command) || text.includes(JSON.stringify(command).slice(1, -1));
+}
+
 interface FileOp {
   relative: string;
   /** Content the plan was made against; undefined when the file is absent. */
@@ -2009,7 +2015,6 @@ export function installAdapter(options: InstallOptions): InstallResult {
   const previous = manifest.hosts[options.host];
 
   for (const spec of specs) {
-    if (spec.kind !== "owned") configFiles.push(spec.target);
     planFile(project, spec.target, planned, (target, existing) => {
       const prior = previous?.files.find((file) => file.path === spec.target);
       const plan =
@@ -2025,6 +2030,9 @@ export function installAdapter(options: InstallOptions): InstallResult {
           : undefined;
       planned.ops.push(...ops);
       pushPlan(planned, target, spec.target, existing, plan);
+      // Only the files that hold the command after the install (the MCP
+      // configuration, not an instruction block such as AGENTS.md).
+      if (spec.kind !== "owned" && containsCommand(plan.after ?? existing, command)) configFiles.push(spec.target);
       if (backup) {
         (planned.actions[planned.actions.length - 1] as InstallAction).backup = backup;
       }
@@ -2101,7 +2109,7 @@ export function installAdapter(options: InstallOptions): InstallResult {
       `MCP command ${command} does not exist or is not executable.`,
     );
   }
-  if (path.isAbsolute(command)) {
+  if (path.isAbsolute(command) && configFiles.length > 0) {
     warnings.push(
       `${configFiles.join(", ")} now contains the machine-specific path ${command}; do not commit ${configFiles.length === 1 ? "that file" : "those files"}.`,
     );

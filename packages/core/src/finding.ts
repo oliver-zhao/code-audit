@@ -242,6 +242,11 @@ export const FindingSchema = z
          */
         independentlyReviewed: z.boolean().optional(),
         independentReview: ReviewHistoryItemSchema.optional(),
+        /**
+         * Status the agreeing independent reviewer recorded (`likely` agrees
+         * with a `confirmed` decision but is weaker).
+         */
+        independentStatus: z.string().optional(),
         /** An independent reviewer disagreed at some point. */
         disputed: z.boolean().optional(),
         dissent: ReviewHistoryItemSchema.optional(),

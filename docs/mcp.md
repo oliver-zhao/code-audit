@@ -293,7 +293,9 @@ A secret found by the history scan (`history` of `audit_start`) also carries
 added it; no author data).
 
 `evidence` is cut at 240 characters and `message` at 300. An item with a
-verdict also has `independently_reviewed` (boolean) and, for `proof_gap`,
+verdict also has `independently_reviewed` (boolean), when it is true
+`independent_status` (the agreeing independent reviewer's own status, which
+can be weaker than the decision: `likely` for a `confirmed` finding) and, for `proof_gap`,
 `missing` (cut at 200 characters and wrapped like repository content: a
 reviewer wrote it after reading the repository). `next_cursor` is
 absent or null on the last page. Cursors are opaque so that an agent does not
@@ -340,7 +342,7 @@ expression.
 |---|---|---|
 | `pattern` | string, 1–256 characters, required | Text to find. Literal unless `regex` is true; a literal is never compiled as a regular expression. |
 | `glob` | string | Restrict to paths, for example `src/**/*.ts`. |
-| `regex` | boolean | Interpret `pattern` as a regular expression. |
+| `regex` | boolean | Interpret `pattern` as a JavaScript regular expression. It has no inline flag groups: `(?i)` is refused with `INVALID_REGEX` and a hint. Literal and regex searches are case-sensitive and there is no case-insensitive option; spell both cases where they matter (`[Yy]aml`). |
 | `maxResults` | integer 1–200 | Default 50. |
 
 ```json
@@ -772,11 +774,23 @@ run directory holds every package in full.
       "verdict_text": "Review before installing: ...",
       "risk_score": 2.6,
       "rule_ids": ["skill-undeclared-capability"],
-      "details": "<<<UNTRUSTED_REPOSITORY_CONTENT>>>\nname: bad-skill\nreason: ...\n<<<END_UNTRUSTED_REPOSITORY_CONTENT>>>"
+      "capabilities": { "network": 1, "subprocess": 1, "file_write": 0, "allowed_tools_declared": true, "undeclared": ["network"] },
+      "details": "<<<UNTRUSTED_REPOSITORY_CONTENT>>>\nname: bad-skill\nreason: ...\nallowed-tools: Read, Bash\nnetwork: bad/scripts/setup.sh\nsubprocess: bad/scripts/setup.sh\nundeclared capabilities: network\n<<<END_UNTRUSTED_REPOSITORY_CONTENT>>>"
     }
   ]
 }
 ```
+
+`capabilities` holds no repository text: the number of the package's
+scripts that use the network, run subprocesses or write files (detected in
+the script text, never by running it), whether `SKILL.md` declares
+`allowed-tools`, and the capabilities a script uses that `allowed-tools`
+does not grant. The tools and the script paths themselves are in `details`,
+inside the untrusted-content wrapper: the declared tools (at most 20) and up
+to five paths per capability, each printable, redacted and shortened; the
+full lists are in `skill.json`. A capability is a hint, not a verdict: a
+network script in a package marked `SAFE_TO_INSTALL` is still worth a look
+before install.
 
 Packages are sorted worst verdict first. When the answer would exceed the
 response cap, packages are dropped from the end, `truncated` is set and

@@ -115,7 +115,7 @@ function isInstructionPath(rel: string, treeRoot: string | undefined): boolean {
 }
 
 /** Interpreter named on a `#!` line, for extensionless scripts in skill trees. */
-const SHEBANG = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?)?(?:\S*\/)?(bash|sh|zsh|ksh|dash|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|tsx|ts-node)\b/;
+const SHEBANG = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?)?(?:\S*\/)?(bash|sh|zsh|ksh|dash|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|tsx|ts-node|pwsh)\b/;
 
 function shebangLanguage(text: string): Language | undefined {
   const match = SHEBANG.exec(text.slice(0, 200));
@@ -124,6 +124,7 @@ function shebangLanguage(text: string): Language | undefined {
   if (/^(?:python|pypy)/.test(name)) return "python";
   if (/^(?:tsx|ts-node)$/.test(name)) return "typescript";
   if (/^(?:node|nodejs|deno|bun)$/.test(name)) return "javascript";
+  if (name === "pwsh") return "powershell";
   return "shell";
 }
 
@@ -999,10 +1000,12 @@ export function inventory(
       const loc = countLines(text);
       let language = detectLanguage(rel);
       // Inside a skill or plugin tree, an extensionless script is classified
-      // by its #! line and a fish script is read as shell.
+      // by its #! line, a fish script is read as shell and a PowerShell
+      // script (.ps1, .psm1) as powershell.
       if (treeRoot !== undefined && language === "unknown") {
         if (!entry.name.includes(".")) language = shebangLanguage(text) ?? language;
         else if (ext === ".fish") language = "shell";
+        else if (ext === ".ps1" || ext === ".psm1") language = "powershell";
       }
       const marker = classifyManifest(entry.name, rel, text);
       const isLockfile = marker?.lockfile ?? false;

@@ -168,6 +168,25 @@ the run: it appears in `findings.json` and the reports. Without
 `allowed-tools` nothing is compared; the detected capabilities are still
 listed in `skill.json`.
 
+### Credential reads in scripts
+
+Scripts of a package (shell, Python, JavaScript, TypeScript and PowerShell,
+also extensionless ones with a `#!` line) are checked for reads of a private
+key or credential store: `~/.ssh/id_*` and other private keys in `~/.ssh`
+(not `known_hosts`, `config`, `authorized_keys` or `*.pub`), the whole
+`~/.ssh` directory archived or copied away, `~/.aws/credentials`, `~/.netrc`,
+`~/.config/gh/hosts.yml`, `~/.docker/config.json`, `~/.kube/config`,
+`~/.git-credentials` and `security find-generic-password` (any form: `cat`,
+`<`, `open()`, `readFileSync`, `Path.home() / ".ssh"`, `Get-Content`). Such a
+read is `agent-credential-read-script` (high, confidence medium: `REVIEW`).
+When the same file also sends data over the network (curl or wget with a body
+or upload, `nc`, a raw socket, an HTTP POST/PUT, scp to a remote host, an
+object-storage upload) it is `agent-credential-exfil-script` instead (high,
+confidence high, tagged `malicious-intent`: `DO_NOT_INSTALL`). One line gives
+one of the two. Lines that only test for the file, generate a key, pass it to
+`ssh -i`, change its mode, print a message or list the name in a deny list are
+not reported; a cloud-storage upload of the file is `agent-cloud-upload-secrets`.
+
 ## Archives
 
 Zip (stored and deflate) and tar (POSIX ustar, pax headers, GNU long names;

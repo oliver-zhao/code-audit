@@ -1323,7 +1323,9 @@ function withVerdict(run: LoadedRun, finding: Finding): Finding {
       primaryStatus: verdict.primaryStatus,
       history: verdict.history.slice(-HISTORY_SHOWN).map(historyView),
       independentlyReviewed: verdict.independentlyReviewed,
-      ...(verdict.independentReview ? { independentReview: historyView(verdict.independentReview) } : {}),
+      ...(verdict.independentReview
+        ? { independentReview: historyView(verdict.independentReview), independentStatus: verdict.independentReview.status }
+        : {}),
       disputed: verdict.disputed,
       ...(verdict.dissent ? { dissent: historyView(verdict.dissent) } : {}),
       disputeOpen: verdict.disputeOpen,
@@ -2463,6 +2465,20 @@ export const DEFAULT_SEARCH_TIMEOUT_MS = 2000;
 export const MAX_SEARCH_TIMEOUT_MS = 60_000;
 
 /**
+ * The hint for a pattern written for another regex dialect: an inline flag
+ * group such as `(?i)` (PCRE, Python, Go) or a possessive quantifier.
+ */
+function regexSyntaxHint(pattern: string): string {
+  if (/\(\?(?:[a-zA-Z]+|[a-zA-Z]*-[a-zA-Z]+)[:)]/.test(pattern)) {
+    return ". The pattern is a JavaScript regular expression, which has no inline flag groups such as (?i). The search is case-sensitive and has no case-insensitive option: drop the flag group and spell both cases where they matter, e.g. [Yy]aml or (?:cursor|Cursor).";
+  }
+  if (/[*+?}][+]/.test(pattern)) {
+    return ". The pattern is a JavaScript regular expression, which has no possessive quantifiers (*+, ++).";
+  }
+  return ". The pattern is a JavaScript regular expression (no inline flags, possessive quantifiers or \\A/\\Z anchors); the search is case-sensitive.";
+}
+
+/**
  * A structural check that rejects the most obvious catastrophic patterns
  * early, with a helpful message. It is NOT what keeps a search from hanging -
  * no such check can be complete (`(a|aa)+$` passes it). Every regex search
@@ -2486,7 +2502,7 @@ export function assertSafeRegex(pattern: string): RegExp {
     return new RegExp(pattern);
   } catch (error) {
     throw new RunStoreError(
-      `invalid regex: ${error instanceof Error ? error.message : String(error)}`,
+      `invalid regex: ${error instanceof Error ? error.message : String(error)}${regexSyntaxHint(pattern)}`,
       "INVALID_REGEX",
     );
   }

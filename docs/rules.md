@@ -44,6 +44,7 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    | `razor` | `*.cshtml`, `*.razor` |
    | `template` | HTML and server-side templates: `*.html`, `*.htm`, `*.jinja`, `*.jinja2`, `*.j2`, `*.njk`, `*.twig`, `*.vue`, `*.svelte`, `*.ejs`, `*.hbs`, `*.handlebars`, `*.mustache` |
    | `shell` | `*.sh`, `*.bash`, `*.zsh`, `*.ksh` (not `Makefile`, not extension-less scripts) |
+   | `powershell` | `*.ps1`, `*.psm1` and `#!` `pwsh` scripts, only inside a [skill or plugin tree](#skill-and-plugin-trees) |
    | `dockerfile` | `Dockerfile`, `Dockerfile.*`, `*.dockerfile` |
    | `yaml` | `*.yml`, `*.yaml`, and Terraform `*.tf`, `*.tfvars` |
    | `json` | `*.json`, `*.jsonc` |
@@ -234,7 +235,8 @@ gets a warning. The inventory records for every file inside a tree the nearest t
   configuration, so a repository that is itself a skill or plugin is
   covered;
 - an extensionless file is classified by its `#!` line (`sh`, `bash`, `zsh`,
-  `python`, `node`, ...) and a `.fish` script is read as shell;
+  `python`, `node`, `pwsh`, ...), a `.fish` script is read as shell and a
+  `.ps1` / `.psm1` script as `powershell`;
 - `bin/` is read like source (it holds the commands' scripts), not skipped as
   build output.
 
@@ -322,7 +324,7 @@ in `packages/core/src/rules.ts`, by a test):
 | `kind` | `finding` \| `hotspot` | no (default `finding`) | A hotspot is a reading-list entry and is never counted. |
 | `cwe` | string `CWE-<number>` | yes | Weakness id. |
 | `owasp` | string | no | OWASP Top 10 reference, for example `A03:2021`. |
-| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `rust`, `razor`, `template`, `shell`, `dockerfile`, `yaml`, `json`, `toml`, `ini`, `properties`, `requirements`, `xml`, `markdown`, or exactly `[binary]` | yes | File languages the rule applies to (see the table above). Terraform files are `yaml`. `binary` makes a [binary rule](#binary-files-in-skills-and-plugins). |
+| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `rust`, `razor`, `template`, `shell`, `powershell`, `dockerfile`, `yaml`, `json`, `toml`, `ini`, `properties`, `requirements`, `xml`, `markdown`, or exactly `[binary]` | yes | File languages the rule applies to (see the table above). Terraform files are `yaml`. `binary` makes a [binary rule](#binary-files-in-skills-and-plugins). |
 | `pattern` | regex | one of `pattern` / `patterns` (binary rules: optional) | The locator. In a binary rule it is matched against the file's path. |
 | `patterns` | list of regex | one of `pattern` / `patterns` | The first entry is the locator; all others must also match (AND). Mutually exclusive with `pattern`. |
 | `notPattern` | regex | no | Discards a match when it matches the expression around it. |

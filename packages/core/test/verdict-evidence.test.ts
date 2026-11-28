@@ -495,6 +495,33 @@ describe("independent review", () => {
   });
 });
 
+describe("an independent agreement with a weaker status", () => {
+  it("shows the independent reviewer's own status in report.md, findings.json and SARIF", async () => {
+    const ctx = await freshRun("independent-weaker");
+    const [weaker, same] = ctx.pick("critical") as [Finding, Finding];
+    for (const finding of [weaker, same]) {
+      ctx.verdict(finding, { status: "confirmed", rationale: "traced from the request to the call", trace: [SOURCE, SINK], reviewer: "primary-a" });
+    }
+    const agreed = ctx.verdict(weaker, { status: "likely", rationale: "probably reachable", reviewer: "sub-x", ...SUB });
+    expect(agreed.status).toBe("confirmed");
+    expect(agreed.independentlyReviewed).toBe(true);
+    ctx.verdict(same, { status: "confirmed", rationale: "traced as well", reviewer: "sub-x", ...SUB });
+    const md = renderRunReport(ctx.runId, "md", ctx.options).text;
+    expect(md).toContain(`**${weaker.id}**`);
+    expect(md).toMatch(new RegExp(`\\*\\*${weaker.id}\\*\\*[^\\n]*Status: confirmed \\(independently reviewed by sub-x: subagent, said likely\\)`));
+    expect(md).toMatch(new RegExp(`\\*\\*${same.id}\\*\\*[^\\n]*Status: confirmed \\(independently reviewed by sub-x: subagent\\) `));
+    const json = JSON.parse(renderRunReport(ctx.runId, "json", ctx.options).text);
+    const byId = (id: string) => json.findings.find((finding: Finding) => finding.id === id) as Finding;
+    expect(byId(weaker.id).review).toMatchObject({ status: "confirmed", independentlyReviewed: true, independentStatus: "likely" });
+    expect(byId(same.id).review).toMatchObject({ status: "confirmed", independentStatus: "confirmed" });
+    const sarif = JSON.parse(renderRunReport(ctx.runId, "sarif", ctx.options).text);
+    const result = sarif.runs[0].results.find(
+      (entry: { properties: { review?: { independentStatus?: string } } }) => entry.properties.review?.independentStatus === "likely",
+    );
+    expect(result).toBeDefined();
+  });
+});
+
 describe("verdict storage stays bounded (H2, harness t4)", () => {
   let ctx: Ctx;
   beforeAll(async () => {

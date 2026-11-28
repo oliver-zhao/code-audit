@@ -52,6 +52,7 @@ interface Item {
   file: string;
   start_line: number;
   independently_reviewed?: boolean;
+  independent_status?: string;
   missing?: string;
 }
 
@@ -314,6 +315,8 @@ describe("structured triage over MCP", () => {
     const byId = new Map(listed.map((item) => [item.id, item]));
     expect(byId.get(first.id)?.status).toBe("confirmed");
     expect(byId.get(first.id)?.independently_reviewed).toBe(true);
+    expect(byId.get(first.id)?.independent_status).toBe("confirmed");
+    expect(byId.get(second.id)?.independent_status).toBeUndefined();
     expect(byId.get(second.id)?.status).toBe("proof_gap");
     expect(byId.get(second.id)?.independently_reviewed).toBe(false);
     expect(byId.get(second.id)?.missing).toContain("login middleware");

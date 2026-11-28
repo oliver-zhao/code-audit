@@ -2448,10 +2448,15 @@ function independentText(review: Finding["review"], l: Labels): string {
   if (!review?.independentlyReviewed) return person ? ` (${person})` : "";
   const how = review.independentReview?.independence;
   const by = review.independentReview?.reviewer;
+  // An agreement that is not the same status (likely for a confirmed
+  // decision) is shown, so the decision does not read as confirmed twice.
+  const said = review.independentReview?.status;
+  const differs = said !== undefined && said !== review.status;
+  const detail = [how ? escapeMarkdown(how, 20) : "", differs ? `${l.disputeSaid} ${escapeMarkdown(said, 20)}` : ""].filter(Boolean);
   return (
     ` (${l.independentlyReviewed}` +
     (by ? ` ${fmt(l.independentBy, { label: labelText(by) })}` : "") +
-    `${how ? `: ${escapeMarkdown(how, 20)}` : ""}${person ? `; ${person}` : ""})`
+    `${detail.length > 0 ? `: ${detail.join(", ")}` : ""}${person ? `; ${person}` : ""})`
   );
 }
 
@@ -3692,6 +3697,7 @@ export function renderSarif(input: ReportContext): string {
               ...(finding.review.independentReview?.independence
                 ? { independence: finding.review.independentReview.independence }
                 : {}),
+              ...(finding.review.independentReview ? { independentStatus: finding.review.independentReview.status } : {}),
               ...(finding.review.disputed
                 ? {
                     disputed: true,

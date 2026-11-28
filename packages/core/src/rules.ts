@@ -49,6 +49,7 @@ export const RULE_LANGUAGES = [
   "ini",
   "properties",
   "shell",
+  "powershell",
   "template",
   "requirements",
   // Not a file language: files the inventory left unread as binary inside a

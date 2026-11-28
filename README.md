@@ -10,7 +10,7 @@ A security audit plugin for coding agents, with a deterministic scanning core.
 `code-audit` scans a local project for vulnerabilities, hard-coded secrets,
 risky configuration and vulnerable dependencies, and writes the candidates
 with their evidence to Markdown, JSON and SARIF. A coding agent (Claude Code,
-Codex, OpenCode, DSH) then reviews them through eight MCP tools: it reads the
+Codex, OpenCode, DSH) then reviews them through nine MCP tools: it reads the
 code around each candidate, records a verdict with a rationale, adds what the
 scanner missed and renders the final report. The same workflow is available
 to a person on the command line and to CI.
@@ -467,7 +467,7 @@ where the host supports it, an `/audit` command. It never touches `~/.claude`,
 | OpenCode 2.4.1 | `opencode.json`, `.opencode/skills/code-audit/SKILL.md`, `.opencode/commands/audit.md` | A full audit through the MCP tools, on Linux, with 0.3.0 (`opencode run --format json`, step-5-preview): 14 tool calls from scan to report, none failed, every page of findings reached through `next_cursor`. A session started before `opencode mcp list` shows the server connected has no MCP server (an OpenCode service issue). |
 | Codex CLI 0.171 | `.codex/config.toml`, `.agents/skills/code-audit/SKILL.md`, `AGENTS.md` (managed blocks) | A full audit through the MCP tools, on macOS (`codex exec` with the overrides that `install` prints). |
 | DSH 0.2.2-rc.5 | `dsh/cordis.patch.yml` (managed block), `.dsh/skills/code-audit/SKILL.md` | A full audit through the MCP tools, on Linux, in headless mode (`dsh headless --patch dsh/cordis.patch.yml --approval-policy never`), with 0.3.0: 19 tool calls from scan to report, none failed. The headless profile needs the credentials service and a model provider enabled; see the adapter README. |
-| Claude Code 2.1.332 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | A full audit through the MCP tools, on macOS, both ways: after a project install (`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and the 8 tools were found) and through the standalone plugin (`--plugin-dir`, `/code-audit:audit`). Not exercised: approving the project server interactively, installing the plugin through the marketplace. |
+| Claude Code 2.1.332 | `.mcp.json`, `.claude/skills/code-audit/SKILL.md`, `.claude/commands/audit.md` | A full audit through the MCP tools, on macOS, both ways: after a project install (`claude -p "/audit" --mcp-config .mcp.json --allowedTools "mcp__code-audit__*"`: the skill, the `/audit` command and the 9 tools were found) and through the standalone plugin (`--plugin-dir`, `/code-audit:audit`). Not exercised: approving the project server interactively, installing the plugin through the marketplace. |
 
 Per-host details, including what the installer does with existing
 configuration, are in `adapters/<host>/README.md`. `adapters/claude-code/` is
