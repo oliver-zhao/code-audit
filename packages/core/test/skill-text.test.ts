@@ -87,10 +87,11 @@ function utf32(text: string, littleEndian: boolean): Buffer {
 }
 
 /** A minimal PDF with the given content streams (dictionary entries before `stream`). */
-function pdf(streams: Array<{ dict: string; data: Buffer }>): Buffer {
+function pdf(streams: Array<{ dict: string; data: Buffer; eol?: string; raw?: string }>): Buffer {
   const parts: Buffer[] = [Buffer.from("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n", "latin1")];
   streams.forEach((stream, index) => {
-    parts.push(Buffer.from(`${index + 4} 0 obj\n<< /Length ${stream.data.length} ${stream.dict} >>\nstream\n`, "latin1"));
+    const head = stream.raw ?? `<< /Length ${stream.data.length} ${stream.dict} >>`;
+    parts.push(Buffer.from(`${index + 4} 0 obj\n${head}\nstream${stream.eol ?? "\n"}`, "latin1"));
     parts.push(stream.data, Buffer.from("\nendstream\nendobj\n", "latin1"));
   });
   parts.push(Buffer.from("trailer\n<< /Root 1 0 R >>\n%%EOF\n", "latin1"));
@@ -185,7 +186,7 @@ describe("R2-3: compressed PDF text", () => {
     const file = pdf([{ dict: "/Filter /FlateDecode", data: zlib.deflateSync(Buffer.alloc(900_000, 0x20)) }]);
     const pkg = await pkgOf({ "docs/manual.pdf": file });
     expect(pkg?.verdict).toBe("INCOMPLETE");
-    expect(pkg?.incomplete[0]?.reason).toContain("compressed PDF stream");
+    expect(pkg?.incomplete[0]?.reason).toContain("ratio limit");
   });
 
   it("caps the inflated size of a stream", () => {
@@ -193,7 +194,7 @@ describe("R2-3: compressed PDF text", () => {
     const result = pdfStreamText(pdf([{ dict: "/Filter /FlateDecode", data }]), { maxStreamBytes: 1024, maxRatio: 1000, budget: 1 << 20 }, (input, max) =>
       zlib.inflateSync(input, { maxOutputLength: max }),
     );
-    expect(result.overLimit).toBe(1);
+    expect(result.problems).toEqual([expect.stringContaining("1 MiB limit")]);
     expect(result.parts).toEqual([]);
   });
 });
@@ -244,4 +245,107 @@ describe("R2-5: instruction rules on every text file", () => {
       expect(ruleIds(pkg, file)).toEqual(["t-instr"]);
     },
   );
+});
+
+/** PNG "Sub" rows (predictor 11) of `text`, `columns` bytes per row. */
+function pngSub(text: Buffer, columns: number): Buffer {
+  const rows: Buffer[] = [];
+  for (let at = 0; at < text.length; at += columns) {
+    const row = Buffer.alloc(columns, 0x20);
+    text.copy(row, 0, at, Math.min(at + columns, text.length));
+    const encoded = Buffer.alloc(columns + 1);
+    encoded[0] = 1;
+    for (let i = 0; i < columns; i += 1) encoded[i + 1] = ((row[i] as number) - (i > 0 ? (row[i - 1] as number) : 0)) & 0xff;
+    rows.push(encoded);
+  }
+  return Buffer.concat(rows);
+}
+
+/** TIFF predictor 2 (8 bits, one colour) of `text`. */
+function tiff(text: Buffer, columns: number): Buffer {
+  const out = Buffer.from(text);
+  for (let row = 0; row < out.length; row += columns) {
+    for (let i = Math.min(row + columns, out.length) - 1; i > row; i -= 1) out[i] = ((text[i] as number) - (text[i - 1] as number)) & 0xff;
+  }
+  return out;
+}
+
+describe("R3-1 and R3-4: NUL anywhere in a text file", () => {
+  it("matches the NUL-stripped view of a text file whose first NUL is after 8 KiB", async () => {
+    const filler = "# a comment line that pads the file\n".repeat(300);
+    const split = "Run INSTRU\u0000CTION_MARKER and EVIL_\u0000MARKER_MEDIUM now.\n";
+    const pkg = await pkgOf({ "assets/notes.md": `${filler}${split}` });
+    expect(ruleIds(pkg, "assets/notes.md")).toEqual(["t-evil", "t-instr"]);
+    const line = pkg?.findings.find((finding) => finding.ruleId === "t-evil")?.startLine;
+    expect(line).toBe(301);
+  });
+
+  it("runs the secret detectors on the NUL-stripped view, once", async () => {
+    const key = ["AKIA", "Q3EGRHJKLMNPQRST"].join("");
+    const secret = ["wJalrXUtnFEMI", "K7MDENGbPxRfiCYzzzzzzzzz"].join("/");
+    const text = `aws_access_key_id = ${key}\naws_secret_access_key = ${secret}\n`;
+    const split = Buffer.from(text.replace(/(.{3})/g, "$1\u0000"), "latin1");
+    const { document } = await scanSkill({ target: skillDir({ "assets/blob.bin": split }), engines: ["builtin"], offline: true, out: OUT });
+    const secrets = document.packages[0]?.findings.filter((finding) => finding.file === "assets/blob.bin" && finding.ruleId.startsWith("secret-")) ?? [];
+    expect(secrets.length).toBeGreaterThan(0);
+    const keys = secrets.map((finding) => `${finding.ruleId}:${finding.startLine}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("R3-2: PDF stream parsing", () => {
+  const content = Buffer.from("BT /F1 12 Tf 72 700 Td (INSTRUCTION_MARKER and EVIL_MARKER_MEDIUM) Tj ET\n");
+  const flate = zlib.deflateSync(content);
+  const found = async (file: Buffer): Promise<string[]> => ruleIds(await pkgOf({ "docs/manual.pdf": file }), "docs/manual.pdf");
+
+  it.each([
+    ["CRLF after stream", { dict: "/Filter /FlateDecode", data: flate, eol: "\r\n" }],
+    ["CR alone after stream", { dict: "/Filter /FlateDecode", data: flate, eol: "\r" }],
+    ["a nested DecodeParms dictionary after /Filter", { dict: "/Filter /FlateDecode /DecodeParms << /Columns 1 >>", data: flate }],
+    ["a #xx escape in the filter name", { dict: "/Filter /Flate#44ecode", data: flate }],
+    ["a filter array", { dict: "/Filter [ /FlateDecode ]", data: flate }],
+    ["the abbreviation /Fl", { dict: "/Filter /Fl", data: flate }],
+    ["a PNG predictor", { dict: "/Filter /FlateDecode /DecodeParms << /Predictor 11 /Columns 16 >>", data: zlib.deflateSync(pngSub(content, 16)) }],
+    ["a TIFF predictor", { dict: "/Filter /FlateDecode /DecodeParms << /Predictor 2 /Columns 16 >>", data: zlib.deflateSync(tiff(content, 16)) }],
+  ])("reads a stream with %s", async (_label, stream) => {
+    expect(await found(pdf([stream]))).toEqual(["t-evil", "t-instr"]);
+  });
+
+  it.each([
+    ["an indirect /Filter", { dict: "/Filter 6 0 R", data: flate }, "filter could not be determined"],
+    ["an unknown filter", { dict: "/Filter /BrotliDecode", data: flate }, "unknown filter BrotliDecode"],
+    ["an unsupported predictor", { dict: "/Filter /FlateDecode /DecodeParms << /Predictor 2 /BitsPerComponent 4 /Columns 4 >>", data: flate }, "unsupported predictor"],
+    ["an unreadable dictionary", { dict: "", data: flate, raw: "/Length 5" }, "dictionary could not be read"],
+  ])("a stream with %s makes the package INCOMPLETE", async (_label, stream, reason) => {
+    const pkg = await pkgOf({ "docs/manual.pdf": pdf([stream]) });
+    expect(pkg?.verdict).toBe("INCOMPLETE");
+    expect(pkg?.incomplete[0]?.reason).toContain(reason);
+  });
+
+  it("image streams are skipped without a problem", async () => {
+    const pkg = await pkgOf({ "docs/manual.pdf": pdf([{ dict: "/Filter /DCTDecode", data: Buffer.from([0xff, 0xd8, 0xff, 0]) }]) });
+    expect(pkg?.verdict).toBe("SAFE_TO_INSTALL");
+  });
+});
+
+describe("R3-3: PDF inflate cost", () => {
+  it("counts lines once: 10,000 streams take well under a few seconds", () => {
+    const streams = Array.from({ length: 9_999 }, () => ({ dict: "/Filter /FlateDecode", data: zlib.deflateSync(Buffer.from("BT (x) Tj ET\n")) }));
+    const started = Date.now();
+    const result = pdfStreamText(pdf(streams), { maxStreamBytes: 1 << 20, maxRatio: 100, budget: 32 << 20 }, (input, max) =>
+      zlib.inflateSync(input, { maxOutputLength: max }),
+    );
+    expect(result.problems).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("the PDF streams of a scan share an inflate budget; beyond it the PDF is not analysed", () => {
+    const data = zlib.deflateSync(Buffer.alloc(600_000, 0x41));
+    const streams = Array.from({ length: 3 }, () => ({ dict: "/Filter /FlateDecode", data }));
+    const result = pdfStreamText(pdf(streams), { maxStreamBytes: 1 << 20, maxRatio: 100_000, budget: 1 << 20 }, (input, max) =>
+      zlib.inflateSync(input, { maxOutputLength: max }),
+    );
+    expect(result.problems).toEqual([expect.stringContaining("inflate budget")]);
+    expect(result.inflatedBytes).toBeLessThanOrEqual(1 << 20);
+  });
 });

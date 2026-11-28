@@ -117,17 +117,29 @@ reported (same rule, file and line) is not repeated.
   UTF-8 file: the rules of the file's language, the instruction and shell
   rules, and the secret detectors. Wide text that does not decode is not
   analysed.
+- A text file with a NUL byte anywhere (also after the first 8 KiB, where
+  the inventory does not look) is also matched with every NUL removed: its
+  own language's rules, the instruction and shell rules, and the secret
+  detectors. Of the shells, bash, sh and dash drop NUL bytes and run what
+  is left; no other byte is dropped.
 - Otherwise its printable runs (4 or more characters of ASCII or UTF-8, or a
   whole newline-terminated line) are matched with the Markdown (instruction)
   and shell rules and the secret detectors, and so is the same text with
   every NUL byte removed (bash drops NUL bytes and runs what is left).
 - In a PDF, every `FlateDecode` stream is inflated (at most 1 MiB and a
-  100:1 ratio per stream, 100 MiB per scan) and its printable text and the
+  100:1 ratio per stream, 32 MiB for all PDFs of a scan), PNG (10-15) and
+  TIFF (2, 8-bit) predictors are undone, and its printable text and the
   strings of its text operators (`Tj`, `TJ`, `'`, `"`, hex strings, joined
-  per text object) are matched the same way. A stream over the limits makes
-  the package `INCOMPLETE`. Streams with `LZWDecode`, `ASCII85Decode`,
-  `ASCIIHexDecode` or `RunLengthDecode` are not decoded: a note says so (not
-  `INCOMPLETE`).
+  per text object) are matched the same way. The `stream` keyword may be
+  followed by CRLF, LF or CR; the stream dictionary is found by balancing
+  `<<` / `>>` and parsed (names with `#xx` escapes decoded, `/Filter` as a
+  name or an array, `/DecodeParms` as a dictionary or an array). A stream
+  whose dictionary or filter cannot be read (an indirect `/Filter`, an
+  unknown filter), an unsupported predictor, or the limits being exceeded
+  make the package `INCOMPLETE`. Image codecs (`DCTDecode`, `JPXDecode`,
+  `CCITTFaxDecode`, `JBIG2Decode`) are skipped. Streams with `LZWDecode`,
+  `ASCII85Decode`, `ASCIIHexDecode` or `RunLengthDecode` are not decoded: a
+  note says so (not `INCOMPLETE`).
 
 A polyglot such as `%PDF-1.4` followed by a script is therefore matched like
 the script. A file counts as analysed only once the text pass ran on it; a

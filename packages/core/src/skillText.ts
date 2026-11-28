@@ -312,16 +312,247 @@ export function stripNul(buffer: Uint8Array): Buffer {
 export interface PdfText {
   /** Text recovered from FlateDecode streams, with the line their stream starts on. */
   parts: Array<{ text: string; line: number }>;
-  /** Filters seen that can hold text but were not decoded. */
+  /** Filters seen that can hold text but were not decoded (a note, not incomplete). */
   undecoded: string[];
-  /** Streams over the limits (not analysed). */
-  overLimit: number;
+  /** Why some streams were not analysed (the package is incomplete). */
+  problems: string[];
   /** Inflated bytes in all. */
   inflatedBytes: number;
 }
 
-const TEXT_CAPABLE_FILTERS = ["LZWDecode", "ASCII85Decode", "ASCIIHexDecode", "RunLengthDecode", "LZW", "A85", "AHx", "RL"];
+const TEXT_CAPABLE_FILTERS = new Set(["LZWDecode", "ASCII85Decode", "ASCIIHexDecode", "RunLengthDecode", "LZW", "A85", "AHx", "RL"]);
+/** Image codecs: no text to recover, skipped. */
+const IMAGE_FILTERS = new Set(["DCTDecode", "JPXDecode", "CCITTFaxDecode", "JBIG2Decode", "DCT", "CCF"]);
+const FLATE_FILTERS = new Set(["FlateDecode", "Fl"]);
 const MAX_PDF_STREAMS = 10_000;
+/** How far back from `stream` its dictionary is looked for. */
+const MAX_DICTIONARY_BYTES = 64 * 1024;
+
+// ---- A small reader for PDF dictionary syntax ----
+
+type PdfValue =
+  | { type: "name"; value: string }
+  | { type: "number"; value: number }
+  | { type: "ref" }
+  | { type: "array"; items: PdfValue[] }
+  | { type: "dict"; entries: Map<string, PdfValue> }
+  | { type: "other" };
+
+/** A PDF name with `#xx` escapes decoded. */
+export function decodePdfName(raw: string): string {
+  return raw.replace(/#([0-9A-Fa-f]{2})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+const DELIMITERS = "()<>[]{}/%";
+const isWhite = (char: string | undefined): boolean => char === " " || char === "\n" || char === "\r" || char === "\t" || char === "\f" || char === "\0";
+
+class PdfParser {
+  at: number;
+
+  constructor(
+    private readonly text: string,
+    start: number,
+    private readonly end: number,
+  ) {
+    this.at = start;
+  }
+
+  private skip(): void {
+    while (this.at < this.end) {
+      const char = this.text[this.at];
+      if (isWhite(char)) this.at += 1;
+      else if (char === "%") {
+        while (this.at < this.end && this.text[this.at] !== "\n" && this.text[this.at] !== "\r") this.at += 1;
+      } else break;
+    }
+  }
+
+  private word(): string {
+    const start = this.at;
+    while (this.at < this.end && !isWhite(this.text[this.at]) && !DELIMITERS.includes(this.text[this.at] as string)) this.at += 1;
+    return this.text.slice(start, this.at);
+  }
+
+  value(depth = 0): PdfValue | undefined {
+    this.skip();
+    if (this.at >= this.end || depth > 32) return undefined;
+    const char = this.text[this.at] as string;
+    if (char === "/") {
+      this.at += 1;
+      return { type: "name", value: decodePdfName(this.word()) };
+    }
+    if (char === "<" && this.text[this.at + 1] === "<") {
+      this.at += 2;
+      const entries = new Map<string, PdfValue>();
+      for (;;) {
+        this.skip();
+        if (this.at >= this.end) return undefined;
+        if (this.text[this.at] === ">" && this.text[this.at + 1] === ">") {
+          this.at += 2;
+          return { type: "dict", entries };
+        }
+        const key = this.value(depth + 1);
+        if (!key || key.type !== "name") return undefined;
+        const value = this.value(depth + 1);
+        if (!value) return undefined;
+        entries.set(key.value, value);
+      }
+    }
+    if (char === "[") {
+      this.at += 1;
+      const items: PdfValue[] = [];
+      for (;;) {
+        this.skip();
+        if (this.at >= this.end) return undefined;
+        if (this.text[this.at] === "]") {
+          this.at += 1;
+          return { type: "array", items };
+        }
+        const item = this.value(depth + 1);
+        if (!item) return undefined;
+        items.push(item);
+      }
+    }
+    if (char === "(") {
+      let level = 0;
+      while (this.at < this.end) {
+        const c = this.text[this.at];
+        if (c === "\\") this.at += 2;
+        else {
+          if (c === "(") level += 1;
+          if (c === ")") level -= 1;
+          this.at += 1;
+          if (level === 0) break;
+        }
+      }
+      return { type: "other" };
+    }
+    if (char === "<") {
+      const close = this.text.indexOf(">", this.at);
+      this.at = close < 0 ? this.end : close + 1;
+      return { type: "other" };
+    }
+    const token = this.word();
+    if (token === "") {
+      this.at += 1;
+      return { type: "other" };
+    }
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(token)) {
+      // `6 0 R` is a reference.
+      const save = this.at;
+      this.skip();
+      const second = this.word();
+      this.skip();
+      if (/^\d+$/.test(token) && /^\d+$/.test(second) && this.text[this.at] === "R") {
+        this.at += 1;
+        return { type: "ref" };
+      }
+      this.at = save;
+      return { type: "number", value: Number(token) };
+    }
+    return { type: "other" };
+  }
+}
+
+/**
+ * The dictionary in front of the `stream` keyword at `keyword`: the `>>`
+ * that ends it is found back from the keyword and its `<<` by balancing.
+ */
+function streamDictionary(source: string, keyword: number): Map<string, PdfValue> | undefined {
+  let end = keyword - 1;
+  while (end >= 0 && isWhite(source[end])) end -= 1;
+  if (source[end] !== ">" || source[end - 1] !== ">") return undefined;
+  let depth = 0;
+  const floor = Math.max(0, keyword - MAX_DICTIONARY_BYTES);
+  for (let at = end; at > floor; at -= 1) {
+    if (source[at] === ">" && source[at - 1] === ">") {
+      depth += 1;
+      at -= 1;
+    } else if (source[at] === "<" && source[at - 1] === "<") {
+      depth -= 1;
+      at -= 1;
+      if (depth === 0) {
+        const parsed = new PdfParser(source, at, end + 1).value();
+        return parsed?.type === "dict" ? parsed.entries : undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Undo a PNG (10-15) or TIFF (2) predictor; undefined when the parameters are not supported. */
+export function undoPredictor(data: Buffer, params: Map<string, PdfValue> | undefined): Buffer | undefined {
+  const number = (key: string, fallback: number): number | undefined => {
+    const value = params?.get(key);
+    if (value === undefined) return fallback;
+    return value.type === "number" && Number.isInteger(value.value) && value.value >= 0 ? value.value : undefined;
+  };
+  const predictor = number("Predictor", 1);
+  const colors = number("Colors", 1);
+  const bits = number("BitsPerComponent", 8);
+  const columns = number("Columns", 1);
+  if (predictor === undefined || colors === undefined || bits === undefined || columns === undefined) return undefined;
+  if (predictor === 1) return data;
+  if (colors < 1 || colors > 32 || ![1, 2, 4, 8, 16].includes(bits) || columns < 1 || columns > 1 << 20) return undefined;
+  const bytesPerPixel = Math.max(1, Math.ceil((colors * bits) / 8));
+  const rowBytes = Math.ceil((colors * bits * columns) / 8);
+  if (predictor === 2) {
+    if (bits !== 8) return undefined;
+    const out = Buffer.from(data);
+    for (let row = 0; row < out.length; row += rowBytes) {
+      for (let i = bytesPerPixel; i < rowBytes && row + i < out.length; i += 1) {
+        out[row + i] = ((out[row + i] as number) + (out[row + i - bytesPerPixel] as number)) & 0xff;
+      }
+    }
+    return out;
+  }
+  if (predictor < 10 || predictor > 15) return undefined;
+  const rows = Math.floor(data.length / (rowBytes + 1));
+  const out = Buffer.alloc(rows * rowBytes);
+  let previous = Buffer.alloc(rowBytes);
+  for (let row = 0; row < rows; row += 1) {
+    const type = data[row * (rowBytes + 1)] as number;
+    const line = data.subarray(row * (rowBytes + 1) + 1, (row + 1) * (rowBytes + 1));
+    const current = out.subarray(row * rowBytes, (row + 1) * rowBytes);
+    for (let i = 0; i < rowBytes; i += 1) {
+      const raw = line[i] as number;
+      const left = i >= bytesPerPixel ? (current[i - bytesPerPixel] as number) : 0;
+      const up = previous[i] as number;
+      const upLeft = i >= bytesPerPixel ? (previous[i - bytesPerPixel] as number) : 0;
+      let value: number;
+      if (type === 0) value = raw;
+      else if (type === 1) value = raw + left;
+      else if (type === 2) value = raw + up;
+      else if (type === 3) value = raw + Math.floor((left + up) / 2);
+      else if (type === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upLeft);
+        value = raw + (pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft);
+      } else return undefined;
+      current[i] = value & 0xff;
+    }
+    previous = current;
+  }
+  return out;
+}
+
+/** One-based line of `offset`, from line-start offsets computed once. */
+function lineLocator(source: string): (offset: number) => number {
+  const starts: number[] = [0];
+  for (let at = source.indexOf("\n"); at >= 0; at = source.indexOf("\n", at + 1)) starts.push(at + 1);
+  return (offset) => {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if ((starts[mid] as number) <= offset) low = mid;
+      else high = mid - 1;
+    }
+    return low + 1;
+  };
+}
 
 /** A literal `(...)` string of PDF syntax at `start`, with escapes resolved. */
 function pdfLiteral(text: string, start: number): { value: string; end: number } {
@@ -416,58 +647,123 @@ export function pdfTextOperators(content: string): string[] {
 
 /**
  * Inflate the FlateDecode streams of a PDF (each at most `maxStreamBytes`,
- * ratio at most `maxRatio`, all of them together at most `budget` bytes) and
- * return their printable text and the strings of their text operators.
+ * ratio at most `maxRatio`, all of them together at most `budget` bytes),
+ * undo PNG/TIFF predictors, and return their printable text and the strings
+ * of their text operators. A stream whose dictionary or filter cannot be
+ * read, or whose predictor is not supported, is a problem (the package is
+ * incomplete), never skipped without a trace.
  */
 export function pdfStreamText(
   buffer: Buffer,
   limits: { maxStreamBytes: number; maxRatio: number; budget: number },
   inflate: (data: Buffer, maxOutputLength: number) => Buffer,
 ): PdfText {
-  const result: PdfText = { parts: [], undecoded: [], overLimit: 0, inflatedBytes: 0 };
+  const result: PdfText = { parts: [], undecoded: [], problems: [], inflatedBytes: 0 };
+  const problem = (text: string): void => {
+    if (!result.problems.includes(text)) result.problems.push(text);
+  };
   const source = buffer.toString("latin1");
-  const streamWord = /stream\r?\n/g;
+  const lineOf = lineLocator(source);
+  // `stream` followed by CRLF, CR or LF (CR alone is wrong but readers accept it).
+  const streamWord = /stream(?:\r\n|\r|\n)/g;
   let match: RegExpExecArray | null;
   let streams = 0;
   while ((match = streamWord.exec(source)) !== null) {
     // "endstream" is not the start of a stream.
-    if (match.index > 0 && /[A-Za-z]/.test(source[match.index - 1] as string)) continue;
+    if (match.index > 0 && /[A-Za-z0-9]/.test(source[match.index - 1] as string)) continue;
     streams += 1;
-    if (streams > MAX_PDF_STREAMS) break;
+    if (streams > MAX_PDF_STREAMS) {
+      problem(`more than ${MAX_PDF_STREAMS} streams`);
+      break;
+    }
     const dataStart = match.index + match[0].length;
     const dataEnd = source.indexOf("endstream", dataStart);
-    if (dataEnd < 0) break;
+    if (dataEnd < 0) {
+      problem("a stream without endstream");
+      break;
+    }
     streamWord.lastIndex = dataEnd + 9;
-    const dictStart = source.lastIndexOf("<<", match.index);
-    const dictionary = dictStart >= 0 ? source.slice(dictStart, match.index) : "";
-    const filterIndex = dictionary.indexOf("/Filter");
-    const used =
-      filterIndex >= 0
-        ? [...dictionary.slice(filterIndex + 7).matchAll(/\/([A-Za-z0-9]+)/g)].map((m) => m[1] as string).slice(0, 4)
-        : [];
-    const line = (source.slice(0, dataStart).match(/\n/g)?.length ?? 0) + 1;
-    const textCapable = used.filter((name) => TEXT_CAPABLE_FILTERS.includes(name));
+    const line = lineOf(dataStart);
+    const dictionary = streamDictionary(source, match.index);
+    if (!dictionary) {
+      problem("a stream whose dictionary could not be read");
+      continue;
+    }
+    const filterValue = dictionary.get("Filter");
+    const filters: string[] = [];
+    let undetermined = false;
+    if (filterValue === undefined) {
+      // Not compressed: its bytes are in the printable text of the file.
+      continue;
+    } else if (filterValue.type === "name") filters.push(filterValue.value);
+    else if (filterValue.type === "array" && filterValue.items.every((item) => item.type === "name")) {
+      for (const item of filterValue.items) filters.push((item as { value: string }).value);
+    } else undetermined = true;
+    if (undetermined) {
+      problem("a stream whose filter could not be determined (an indirect or malformed /Filter)");
+      continue;
+    }
+    if (filters.length === 0) continue;
+    if (filters.every((name) => IMAGE_FILTERS.has(name))) continue;
+    const textCapable = filters.filter((name) => TEXT_CAPABLE_FILTERS.has(name));
     if (textCapable.length > 0) {
       for (const name of textCapable) if (!result.undecoded.includes(name)) result.undecoded.push(name);
       continue;
     }
-    if (!(used[0] === "FlateDecode" || used[0] === "Fl")) continue;
+    const unknown = filters.filter((name) => !FLATE_FILTERS.has(name) && !IMAGE_FILTERS.has(name));
+    if (unknown.length > 0) {
+      problem(`a stream with the unknown filter ${unknown.join(", ")}`);
+      continue;
+    }
+    if (filters.some((name) => IMAGE_FILTERS.has(name))) continue; // Flate around an image codec
+    // DecodeParms: a dictionary, or an array parallel to the filters.
+    const parmsValue = dictionary.get("DecodeParms") ?? dictionary.get("DP");
+    const parmsList: Array<Map<string, PdfValue> | undefined> = filters.map(() => undefined);
+    if (parmsValue?.type === "dict") parmsList[0] = parmsValue.entries;
+    else if (parmsValue?.type === "array") {
+      parmsValue.items.forEach((item, index) => {
+        if (item.type === "dict") parmsList[index] = item.entries;
+      });
+    } else if (parmsValue !== undefined && parmsValue.type !== "other") {
+      problem("a stream whose /DecodeParms could not be read");
+      continue;
+    }
     let data = buffer.subarray(dataStart, dataEnd);
-    if (data.length > 0 && data[data.length - 1] === 0x0a) data = data.subarray(0, data[data.length - 2] === 0x0d ? -2 : -1);
-    let inflated: Buffer;
-    try {
-      inflated = inflate(Buffer.from(data), limits.maxStreamBytes);
-    } catch {
-      result.overLimit += 1;
-      continue;
+    if (data[data.length - 1] === 0x0a) data = data.subarray(0, data[data.length - 2] === 0x0d ? -2 : -1);
+    else if (data[data.length - 1] === 0x0d) data = data.subarray(0, -1);
+    let decoded: Buffer | undefined = Buffer.from(data);
+    for (let index = 0; index < filters.length && decoded; index += 1) {
+      const input: Buffer = decoded;
+      let inflated: Buffer;
+      try {
+        inflated = inflate(input, limits.maxStreamBytes);
+      } catch {
+        problem("a compressed stream that does not inflate within the 1 MiB limit");
+        decoded = undefined;
+        break;
+      }
+      if (inflated.length > limits.maxRatio * Math.max(input.length, 1)) {
+        problem(`a compressed stream over the ${limits.maxRatio}:1 ratio limit`);
+        decoded = undefined;
+        break;
+      }
+      if (result.inflatedBytes + inflated.length > limits.budget) {
+        problem("compressed streams over the inflate budget of the scan");
+        decoded = undefined;
+        break;
+      }
+      result.inflatedBytes += inflated.length;
+      const undone = undoPredictor(inflated, parmsList[index]);
+      if (!undone) {
+        problem("a compressed stream with an unsupported predictor");
+        decoded = undefined;
+        break;
+      }
+      decoded = undone;
     }
-    if (inflated.length > limits.maxRatio * Math.max(data.length, 1) || result.inflatedBytes + inflated.length > limits.budget) {
-      result.overLimit += 1;
-      continue;
-    }
-    result.inflatedBytes += inflated.length;
-    result.parts.push({ text: extractPrintableText(inflated).text, line });
-    const operators = pdfTextOperators(inflated.toString("latin1"));
+    if (!decoded) continue;
+    result.parts.push({ text: extractPrintableText(decoded).text, line });
+    const operators = pdfTextOperators(decoded.toString("latin1"));
     if (operators.length > 0) result.parts.push({ text: operators.join("\n"), line });
   }
   return result;

@@ -650,6 +650,7 @@ function capabilityCheck(
   states: Map<string, CapabilityState>,
   notAnalysed: Array<{ path: string; reason: string }>,
   invalidUtf8: string[],
+  withNul: string[],
 ): (inv: InventoryResult) => Finding[] {
   return (inv) => {
     const findings: Finding[] = [];
@@ -662,6 +663,9 @@ function capabilityCheck(
         notAnalysed.push({ path: file.relPath, reason: "content not present: Git LFS object (only the pointer was analysed)" });
         continue;
       }
+      // A NUL after the first 8 KiB: read as text by the inventory, but bash
+      // drops NUL bytes and runs what is left; the text pass matches that.
+      if (buffer.includes(0)) withNul.push(file.relPath);
       let content: string;
       try {
         content = STRICT_UTF8.decode(buffer);
@@ -950,8 +954,8 @@ function syntheticFile(relPath: string, absPath: string, language: InventoryFile
   return { relPath, absPath, language, size, loc: 0, kind: language === "markdown" ? "doc" : "source", scannable: true, isLockfile: false };
 }
 
-/** Inflated bytes allowed for the PDF streams of one scan (the archive budget). */
-const PDF_INFLATE_BUDGET = 100 * 1024 * 1024;
+/** Inflated bytes allowed for the PDF streams of one scan; beyond it a PDF is not analysed. */
+const PDF_INFLATE_BUDGET = 32 * 1024 * 1024;
 
 /** One text derived from a file, and the rules it is matched with. */
 interface TextSource {
@@ -990,11 +994,13 @@ function textPass(
   instructionIds: ReadonlySet<string>,
   scratch: string,
   invalidUtf8: readonly string[],
+  withNul: readonly string[],
   state: TextPassState,
 ): (inv: InventoryResult, existing: readonly Finding[]) => Finding[] {
   return (inv, existing) => {
     const invalid = new Set(invalidUtf8);
-    const candidates = new Set<string>(invalidUtf8);
+    const textWithNul = new Set(withNul);
+    const candidates = new Set<string>([...invalidUtf8, ...withNul]);
     for (const skip of inv.skipped) if (BINARY_SKIP_REASONS.has(skip.reason)) candidates.add(skip.relPath);
     const sources: TextSource[] = [];
     let pdfBudget = PDF_INFLATE_BUDGET;
@@ -1027,11 +1033,18 @@ function textPass(
         state.passed.add(rel);
         continue;
       }
+      if (textWithNul.has(rel)) {
+        // Read as text by the normal pass; only the NUL-stripped view is new.
+        // Newlines are kept, so its lines are the file's lines.
+        const joined = stripNul(buffer).toString("utf8");
+        sources.push({ rel, text: joined, lines: [...joined.split(/\r\n|\r|\n/).keys()].map((index) => index + 1), full: true, secrets: true, label: "text with NUL bytes removed" });
+        continue;
+      }
       const printable = extractPrintableText(buffer);
       sources.push({ rel, text: printable.text, lines: printable.lines, full: false, secrets: !invalid.has(rel), label: "text extracted from a non-text file" });
       if (buffer.includes(0)) {
         const joined = extractPrintableText(stripNul(buffer));
-        sources.push({ rel, text: joined.text, lines: joined.lines, full: false, secrets: false, label: "text of a non-text file with NUL bytes removed" });
+        sources.push({ rel, text: joined.text, lines: joined.lines, full: false, secrets: true, label: "text of a non-text file with NUL bytes removed" });
       }
       if (buffer.subarray(0, 1024).includes(Buffer.from("%PDF-"))) {
         const pdf = pdfStreamText(
@@ -1040,11 +1053,20 @@ function textPass(
           (data, maxOutputLength) => zlib.inflateSync(data, { maxOutputLength }),
         );
         pdfBudget -= pdf.inflatedBytes;
-        for (const part of pdf.parts) {
-          sources.push({ rel, text: part.text, lines: part.line, full: false, secrets: true, label: "text of a compressed PDF stream" });
+        // All streams of the file as one text (one scratch file), each line
+        // mapped to the line its stream starts on.
+        if (pdf.parts.length > 0) {
+          const texts: string[] = [];
+          const lines: number[] = [];
+          for (const part of pdf.parts) {
+            const partLines = part.text.split("\n");
+            texts.push(...partLines);
+            for (let i = 0; i < partLines.length; i += 1) lines.push(part.line);
+          }
+          sources.push({ rel, text: texts.join("\n"), lines, full: false, secrets: true, label: "text of a compressed PDF stream" });
         }
-        if (pdf.overLimit > 0) {
-          state.notAnalysed.push({ path: rel, reason: `${pdf.overLimit} compressed PDF stream(s) over the size or ratio limit (not analysed)` });
+        if (pdf.problems.length > 0) {
+          state.notAnalysed.push({ path: rel, reason: `PDF content not analysed: ${pdf.problems.join("; ")} (inflate limits: 1 MiB and ${ARCHIVE_MAX_RATIO}:1 per stream, ${PDF_INFLATE_BUDGET / 1024 / 1024} MiB per scan)` });
           continue;
         }
         if (pdf.undecoded.length > 0) {
@@ -1461,14 +1483,15 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   const out = options.out ?? path.join(options.cwd ?? process.cwd(), ".audit");
   const contentNotAnalysed: Array<{ path: string; reason: string }> = [];
   const invalidUtf8: string[] = [];
+  const withNul: string[] = [];
   const instructionRules = instructionRuleIds(options.rulesDir ?? defaultRulesDir());
   // Instruction matching covers the whole target: in a recursive scan a file
   // outside every package (`../../shared.md`) feeds the outside group.
   const skillRules = extendInstructionRules(loadRules(options.rulesDir ?? defaultRulesDir()), instructionRules, [""]);
   const textState: TextPassState = { passed: new Set(), notAnalysed: [], notes: [] };
   const scratch = makeTempDir();
-  const capability = capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed, invalidUtf8);
-  const strings = textPass(root, skillRules, instructionRules, scratch, invalidUtf8, textState);
+  const capability = capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed, invalidUtf8, withNul);
+  const strings = textPass(root, skillRules, instructionRules, scratch, invalidUtf8, withNul, textState);
   let scan: ScanResult;
   try {
     scan = await scanProject({
