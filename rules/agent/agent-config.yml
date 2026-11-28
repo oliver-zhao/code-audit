@@ -237,6 +237,9 @@ rules:
     pattern: 'dangerously[- _]?skip[- _]?permissions|--dangerously-bypass-approvals-and-sandbox|--permission-mode[= ]bypassPermissions|--approval-mode[= ]yolo|\b(?:codex|gemini|qwen|copilot|cursor-agent)\b[^\n]{0,80}\s--yolo\b|\bcopilot\b[^\n]{0,80}\s--allow-all(?:-tools)?\b|\bcursor-agent\b[^\n]{0,80}\s(?:--force|-f)\b|--dangerously-allow-all\b|--skip-permissions-unsafe\b'
     notPattern: '{{NEG}}\s+(?:[\w\x27]+\s+){0,3}[\x60"\x27]?(?:claude|codex|gemini|qwen|copilot|cursor-agent|amp|droid|--)'
     pathInclude: '{{INSTR}}'
+    # agent-cli-shellout (agent-skills.yml) reports the same command lines
+    # without the flag; one result per command.
+    group: agent-cli-launch
     message: The file tells the agent to start Claude Code, Codex, Gemini CLI, Copilot CLI, cursor-agent, Amp or Droid with every approval turned off; check that this only happens in a disposable sandbox.
     message_zh: 该文件要求 Agent 以关闭所有审批的方式启动 Claude Code、Codex、Gemini CLI、Copilot CLI、cursor-agent、Amp 或 Droid；需确认只在一次性沙箱中这样做。
     remediation: Run such sessions only in an isolated container or VM, or drop the flag and allowlist the needed commands.

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { canonicalExpressionLine, yamlKeyValues, type YamlKeyValue } from "./yamlValues.js";
+import { frontmatterKeyValues } from "./frontmatter.js";
 import { z } from "zod";
 import type { InventoryFile } from "./inventory.js";
 import type { Confidence, Severity } from "./finding.js";
@@ -48,6 +49,9 @@ export const RULE_LANGUAGES = [
   "shell",
   "template",
   "requirements",
+  // Not a file language: files the inventory left unread as binary inside a
+  // skill or plugin directory (see `binaryRules.ts`).
+  "binary",
 ] as const;
 
 const RuleLanguageSchema = z.enum(RULE_LANGUAGES);
@@ -97,6 +101,33 @@ const RuleObjectSchema = z
       .array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "withinKeys entries must be plain YAML keys"))
       .min(1)
       .optional(),
+    /**
+     * Markdown only: match only inside the values of these keys of the YAML
+     * front matter (the block between a leading `---` line and the next
+     * `---` line). A file without front matter, or whose front matter does
+     * not parse, is not matched (the latter with a warning).
+     */
+    withinFrontmatter: z
+      .array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/, "withinFrontmatter entries must be plain YAML keys"))
+      .min(1)
+      .optional(),
+    /**
+     * Python and the C-family languages: match the physical lines as written
+     * (comments, docstrings and string text included) instead of the lexed
+     * statements. No effect in other languages, which are matched that way.
+     */
+    rawLines: z.boolean().optional(),
+    /** Keep a match only when at least this many blank lines come right before its line. */
+    minBlankLinesBefore: z.number().int().min(1).max(100_000).optional(),
+    /**
+     * Rules with `languages: [binary]` only: the file must start with one of
+     * these byte sequences, written as upper-case hexadecimal (`7F454C46`),
+     * at most 8 bytes.
+     */
+    fileMagic: z
+      .array(z.string().regex(/^(?:[0-9A-F]{2}){1,8}$/, "fileMagic entries must be 1 to 8 bytes of upper-case hexadecimal"))
+      .min(1)
+      .optional(),
     message: z.string().min(1),
     message_zh: z.string().min(1).optional(),
     remediation: z.string().min(1),
@@ -113,6 +144,38 @@ const RuleObjectSchema = z
 export const RULE_FIELDS: readonly string[] = Object.keys(RuleObjectSchema.shape);
 
 const RuleSchema = RuleObjectSchema.superRefine((rule, ctx) => {
+    const issue = (message: string, field: string): void => {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [field] });
+    };
+    const binary = rule.languages.includes("binary");
+    if (binary) {
+      if (rule.languages.length !== 1) issue("the binary language cannot be combined with other languages", "languages");
+      for (const field of [
+        "patterns",
+        "filePattern",
+        "fileAbsentPattern",
+        "withinKeys",
+        "withinFrontmatter",
+        "rawLines",
+        "minBlankLinesBefore",
+        "codeOnly",
+        "redactEvidence",
+        "matchDeclarations",
+      ] as const) {
+        if (rule[field] !== undefined) issue(`${field} is not supported for binary rules`, field);
+      }
+      if (!rule.pattern && !rule.fileMagic && !rule.pathInclude) {
+        issue("a binary rule needs fileMagic, pattern (matched against the path) or pathInclude", "fileMagic");
+      }
+      return;
+    }
+    if (rule.fileMagic) issue("fileMagic is only supported for rules whose languages are [binary]", "fileMagic");
+    if (rule.withinFrontmatter) {
+      if (!rule.languages.every((language) => language === "markdown")) {
+        issue("withinFrontmatter is only supported for rules whose languages are [markdown]", "withinFrontmatter");
+      }
+      if (rule.withinKeys) issue("withinFrontmatter and withinKeys are mutually exclusive", "withinFrontmatter");
+    }
     if (!rule.pattern && !rule.patterns) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1905,7 +1968,7 @@ function literalScannerFor(ruleSet: RuleSet, language: string): LiteralScanner |
   if (byLanguage.has(language)) return byLanguage.get(language);
   const prefilters: LiteralPrefilter[] = [];
   for (const rule of ruleSet.rules) {
-    if (rule.compiled.prefilter && !rule.withinKeys && rule.languages.includes(language as never)) {
+    if (rule.compiled.prefilter && !rule.withinKeys && !rule.withinFrontmatter && rule.languages.includes(language as never)) {
       prefilters.push(rule.compiled.prefilter);
     }
   }
@@ -2041,7 +2104,7 @@ export function scanRules(
       const found = scanner ? scanner.scan(content) : undefined;
       const kept = fileRules.filter((rule) => {
         const prefilter = rule.compiled.prefilter;
-        if (!prefilter || rule.withinKeys || !found) return true;
+        if (!prefilter || rule.withinKeys || rule.withinFrontmatter || !found) return true;
         return passesFound(prefilter, found);
       });
       fileRules.length = 0;
@@ -2148,15 +2211,65 @@ export function scanRules(
       keyValues.set(cacheKey, result);
       return result;
     };
+    // Rules with `withinFrontmatter` see only the values of front matter
+    // keys. They never fall back to matching lines: a file without front
+    // matter has no values, and one whose front matter does not parse is
+    // not matched (with a warning).
+    const frontmatterValues = new Map<string, YamlKeyValue[]>();
+    let frontmatterFailed = false;
+    const frontmatterValuesOf = (keys: readonly string[]): YamlKeyValue[] => {
+      const cacheKey = keys.join("\u0000");
+      const cached = frontmatterValues.get(cacheKey);
+      if (cached) return cached;
+      if (frontmatterFailed) return [];
+      const parsed = frontmatterKeyValues(lines, keys);
+      if (!parsed.ok) {
+        frontmatterFailed = true;
+        warnings.push(
+          `${file.relPath}: ${parsed.reason}; rules limited to front matter keys were not matched in this file`,
+        );
+        return [];
+      }
+      frontmatterValues.set(cacheKey, parsed.values);
+      return parsed.values;
+    };
+    const valuesOfRule = (rule: LoadedRule): YamlKeyValue[] =>
+      rule.withinFrontmatter
+        ? frontmatterValuesOf(rule.withinFrontmatter)
+        : (keyValuesOf(rule.withinKeys as string[]) ?? []);
     const structuredRules = fileRules.filter(
-      (rule) => rule.withinKeys !== undefined && keyValuesOf(rule.withinKeys) !== undefined,
+      (rule) =>
+        rule.withinFrontmatter !== undefined ||
+        (rule.withinKeys !== undefined && keyValuesOf(rule.withinKeys) !== undefined),
     );
     const structured = new Set(structuredRules);
+
+    // Rules with `rawLines` see the physical lines as written in the
+    // languages whose units are lexed statements (comments, docstrings and
+    // string text included).
+    const lexed = file.language === "python" || isClikeLanguage(file.language);
+    const rawRules = lexed
+      ? fileRules.filter((rule) => rule.rawLines === true && !structured.has(rule))
+      : [];
+    const passes: Array<{ units: LogicalLine[]; rules: LoadedRule[] }> = [
+      { units, rules: rawRules.length > 0 ? fileRules.filter((rule) => !rawRules.includes(rule)) : fileRules },
+    ];
+    if (rawRules.length > 0) passes.push({ units: plainLogicalLines(lines, []), rules: rawRules });
+    const blankLinesBefore = (index: number, enough: number): number => {
+      let count = 0;
+      for (let line = index - 1; line >= 0 && count < enough; line -= 1) {
+        if ((lines[line] as string).trim().length > 0) break;
+        count += 1;
+      }
+      return count;
+    };
 
     // One hit per rule and physical line.
     const reported = new Set<string>();
     guarded(() => {
-    for (const unit of units) {
+    for (const pass of passes) {
+    if (outOfTime) break;
+    for (const unit of pass.units) {
       if (unit.text.trim().length === 0) continue;
       if (outOfTime || performance.now() > deadline) {
         outOfTime = true;
@@ -2180,7 +2293,7 @@ export function scanRules(
       const patternsPerSpan =
         codeLines > WHOLE_UNIT_PATTERNS_MAX_LINES || unit.bridge === true;
 
-      for (const rule of fileRules) {
+      for (const rule of pass.rules) {
         if (maskedIsBlank && !rule.matchDeclarations) continue;
         if (structured.has(rule)) continue;
         let text = rule.matchDeclarations ? unit.text : masked;
@@ -2235,6 +2348,12 @@ export function scanRules(
           const index = unit.start + lineInUnit;
           const lineStart = unit.offsets[lineInUnit] as number;
           const columnBase = unit.column ?? 0;
+          if (
+            rule.minBlankLinesBefore !== undefined &&
+            blankLinesBefore(index, rule.minBlankLinesBefore) < rule.minBlankLinesBefore
+          ) {
+            continue;
+          }
 
           if (rule.redactEvidence) {
             // What the rule matched is masked on its line for every finding,
@@ -2311,17 +2430,20 @@ export function scanRules(
         }
       }
     }
-    // Structured matching of `withinKeys` rules; see `yamlValues.ts`.
+    }
+    // Structured matching of `withinKeys` and `withinFrontmatter` rules; see
+    // `yamlValues.ts` and `frontmatter.ts`.
     for (const rule of structuredRules) {
       if (outOfTime) break;
-      const values = keyValuesOf(rule.withinKeys as string[]) ?? [];
+      const values = valuesOfRule(rule);
+      const keys = (rule.withinFrontmatter ?? rule.withinKeys) as string[];
       const compiled = rule.compiled;
       const locator = compiled.locator;
       if (!locator) continue;
       const rest = compiled.patterns?.slice(1);
       for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
         const value = values[valueIndex] as YamlKeyValue;
-        if (!(rule.withinKeys as string[]).includes(value.key)) continue;
+        if (!keys.includes(value.key)) continue;
         if (performance.now() > deadline) {
           outOfTime = true;
           break;

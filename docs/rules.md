@@ -15,7 +15,7 @@ finding rules and hotspot rules.
 |---|---|
 | `rules/sast/` | Code rules: Python, JavaScript/TypeScript, Java, Go, C/C++, C# (with Razor views and .NET configuration), Rust. |
 | `rules/iac/` | Dockerfile, Compose, Kubernetes, Terraform, GitHub Actions. |
-| `rules/agent/` | Agent configuration, instruction files and agent supply chain. |
+| `rules/agent/` | Agent configuration, instruction files and agent supply chain; skills, commands, subagents, their scripts and bundled binaries, and MCP server source (`agent-skills.yml`). |
 | `rules/deps/` | Dependency hygiene (installs over plain HTTP, `--trusted-host`, downloads in post-install scripts) in Markdown, JSON, YAML, shell scripts, requirements files, `pip.conf`, `uv.toml` and `.npmrc`. |
 | `rules/opengrep/` | Rules in Opengrep/Semgrep syntax, including the Python taint rules. They are **not** loaded by the built-in engine; they are passed to `opengrep` (or `semgrep`) when that tool is installed, and use that tool's schema. |
 
@@ -111,10 +111,20 @@ Secret detection (`packages/core/src/secrets.ts`) and dependency advisories
    against the *values* of the named mapping keys of the parsed document, so
    anchors, aliases, quoted keys and block scalars cannot hide a value. A
    file that does not parse is matched line by line, with a warning.
-6. Hits of rules that share a `group` and overlap in one expression collapse
+6. Rules with `withinFrontmatter` (`languages: [markdown]`) are matched
+   against the values of the named keys of the YAML front matter: the
+   block between a first line that is exactly `---` and the next line that
+   is exactly `---` (skills, commands and subagents keep `name`,
+   `description` and `allowed-tools` there). The block is parsed like a
+   `withinKeys` file (block scalars, quoting and escapes cannot hide a value)
+   and a hit is reported at the line of the value. A file without front
+   matter is not matched; front matter that is not closed or does not parse
+   is not matched either, and the run gets a warning naming the file. These
+   rules are not prefiltered.
+7. Hits of rules that share a `group` and overlap in one expression collapse
    into one result: the one with the highest confidence, then severity. This
    is how a specific rule and its API-only fallback avoid double reporting.
-7. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
+8. A comment `code-audit:ignore <rule-id>[, <rule-id>...] -- <reason>`
    suppresses the hit of a named rule (`*` matches any rule) when it is
    - on the matched line, on the first line of the statement, or on any
      other physical line of the expression the match belongs to (a
@@ -165,6 +175,37 @@ warning naming the language, file and lines (the first five regions of a
 file one by one, the rest counted in one warning; a rule scan lists at most
 1,000 warnings and counts the others).
 
+## Binary files in skills and plugins
+
+The inventory does not read binary files (a binary extension, a NUL byte in
+the first 8 KiB, more than 1 MiB). For files inside a skill or plugin
+directory it keeps a list instead: path, size and the first 8 bytes of the
+file, nothing more. A directory counts as a skill or plugin directory when
+its path contains `skills/`, `plugins/<name>/`, `.claude/`, `.codex/`,
+`.agents/`, `.opencode/` or `.claude-plugin/`, or when it or a parent holds a
+`SKILL.md` file or a `.claude-plugin/` directory. Inside such a directory the
+list also holds
+
+- the files of default-excluded directories (`__pycache__/`, `bin/`,
+  `build/`, ...; not `.git/`, `node_modules/`, `.venv/` or `venv/`) that have
+  a binary extension, sit in `__pycache__/` or have an executable header, and
+- text files whose header is an ELF, Mach-O, WebAssembly or zip header.
+
+At most 10,000 files are listed and at most 20,000 entries of excluded
+directories are looked at; beyond that the run gets a warning. The header is
+classified (`elf`, `mach-o`, `mach-o-universal`, `java-class`, `pe`, `wasm`,
+`python-bytecode`, `zip`, common archive, image and font formats, `text`
+for printable UTF-8 such as a text file over the size limit, `empty`, or
+`unknown`). The two-letter headers `MZ` and `BM` count only when the bytes
+are not printable text.
+
+Rules with `languages: [binary]` match this list, not text: `pathInclude` and
+`pathExclude` as usual, `pattern` and `notPattern` against the path, and
+`fileMagic` against the header. A hit is reported at line 1 with the evidence
+`binary file (<type>, <size> bytes)`; hits of one `group` on one file
+collapse into one. Text-only fields (`patterns`, `filePattern`, `withinKeys`,
+`rawLines`, ...) are rejected for binary rules.
+
 ## Rule file schema
 
 A rule file is a YAML mapping with a `rules` list (or the list itself at top
@@ -207,8 +248,8 @@ in `packages/core/src/rules.ts`, by a test):
 | `kind` | `finding` \| `hotspot` | no (default `finding`) | A hotspot is a reading-list entry and is never counted. |
 | `cwe` | string `CWE-<number>` | yes | Weakness id. |
 | `owasp` | string | no | OWASP Top 10 reference, for example `A03:2021`. |
-| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `rust`, `razor`, `template`, `shell`, `dockerfile`, `yaml`, `json`, `toml`, `ini`, `properties`, `requirements`, `xml`, `markdown` | yes | File languages the rule applies to (see the table above). Terraform files are `yaml`. |
-| `pattern` | regex | one of `pattern` / `patterns` | The locator. |
+| `languages` | list, at least one of `csharp`, `java`, `javascript`, `typescript`, `python`, `go`, `c`, `cpp`, `rust`, `razor`, `template`, `shell`, `dockerfile`, `yaml`, `json`, `toml`, `ini`, `properties`, `requirements`, `xml`, `markdown`, or exactly `[binary]` | yes | File languages the rule applies to (see the table above). Terraform files are `yaml`. `binary` makes a [binary rule](#binary-files-in-skills-and-plugins). |
+| `pattern` | regex | one of `pattern` / `patterns` (binary rules: optional) | The locator. In a binary rule it is matched against the file's path. |
 | `patterns` | list of regex | one of `pattern` / `patterns` | The first entry is the locator; all others must also match (AND). Mutually exclusive with `pattern`. |
 | `notPattern` | regex | no | Discards a match when it matches the expression around it. |
 | `pathInclude` | regex | no | The rule applies only to paths (relative, `/`-separated) that match. Case-sensitive. |
@@ -221,6 +262,10 @@ in `packages/core/src/rules.ts`, by a test):
 | `redactEvidence` | boolean | no | The match is a credential: mask it in every output. With a capture group named `secret` only that group is masked. Required for every rule that matches a credential literal. With `withinKeys` the matched text is looked up on the lines of the value; when it is not written there as matched (escapes, folding), the whole line is masked. |
 | `codeOnly` | boolean | no | Python and the C-family languages (C#, Java, JavaScript/TypeScript, Go, C/C++, Rust): ignore a match that starts inside a string literal or a JavaScript regex literal (for API-call rules). No effect in other languages. |
 | `withinKeys` | list of YAML keys | no | YAML or JSON only (`languages: [yaml]` or `[json]`, not mixed): match inside the values of these mapping keys. |
+| `withinFrontmatter` | list of YAML keys | no | Markdown only (`languages: [markdown]`): match inside the values of these keys of the file's YAML front matter. Mutually exclusive with `withinKeys`. |
+| `rawLines` | boolean | no | Python and the C-family languages: match the physical lines as written, comments, docstrings and string text included, instead of the lexed statements. No effect in other languages. |
+| `minBlankLinesBefore` | integer | no | Keep a match only when at least this many blank lines come right before its line. |
+| `fileMagic` | list of upper-case hex strings (1 to 8 bytes) | no | Binary rules only (`languages: [binary]`): the file must start with one of these byte sequences, for example `7F454C46`. |
 | `message` | string | yes | What was found and why it matters. |
 | `message_zh` | string | no | Chinese message. |
 | `remediation` | string | yes | How to fix it. |

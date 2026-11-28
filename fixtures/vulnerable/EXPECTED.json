@@ -6475,6 +6475,629 @@
       "ruleId": "rs-command-shell-api",
       "language": "rust",
       "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-anti-refusal-never-refuse",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 5,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 6,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 7,
+      "ruleId": "agent-anti-refusal-no-disclaimer",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 8,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 9,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 10,
+      "ruleId": "agent-anti-refusal-no-rules",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 11,
+      "ruleId": "agent-anti-refusal-jailbreak-persona",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 12,
+      "ruleId": "agent-anti-refusal-jailbreak-persona",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/anti-refusal/AGENTS.md",
+      "line": 13,
+      "ruleId": "agent-anti-refusal-jailbreak-persona",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-cloud-upload",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-cloud-upload",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-cloud-upload",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 5,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 6,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/cloud/AGENTS.md",
+      "line": 7,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/leak/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/leak/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/leak/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-prompt-leak",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/mcp/server.py",
+      "line": 10,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.py",
+      "line": 11,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.py",
+      "line": 16,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.py",
+      "line": 21,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.py",
+      "line": 26,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 4,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 5,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 6,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 7,
+      "ruleId": "mcp-tool-poisoning-hidden-unicode",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 8,
+      "ruleId": "mcp-tool-poisoning-homoglyph",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/mcp/server.ts",
+      "line": 9,
+      "ruleId": "mcp-tool-poisoning-instruction",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 4,
+      "ruleId": "agent-memory-tamper-shell-startup",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 5,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 6,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 7,
+      "ruleId": "agent-memory-tamper-agent-config",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 8,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 9,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/memory/CLAUDE.md",
+      "line": 10,
+      "ruleId": "agent-memory-tamper-project-memory",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/pkgsrc/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/pkgsrc/AGENTS.md",
+      "line": 2,
+      "ruleId": "dep-pip-extra-index-url",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/pkgsrc/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/pkgsrc/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/pkgsrc/AGENTS.md",
+      "line": 5,
+      "ruleId": "agent-package-source-redirect",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/shellout/AGENTS.md",
+      "line": 2,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/shellout/AGENTS.md",
+      "line": 3,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/shellout/AGENTS.md",
+      "line": 4,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/shellout/AGENTS.md",
+      "line": 5,
+      "ruleId": "agent-cli-shellout",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/binaries/__pycache__/convert.cpython-312.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/assets/logo.png",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/assets/notes.txt",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/assets/readme.md",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-disguised",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/bin/helper",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/convert.pyc",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/legacy.pyo",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-pyc",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/lib/Main.class",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/lib/addon.node",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-native-name",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/lib/core",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/lib/libconv.so",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-native-name",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/lib/native.dll",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-native-name",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/binaries/tool.exe",
+      "line": 1,
+      "ruleId": "agent-bundled-binary-executable",
+      "language": "binary",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/delegate/scripts/run.py",
+      "line": 2,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/delegate/scripts/run.py",
+      "line": 3,
+      "ruleId": "agent-cli-shellout",
+      "language": "python",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/padding/SKILL.md",
+      "line": 29,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/padding/SKILL.md",
+      "line": 52,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/padding/SKILL.md",
+      "line": 75,
+      "ruleId": "prompt-injection-padding-blank-lines",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/padding2/SKILL.md",
+      "line": 7,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/padding2/SKILL.md",
+      "line": 8,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/padding2/SKILL.md",
+      "line": 9,
+      "ruleId": "prompt-injection-padding-whitespace",
+      "language": "markdown",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/pkgsrc/.npmrc",
+      "line": 1,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/pkgsrc/pip.conf",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "ini",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/pkgsrc/uv.toml",
+      "line": 2,
+      "ruleId": "agent-package-source-redirect-config",
+      "language": "toml",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/config.js",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/install.sh",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/install.sh",
+      "line": 3,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/tamper/scripts/setup.py",
+      "line": 2,
+      "ruleId": "agent-memory-tamper-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/trigger-always/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-before/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-builtin/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-builtin2/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-builtin3/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-builtin",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-every/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-always",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-stuffing/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-stuffing2/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/trigger-stuffing3/SKILL.md",
+      "line": 3,
+      "ruleId": "agent-trigger-abuse-keyword-stuffing",
+      "language": "markdown",
+      "kind": "hotspot"
+    },
+    {
+      "file": "agents/f1/skills/upload/scripts/backup.sh",
+      "line": 2,
+      "ruleId": "agent-cloud-upload-secrets",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/upload/scripts/backup.sh",
+      "line": 3,
+      "ruleId": "agent-cloud-upload",
+      "language": "shell",
+      "kind": "hotspot"
     }
   ],
   "opengrep": [

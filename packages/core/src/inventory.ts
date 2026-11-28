@@ -8,6 +8,14 @@ import type { PathContext } from "./finding.js";
 import { classifyFileDetailed, type PathContextSource } from "./pathContext.js";
 import { LATEST_OUTPUT_FILES, RUN_OUTPUT_FILES, TOOL_NAME, toolRootDir } from "./meta.js";
 import {
+  MAX_BINARY_FILES,
+  binaryFileOf,
+  isAgentPackagePath,
+  looksExecutableHeader,
+  readMagic,
+  type BinaryFile,
+} from "./binaryRules.js";
+import {
   NUGET_PROJECT_FILE,
   isNuGetImportedFile,
   isNuGetLockfileName,
@@ -79,6 +87,11 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 export const MAX_TEXT_FILE_BYTES = 1024 * 1024;
+
+/** Directory entries looked at while listing binaries in excluded directories of packages. */
+const BINARY_LIST_MAX_ENTRIES = 20_000;
+/** Excluded directories that are not listed for binaries even inside a package. */
+const BINARY_LIST_SKIPPED_DIRS = new Set([".git", "node_modules", ".venv", "venv", ".audit", ".code-audit"]);
 
 export type ManifestType =
   | "npm"
@@ -183,6 +196,14 @@ export interface InventoryResult {
    * count stopped at `EXCLUDED_COUNT_MAX_ENTRIES` directory entries.
    */
   excludedSource: { total: number; truncated: boolean; byDirectory: Record<string, number> };
+  /**
+   * Files inside skill and plugin directories that were not read as text
+   * (binary extension or content, over the size limit, in a default-excluded
+   * directory), and text files there whose header is an executable or archive
+   * header: path, size and the first 8 bytes. Matched by binary rules; see
+   * `binaryRules.ts`.
+   */
+  binaries: BinaryFile[];
 }
 
 interface Marker {
@@ -556,6 +577,62 @@ export function inventory(
   let toolOutputUnread = 0;
   const excludedSource = { total: 0, truncated: false, byDirectory: {} as Record<string, number> };
   let excludedEntries = 0;
+  const binaries: BinaryFile[] = [];
+  let binariesTruncated = false;
+  const addBinary = (binary: BinaryFile): void => {
+    if (binaries.length >= MAX_BINARY_FILES) {
+      binariesTruncated = true;
+      return;
+    }
+    binaries.push(binary);
+  };
+  const recordBinary = (rel: string, abs: string, size: number, reason: string, header?: Uint8Array): void => {
+    addBinary(binaryFileOf(rel, abs, size, header ?? readMagic(abs), reason));
+  };
+  // Default-excluded directories inside a skill or plugin (`__pycache__/`,
+  // `bin/`, `build/`) are not read, but a package that ships compiled code
+  // there is reported: their files are listed by header (8 bytes each),
+  // within a budget of directory entries.
+  let binaryListEntries = 0;
+  const listExcludedBinaries = (dir: string, depth: number): void => {
+    if (depth > 20 || binaryListEntries > BINARY_LIST_MAX_ENTRIES) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      binaryListEntries += 1;
+      if (binaryListEntries > BINARY_LIST_MAX_ENTRIES) {
+        // Once: the enclosing directories stop at the check above.
+        if (binaryListEntries === BINARY_LIST_MAX_ENTRIES + 1) warnings.push(
+          `more than ${BINARY_LIST_MAX_ENTRIES} entries in default-excluded directories of skill or plugin directories; binary files beyond that were not listed`,
+        );
+        return;
+      }
+      const abs = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!BINARY_LIST_SKIPPED_DIRS.has(entry.name.toLowerCase())) listExcludedBinaries(abs, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const rel = toPosixRelative(root, abs);
+      let size = 0;
+      try {
+        size = fs.statSync(abs).size;
+      } catch {
+        size = 0;
+      }
+      const header = readMagic(abs);
+      const binaryName = BINARY_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
+      if (binaryName || /(?:^|\/)__pycache__\//.test(rel) || (header && looksExecutableHeader(header))) {
+        recordBinary(rel, abs, size, "in a default-excluded directory", header);
+      }
+    }
+  };
 
   // Excluded directories are not read. Their source files are counted (names
   // only, bounded) so the report can say how much code was left out.
@@ -585,7 +662,7 @@ export function inventory(
     }
   };
 
-  const walk = (dir: string): void => {
+  const walk = (dir: string, parentInPackage: boolean): void => {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -599,6 +676,15 @@ export function inventory(
     }
 
     entries.sort((a, b) => a.name.localeCompare(b.name));
+    // A skill (a directory with SKILL.md) or a plugin (with .claude-plugin/)
+    // makes its whole tree a package for the binary list.
+    const inPackage =
+      parentInPackage ||
+      entries.some(
+        (entry) =>
+          (entry.isFile() && entry.name.toLowerCase() === "skill.md") ||
+          (entry.isDirectory() && entry.name === ".claude-plugin"),
+      );
 
     // Reports of earlier runs (an `--out` directory inside the audit root)
     // are not part of the audited project.
@@ -638,9 +724,15 @@ export function inventory(
         ) {
           skipped.push({ relPath: `${rel}/`, reason: "default-excluded directory" });
           if (!NEVER_SCANNED_DIRS.has(lowerName)) countExcluded(abs, lowerName, 0);
+          if (
+            (inPackage || isAgentPackagePath(`${rel}/`)) &&
+            !BINARY_LIST_SKIPPED_DIRS.has(lowerName)
+          ) {
+            listExcludedBinaries(abs, 0);
+          }
           continue;
         }
-        walk(abs);
+        walk(abs, inPackage);
         continue;
       }
 
@@ -693,9 +785,11 @@ export function inventory(
         continue;
       }
 
+      const packaged = inPackage || isAgentPackagePath(rel);
       const ext = path.extname(entry.name).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) {
         skipped.push({ relPath: rel, reason: "binary extension" });
+        if (packaged) recordBinary(rel, abs, stat.size, "binary extension");
         continue;
       }
       if (stat.size > maxFileSize) {
@@ -703,6 +797,7 @@ export function inventory(
           relPath: rel,
           reason: `file exceeds the ${Math.floor(maxFileSize / 1024 / 1024)} MB limit`,
         });
+        if (packaged) recordBinary(rel, abs, stat.size, "over the size limit");
         continue;
       }
 
@@ -716,7 +811,12 @@ export function inventory(
       }
       if (looksBinary(buffer)) {
         skipped.push({ relPath: rel, reason: "binary content detected (NUL byte)" });
+        if (packaged) recordBinary(rel, abs, stat.size, "binary content (NUL byte)", buffer);
         continue;
+      }
+      // A text file (no NUL byte) with an executable or archive header.
+      if (packaged && buffer.length >= 4 && looksExecutableHeader(buffer.subarray(0, 8))) {
+        recordBinary(rel, abs, stat.size, "text file with a binary header", buffer);
       }
 
       const text = buffer.toString("utf8");
@@ -777,7 +877,12 @@ export function inventory(
     }
   };
 
-  walk(root);
+  walk(root, false);
+  if (binariesTruncated) {
+    warnings.push(
+      `more than ${MAX_BINARY_FILES} binary files in skill or plugin directories; only the first ${MAX_BINARY_FILES} were listed for the binary rules`,
+    );
+  }
 
   const lockfiles = manifests.filter((manifest) => manifest.isLockfile);
 
@@ -800,5 +905,6 @@ export function inventory(
     toolOutput,
     toolOutputUnread,
     excludedSource,
+    binaries,
   };
 }

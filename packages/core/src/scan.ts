@@ -19,6 +19,7 @@ import {
   type Finding,
   type Severity,
 } from "./finding.js";
+import { scanBinaryRules } from "./binaryRules.js";
 import { inventory, type InventoryResult } from "./inventory.js";
 import { SOURCE_LIKE_LANGUAGES, type Language } from "./language.js";
 import { defaultRulesDir, TOOL_NAME, TOOL_VERSION } from "./meta.js";
@@ -476,7 +477,9 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
 
     const ruleFindings: Finding[] = [];
     const ruleHotspots: Finding[] = [];
-    for (const hit of ruleScan.hits) {
+    // Binary files in skill and plugin directories (see `binaryRules.ts`).
+    const binaryHits = builtinEnabled ? scanBinaryRules(inv.binaries, ruleSet) : [];
+    for (const hit of [...ruleScan.hits, ...binaryHits]) {
       const finding = findingOfHit(hit);
       if (hit.rule.kind === "hotspot") ruleHotspots.push(finding);
       else ruleFindings.push(finding);
