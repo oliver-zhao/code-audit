@@ -7667,6 +7667,272 @@
       "kind": "finding"
     },
     {
+      "file": "agents/f1/skills/credentials-review/scripts/b01_dollar_lt.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b02_pyc.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b03_nodee.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b04_jq.sh",
+      "line": 2,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b04b_jq_aws.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b05_xargs.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b06_tee.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b06b_tee2.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b07_pbcopy.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b08_exec3.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b09_dd.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b10_cut.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b11_while_read.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b12_perl.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b13_ruby.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b14_mapfile.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b15_source.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b16_ln.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b17_gzip.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b18_openssl.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b19_less.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b20_py_shutil.py",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b21_py_ioopen.py",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b22_py_codecs.py",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b23_node_stream.js",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b24_node_promises.js",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b25_bun.js",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "javascript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b26_deno.ts",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "typescript",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b27_ps_gc_alias.ps1",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "powershell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b28_ps_typeget.ps1",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "powershell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b29_ps_readallbytes.ps1",
+      "line": 1,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "powershell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b30_curl_at_only.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b31_awk_getline.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b32_git_cred.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b33_nl.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b34_sh_dot.sh",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/b35_heredoc.py",
+      "line": 2,
+      "ruleId": "agent-credential-exfil-script",
+      "language": "python",
+      "kind": "finding"
+    },
+    {
+      "file": "agents/f1/skills/credentials-review/scripts/q13_grep_netrc.sh",
+      "line": 2,
+      "ruleId": "agent-credential-read-script",
+      "language": "shell",
+      "kind": "finding"
+    },
+    {
       "file": "agents/review/ev1/.claude/skills/x/SKILL.md",
       "line": 5,
       "ruleId": "agent-anti-refusal-never-refuse",

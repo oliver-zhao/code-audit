@@ -174,44 +174,63 @@ Scripts of a package (shell, Python, JavaScript, TypeScript and PowerShell,
 also extensionless ones with a `#!` line; not test files) are checked for a
 read or copy of a credential **on one logical line**:
 
-- a reader command with the file as its argument (`cat`, `base64`, `xxd`,
-  `od`, `strings`, `head`, `tail`, `less`, `more`, `grep`, `awk`, `sed`,
-  `dd`, ...), a `<` redirection, an `@file` / `-T file` / `--post-file` /
-  `-InFile` upload;
-- `open()`, `read_text()`, `read_bytes()`, `netrc.netrc()`, `readFileSync`,
-  `readFile`, `createReadStream`, `Get-Content`, `[IO.File]::Read*`;
-- `tar`, `zip`, `cp`, `rsync`, `scp`, `Copy-Item` (and `grep -r`) with the
-  credential, or a whole `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube` or
-  `~/.docker` directory, as the source;
-- `security find-generic-password` / `dump-keychain` and `gh auth token`, also
-  as an argv list (`["security", "find-generic-password", ...]`).
+- any shell or PowerShell command that takes the file as an argument of its
+  own (`cat`, `gzip`, `perl`, `sort`, `jq`, `type`, `xargs cat`, ...), except
+  the commands that only test, list, hash, change modes, print or hand the key
+  to ssh (`test`, `[`, `ls`, `stat`, `chmod`, `chown`, `touch`, `echo`,
+  `ssh-add`, `ssh-keygen`, `ssh`); a `<` redirection; an `@file`, `-T file`,
+  `--post-file` or `-InFile` upload;
+- `open()`, `io.FileIO`, `codecs.open`, `read_text()`, `read_bytes()`,
+  `netrc.netrc()`, `readFileSync`, `readFile`, `createReadStream`,
+  `Bun.file()`, `Deno.readTextFile`, `Get-Content`, `[IO.File]::Read*`, a
+  command string passed to `system`, `exec`, `run` or `spawn`;
+- `tar`, `zip`, `cp`, `mv`, `ln`, `rsync`, `scp`, `Copy-Item` (and `grep -r`)
+  with the credential, or a whole `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube` or
+  `~/.docker` directory, as the source; a copy into a credential directory (a
+  backup before key rotation) is not a read;
+- `security find-generic-password` / `dump-keychain`, `git credential fill`
+  and `gh auth token`, also as an argv list (`["security",
+  "find-generic-password", ...]`).
 
 The credentials are SSH private keys (not `known_hosts`, `config`,
 `authorized_keys` or `*.pub`), `~/.aws/credentials`, `~/.git-credentials`,
 `~/.netrc`, `~/.config/gh/hosts.yml`, `~/.docker/config.json` and
 `~/.kube/config`. A path that is only named is not a read: an entry of a
-list, set or dict, a regex, a comparison, an assigned constant, an argparse
-default, or a key handed to `ssh -i`, `IdentityFile` or `key_filename`.
+list, set or dict, a regex, a comparison, an assignment to a variable or an
+option (`user.signingkey=`, `SOPS_AGE_SSH_PRIVATE_KEY_FILE=`), an argparse
+default, a word inside a quoted sentence, or a key handed to `ssh -i`,
+`IdentityFile`, `key_filename`, `--private-key`, `--kubeconfig` or
+`--config`.
 
 Such a read is `agent-credential-read-script` (high, confidence medium:
 `REVIEW`). When it is an SSH private key, `~/.aws/credentials`,
-`~/.git-credentials`, a keychain password (`-w`) or dump, or a whole
-`~/.ssh`, `~/.aws` or `~/.gnupg` directory, and the same file uses the
-network in any way (curl, wget, nc, scp or rsync to a host, `/dev/tcp`, an
-HTTP client of any method, a socket, `Invoke-WebRequest`, an object-storage
-upload), it is `agent-credential-exfil-script` instead (high, confidence
-high, tagged `malicious-intent`: `DO_NOT_INSTALL`). `~/.netrc`, the GitHub
-CLI token, Docker and Kubernetes configuration stay `REVIEW` with a network
-use, since a script commonly uses such a token with its own service. One line
-gives one of the two; a cloud-storage upload of the file is
+`~/.git-credentials`, `git credential fill`, a keychain password (`-w`) or
+dump, or a whole `~/.ssh`, `~/.aws` or `~/.gnupg` directory, and the same
+file uses the network in any way (curl, wget, nc, ssh, scp or rsync to a
+host, `/dev/tcp`, an HTTP client of any method, a socket,
+`Invoke-WebRequest`, an object-storage upload), it is
+`agent-credential-exfil-script` instead (high, confidence high, tagged
+`malicious-intent`: `DO_NOT_INSTALL`). `~/.netrc`, the GitHub CLI token,
+Docker and Kubernetes configuration stay `REVIEW` with a network use, since
+a script commonly uses such a token with its own service. One line gives
+one of the two; a cloud-storage upload of the file is
 `agent-cloud-upload-secrets`.
 
-Limits: the path must appear in the reading line. A path kept in a variable
-(`F=~/.ssh/id_rsa; cat "$F"`, `D=~/.ssh; curl -F f=@$D/id_rsa`,
-`Join-Path` into `$p`), a directory joined in one statement and read in the
-next, and a read in one script with the upload in another are not
-connected. Other stores (`~/.config/gcloud`, `~/.azure`, `~/.npmrc`,
-`~/.pypirc`) are not checked.
+Limits: the path must appear in the line that reads it. A directory or path
+kept in a variable and read on a later line is not connected, in any
+language:
+
+- shell: `F=~/.ssh/id_rsa; cat "$F"`, `D=~/.ssh; curl -F f=@$D/id_rsa`;
+- Python: `d = os.path.join(os.path.expanduser("~"), ".ssh")` and then
+  `open(os.path.join(d, "id_rsa"))`;
+- Node: `const d = path.join(os.homedir(), ".ssh")` and then
+  `fs.readFileSync(path.join(d, "id_rsa"))`;
+- PowerShell: `$p = Join-Path $HOME ".ssh\id_rsa"` and then
+  `Get-Content $p`.
+
+A read in one script and the upload in another are not connected either
+(the network check is per file). Other stores (`~/.config/gcloud`,
+`~/.azure`, `~/.npmrc`, `~/.pypirc`) are not checked.
 
 ## Archives
 
@@ -250,6 +269,14 @@ mode 0644, created exclusively without following links, every path checked
 against the directory afterwards) that is removed when the scan ends, also
 after an error or Ctrl-C.
 
+**Reviewing an archive or git run afterwards.** An archive is unpacked, and a
+git URL cloned, into a temporary directory that is removed when the scan
+ends. The run's findings, reports and `skill.json` stay readable
+(`audit_findings`, `audit_report`), but its files are gone: `audit_read`,
+`audit_search`, `audit_add_finding` and verdict evidence (`trace`,
+`control`) answer `RUN_FILES_DELETED`, "this run's files were unpacked … to a
+temporary directory that no longer exists". To review the files, unpack or
+clone the package into a directory and scan that directory.
 ## Git targets
 
 Only `https://host/path`, `ssh://[user@]host[:port]/path` and

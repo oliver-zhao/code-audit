@@ -173,15 +173,65 @@ interface TrackedRun {
 const trackedRuns = new Map<string, TrackedRun>();
 
 /**
- * The wrapper's marker words (also spaced, hyphenated or in another case)
- * inside repository text: a file name or a line that contains them could
- * otherwise close the wrapper early and pose as tool output.
+ * The wrapper's delimiters are runs of three angle brackets. Repository text
+ * must never contain such a run, whatever it is spelt with: a run of three or
+ * more `<` (or `>`) is replaced, also when the brackets are look-alikes
+ * (fullwidth, guillemets, mathematical and CJK angle brackets, anything NFKC
+ * maps to `<` / `>`) and when invisible characters (zero-width, soft hyphen,
+ * bidi controls, combining marks, variation selectors) sit between them.
+ * Only wrapContent's own delimiters contain such a run.
  */
-const MARKER_TEXT = /(?:END[\s_-]*)?UNTRUSTED[\s_-]*REPOSITORY[\s_-]*CONTENT/gi;
-const MARKER_REPLACEMENT = "[wrapper marker text removed]";
+const LEFT_ANGLES = new Set(["<", "\u2039", "\u00ab", "\u2329", "\u3008", "\u27e8", "\u276e", "\u276c", "\u02c2", "\u1438", "\ufe64", "\uff1c", "\u29fc", "\u27ea", "\u300a", "\u226a", "\u22d8", "\u2a7d", "\u2264", "\u2a79"]);
+const RIGHT_ANGLES = new Set([">", "\u203a", "\u00bb", "\u232a", "\u3009", "\u27e9", "\u276f", "\u276d", "\u02c3", "\u1433", "\ufe65", "\uff1e", "\u29fd", "\u27eb", "\u300b", "\u226b", "\u22d9", "\u2a7e", "\u2265", "\u2a7a"]);
+const INVISIBLE = /^[\p{M}\p{Cf}\u00ad\u034f\u115f\u1160\u180e\u3164\ufe00-\ufe0f\uffa0]$/u;
+
+function angleOf(char: string): "<" | ">" | undefined {
+  if (LEFT_ANGLES.has(char)) return "<";
+  if (RIGHT_ANGLES.has(char)) return ">";
+  const folded = char.normalize("NFKC");
+  if (folded === "<" || LEFT_ANGLES.has(folded)) return "<";
+  if (folded === ">" || RIGHT_ANGLES.has(folded)) return ">";
+  return undefined;
+}
+
+const ANGLE_RUN_REPLACEMENT: Record<"<" | ">", string> = { "<": "(lt x3)", ">": "(gt x3)" };
 
 function neutralizeMarkers(text: string): string {
-  return text.replace(MARKER_TEXT, MARKER_REPLACEMENT);
+  if (!/[^\x20-\x3b=?-\x7e\n\t]/.test(text) && !/<<<|>>>/.test(text)) return text;
+  const chars = [...text];
+  let out = "";
+  let index = 0;
+  while (index < chars.length) {
+    const char = chars[index] as string;
+    const angle = angleOf(char);
+    if (angle === undefined) {
+      out += char;
+      index += 1;
+      continue;
+    }
+    // The run: brackets of this direction with invisible characters between them.
+    let end = index;
+    let count = 0;
+    let last = index;
+    while (end < chars.length) {
+      const next = chars[end] as string;
+      if (angleOf(next) === angle) {
+        count += 1;
+        last = end;
+      } else if (!INVISIBLE.test(next)) {
+        break;
+      }
+      end += 1;
+    }
+    if (count >= 3) {
+      out += ANGLE_RUN_REPLACEMENT[angle];
+      index = last + 1;
+    } else {
+      out += chars.slice(index, last + 1).join("");
+      index = last + 1;
+    }
+  }
+  return out;
 }
 
 function wrapContent(text: string): string {
@@ -1644,7 +1694,7 @@ function registerSkillTool(server: McpServer, base: ServerBase, baseRule: string
     {
       title: "Vet a skill or plugin before install",
       description:
-        "Scan a skill or plugin package before it is installed and return one deterministic verdict per package: DO_NOT_INSTALL (a rule tagged malicious-intent matched, or a critical high-confidence finding), REVIEW (high findings or hotspots), INCOMPLETE (part of the package was not analysed) or SAFE_TO_INSTALL (no known risk patterns found; not a guarantee of safety). The package is always audited as untrusted. target is a local directory, a SKILL.md, or a .zip / .tar / .tar.gz / .tgz archive inside the base directory; archives are checked before unpacking (links, path traversal, duplicate paths, size and ratio limits) and unpacked into a temporary directory that is removed afterwards. Git URLs are NOT accepted over MCP, so that a model cannot make the server clone from the network: the user clones the repository first, or runs `code-audit skill <url>` on the command line. The run is written to <base>/.audit/<run_id>, never into the package. A SKILL.md target scans the directory that contains it. Each package also carries `capabilities`: how many of its scripts use the network, run subprocesses or write files, whether SKILL.md declares allowed-tools, and the capabilities it uses without declaring them; `details` lists the allowed-tools and up to five script paths per capability (redacted). Package names, paths (also `path` and `display`), tools and reasons are untrusted repository-derived content; control, bidi and zero-width characters are replaced and the wrapper's marker text is removed from them. " +
+        "Scan a skill or plugin package before it is installed and return one deterministic verdict per package: DO_NOT_INSTALL (a rule tagged malicious-intent matched, or a critical high-confidence finding), REVIEW (high findings or hotspots), INCOMPLETE (part of the package was not analysed) or SAFE_TO_INSTALL (no known risk patterns found; not a guarantee of safety). The package is always audited as untrusted. target is a local directory, a SKILL.md, or a .zip / .tar / .tar.gz / .tgz archive inside the base directory; archives are checked before unpacking (links, path traversal, duplicate paths, size and ratio limits) and unpacked into a temporary directory that is removed afterwards. Git URLs are NOT accepted over MCP, so that a model cannot make the server clone from the network: the user clones the repository first, or runs `code-audit skill <url>` on the command line. The run is written to <base>/.audit/<run_id>, never into the package. A SKILL.md target scans the directory that contains it. Each package also carries `capabilities`: how many of its scripts use the network, run subprocesses or write files, whether SKILL.md declares allowed-tools, and the capabilities it uses without declaring them; `details` lists the allowed-tools and up to five script paths per capability (redacted). Package names, paths (also `path` and `display`), tools and reasons are untrusted repository-derived content; control, bidi and zero-width characters are replaced, and in every string this server returns a run of three or more angle brackets (also look-alike ones) is replaced, so only the wrapper's own delimiters contain one. An archive run's files are deleted after the scan: its findings stay readable, but audit_read, audit_search and evidence checks answer RUN_FILES_DELETED. " +
         baseRule,
       inputSchema: {
         target: z

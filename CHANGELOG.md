@@ -83,13 +83,17 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 
 - Rules `agent-credential-read-script` (high, confidence medium) and
   `agent-credential-exfil-script` (high, confidence high, `malicious-intent`):
-  a skill or plugin script that reads or copies a credential on one line (a
-  reader command, `open()`, `readFileSync`, `Get-Content`, an `@file`
-  upload, a `<` redirection, an archive or copy of the file or of a whole
-  `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube` or `~/.docker` directory), or
-  runs `security find-generic-password` or `gh auth token`. A path that is
-  only named (a list, a regex, a comparison, a default, `ssh -i`) is not a
-  read, and test files are not checked. An SSH private key,
+  a skill or plugin script that reads or copies a credential on one line:
+  any shell or PowerShell command that takes the file as an argument except
+  those that only test, list, change modes, print or hand the key to ssh;
+  `open()`, `io.FileIO`, `readFileSync`, `Bun.file`, `Deno.readTextFile`,
+  `Get-Content`; an `@file` upload or a `<` redirection; an archive, copy or
+  link of the file or of a whole `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`
+  or `~/.docker` directory (not a backup inside that directory);
+  `security find-generic-password`, `git credential fill` or `gh auth
+  token`. A path that is only named (a list, a regex, a comparison, an
+  assignment, a default, `ssh -i`, `--private-key`, `user.signingkey=`) is
+  not a read, and test files are not checked. An SSH private key,
   `~/.aws/credentials`, `~/.git-credentials`, a keychain password (`-w`) or a
   whole `~/.ssh` / `~/.aws` / `~/.gnupg` directory in a file that uses the
   network is the tagged rule (`DO_NOT_INSTALL`); `~/.netrc`, the GitHub CLI,
@@ -100,9 +104,11 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
 - MCP `audit_skill`: each package carries `capabilities` (how many scripts
   use the network, subprocesses or file writes, whether `allowed-tools` is
   declared, what is undeclared); `details` lists the tools and up to five
-  script paths per capability. Every string the MCP server returns has the
-  untrusted-content wrapper's marker text removed, and package names and
-  paths are printable, without bidi or zero-width characters.
+  script paths per capability. In every string the MCP server returns, a run
+  of three or more angle brackets (also fullwidth or other look-alike ones,
+  and with invisible characters between them) is replaced, so repository
+  text cannot close the untrusted-content wrapper; package names and paths
+  are printable, without bidi or zero-width characters.
 - `findings.json`, SARIF and MCP `audit_findings` carry the agreeing
   independent reviewer's own status (`independentStatus` /
   `independent_status`), and the report says `confirmed (independently
@@ -149,6 +155,14 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
   false "the file no longer exists"), and `audit_add_finding` accepted paths
   of the base. A root that run.json records inside the directory that
   contains the run is now the run's root for every tool.
+- `code-audit skill` of a macOS `tar czf` archive was refused
+  (`ARCHIVE_BAD_NAME`) because of the binary extended-attribute records
+  (`SCHILY.xattr.com.apple.provenance`) macOS tar adds; pax records other
+  than `path`, `linkpath` and `size` are now ignored, and `._*` AppleDouble
+  entries are ordinary files.
+- `audit_read`, `audit_search` and evidence checks on a run of an archive or
+  git target say that its files were unpacked to a temporary directory that
+  no longer exists (`RUN_FILES_DELETED`) instead of "not in inventory".
 - The `code-audit` skill's description also names vetting a skill, plugin or
   MCP package before install, so hosts load it for that request; its
   independent-review step tells the sub-agent never to open files under

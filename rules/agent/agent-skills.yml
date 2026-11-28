@@ -96,26 +96,42 @@ definitions:
   # deny list); a call argument such as os.system("cat ...") counts.
   CRED_LIT: '(?<!(?:^|\n|[\[{,:=]|\bin|(?<![\w\])])\()[ \t]{0,40}[rbuf]{0,2}[\x22\x27\x60])'
   # Not a key handed to ssh for authentication.
-  CRED_NOAUTH: '(?<!(?:\s-i|IdentityFile|key_filename)[ \t=]{0,3}[\x22\x27]?(?:~|\$\{?HOME\}?|\$env:\w{1,20}|%\w{1,20}%)?[/\\]?)'
+  CRED_NOAUTH: '(?<!(?:\s-i|IdentityFile|key_filename|--private-key|--key-?file|--identity-file|--ssh-key|--local-user|--kubeconfig|--config|--netrc-file)[ \t=]{0,3}[\x22\x27]?(?:~|\$\{?HOME\}?|\$env:\w{1,20}|%\w{1,20}%)?[/\\]?)'
   CRED_GAP: '[^\n;|&>\\]{0,200}?'
   # Commands and calls that read a file named after them.
-  CRED_FILE_VERB: '{{CRED_LIT}}(?:\b(?:cat|tac|base64|xxd|od|hexdump|strings|head|tail|less|more|grep|egrep|fgrep|rg|awk|gawk|sed|dd|cut|openssl|gpg|pbcopy|xclip|Get-Content)\b|\bfor\s+\w+\s+in\b|\b(?:io\.)?open\s*\(|\bnetrc\.netrc\s*\(|\.read\s*\(|\bi?glob\s*\(|\b(?:readFileSync|readFile|createReadStream)\s*\(|\.(?:upload_file|put_object)\s*\(|\[(?:System\.)?IO\.File\]::Read\w*\s*\()|[\x22\x27](?:cat|base64|head|tail|grep|awk|sed|dd|xxd|strings)[\x22\x27]\s*,'
+  CRED_FILE_VERB: '{{CRED_LIT}}(?:\b(?:cat|tac|base64|xxd|od|hexdump|strings|head|tail|less|more|grep|egrep|fgrep|rg|awk|gawk|sed|dd|cut|openssl|gpg|pbcopy|xclip|Get-Content)\b(?=[ \t])|\bfor\s+\w+\s+in\b|\b(?:io\.)?open\s*\(|\bnetrc\.netrc\s*\(|\.read\s*\(|\bi?glob\s*\(|\b(?:readFileSync|readFile|createReadStream)\s*\(|\bio\.FileIO\s*\(|\bBun\.file\s*\(|\bDeno\.read(?:TextFile|File)(?:Sync)?\s*\(|\bFile\.(?:read|binread|open)\s*\(|\.(?:upload_file|put_object)\s*\(|\[(?:System\.)?IO\.File\]::Read\w*\s*\()|[\x22\x27](?:cat|base64|head|tail|grep|awk|sed|dd|xxd|strings)[\x22\x27]\s*,'
   # Archivers and recursive readers of a directory or file.
   CRED_DIR_VERB: '{{CRED_LIT}}(?:\btar\s+-{0,2}[a-wyz]*c[a-wyz]*\b|\btar\s+--create\b|\bzip\b|\b7z\s+a\b|\bCompress-Archive\b|\bgrep\s+(?:-\w+\s+)*-\w*r\w*\b|\brg\b|\bcopytree\s*\(|\bmake_archive\s*\()'
   # Copies with the credential as the source (another argument follows,
   # which is not a cloud URL: that is agent-cloud-upload-secrets).
-  CRED_COPY_VERB: '{{CRED_LIT}}(?:\b(?:cp|scp|rsync|Copy-Item)\b|\b(?:cpSync|copyFileSync|copyFile)\s*\(|\bshutil\.(?:copy\w*|move)\s*\()'
-  CRED_COPY_TAIL: '[\x22\x27\x60)]{0,3}(?:\s+|\s*,\s*)[\x22\x27]?(?![a-z][\w+.-]{0,20}://)[^\s|;&>\x22\x27-]'
+  CRED_COPY_VERB: '{{CRED_LIT}}(?:\b(?:cp|mv|ln|scp|rsync|Copy-Item|Move-Item)\b|\b(?:cpSync|copyFileSync|copyFile)\s*\(|\bshutil\.(?:copy\w*|move)\s*\()'
+  CRED_COPY_TAIL: '[\x22\x27\x60)]{0,3}(?:\s+|\s*,\s*)[\x22\x27]?(?![a-z][\w+.-]{0,20}://)(?!{{CRED_HOME}}\.(?:ssh|aws|gnupg|kube|docker)\b)[^\s|;&>\x22\x27-]'
   # An upload or a redirection of the file itself.
   CRED_UPLOAD: '@[\x22\x27]?|(?:^|\s)(?:-T|--upload-file|--post-file|--body-file|-InFile)(?:=|\s+)[\x22\x27]?|<[ \t]*[\x22\x27]?'
   # pathlib: (Path.home() / ".ssh" / "id_rsa").read_text()
   CRED_READ_TAIL: '[\x22\x27\x60)\s]{0,6}(?:\.expanduser\(\)\s*)?\.(?:read_text|read_bytes|open)\s*\('
-  CRED_SECRET_READ: '(?:{{CRED_FILE_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_UPLOAD}}){{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_SECRET_DIR}}|{{CRED_SECRET_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}}|{{CRED_SECRET_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_SECRET_FILE}}){{CRED_READ_TAIL}}'
-  CRED_TOKEN_READ: '(?:{{CRED_FILE_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_UPLOAD}})(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_DIR}}|{{CRED_TOKEN_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}}|{{CRED_TOKEN_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_TOKEN_FILE}}){{CRED_READ_TAIL}}'
+  # Any shell or PowerShell command with the credential as an argument (a
+  # word of its own, not inside a sentence in quotes) reads it, except the
+  # commands that only test, list, change modes, copy (see CRED_COPY_VERB),
+  # print or hand the key to ssh. The command starts a line, a pipeline
+  # stage, `$(`, a backtick, a keyword, or a string passed to system/exec.
+  CRED_CMD_START: '(?:^|[;&|{]|\$\(|(?<=[\w}]=)\x60|\b(?:then|do|else|exec|time|sudo|nohup|command|builtin|eval|env|xargs)[ \t]|\b(?:system|popen|exec\w*|spawn\w*|run|call|check_output|check_call|Popen|getoutput|getstatusoutput)\s*\(\s*\[?\s*[\x22\x27\x60])[ \t]*(?:\w{1,60}=[^\s\x60(){};|&=]{0,200}[ \t]+){0,4}(?:\$[\w:]{1,60}[ \t]*=[ \t]*)?'
+  CRED_NONREAD_CMD: '(?:\[\[?|test|ls|stat|file|du|wc|md5|md5sum|sha\d*sum|shasum|chmod|chown|chgrp|chflags|touch|mkdir|rm|shred|unlink|realpath|readlink|dirname|basename|which|ssh-add|ssh-keygen|ssh-copy-id|ssh|cp|mv|ln|scp|rsync|sftp|install|echo|printf|print|log|info|warn|error|die|fail|Write-Host|Write-Output|Write-Verbose|Write-Warning|Test-Path|Remove-Item|Get-Item|Get-ChildItem|Resolve-Path|Join-Path|Split-Path|export|local|declare|readonly|typeset|unset|alias|return|if|elif|while|until|for|case|in|import|from|assert|del|raise|yield|const|let|var|function|def|class|not|and|or)(?![\w.-])'
+  CRED_CMD: '(?!{{CRED_NONREAD_CMD}})[\w./\[][\w./\[\]-]{0,59}(?<!=)'
+  # The words before the credential: options and arguments, quoted ones whole.
+  CRED_ARGS: '(?:(?:[^\s\x22\x27;|&()<>\x60]{1,200}|\x22[^\x22\n]{0,200}\x22|\x27[^\x27\n]{0,200}\x27)[ \t]+){0,20}?[\x22\x27]?'
+  # Not a comparison operand.
+  CRED_NOCMP: '(?<!(?:==|!=|\bin|\bis|\bnot|[<>])[ \t]{1,3}[\x22\x27]?)'
+  CRED_CMD_READ_SECRET: '{{CRED_CMD_START}}{{CRED_CMD}}[ \t]+{{CRED_ARGS}}{{CRED_NOAUTH}}{{CRED_NOCMP}}(?:{{CRED_SECRET_FILE}})'
+  CRED_CMD_READ_TOKEN: '{{CRED_CMD_START}}{{CRED_CMD}}[ \t]+{{CRED_ARGS}}{{CRED_NOAUTH}}{{CRED_NOCMP}}(?:{{CRED_TOKEN_FILE}})'
+  # echo ~/.ssh/id_rsa | xargs cat
+  CRED_XARGS: '\b(?:echo|printf)\b[^\n|;&]{0,200}?'
+  CRED_SECRET_READ: '{{CRED_CMD_READ_SECRET}}|{{CRED_XARGS}}(?:{{CRED_SECRET_FILE}})[^\n;&]{0,100}?\|\s*xargs\b|(?:{{CRED_FILE_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_UPLOAD}}){{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_SECRET_DIR}}|{{CRED_SECRET_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}{{CRED_NOAUTH}}(?:{{CRED_SECRET_FILE}}|{{CRED_SECRET_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_SECRET_FILE}}){{CRED_READ_TAIL}}'
+  CRED_TOKEN_READ: '{{CRED_CMD_READ_TOKEN}}|{{CRED_XARGS}}(?:{{CRED_TOKEN_FILE}})[^\n;&]{0,100}?\|\s*xargs\b|(?:{{CRED_FILE_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_UPLOAD}})(?:{{CRED_TOKEN_FILE}})|(?:{{CRED_DIR_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_DIR}}|{{CRED_TOKEN_FILE}})|(?:{{CRED_COPY_VERB}}){{CRED_GAP}}(?:{{CRED_TOKEN_FILE}}|{{CRED_TOKEN_DIR}}){{CRED_COPY_TAIL}}|(?:{{CRED_TOKEN_FILE}}){{CRED_READ_TAIL}}'
   # The keychain: the password itself (-w) or a dump is a secret; the item's
   # attributes and `gh auth token` are read by the read rule only.
-  CRED_KEYCHAIN_SECRET: '{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password\b(?=[^\n]{0,200}?(?:\s-w\b|[\x22\x27]-w[\x22\x27]))|dump-keychain\b)|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password[\x22\x27](?=[^\n]{0,200}?[\x22\x27]-w[\x22\x27])|dump-keychain[\x22\x27])'
-  CRED_KEYCHAIN_ANY: '{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password|dump-keychain)\b|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password|dump-keychain)[\x22\x27]|{{CRED_LIT}}\bgh\s+auth\s+token\b|[\x22\x27]gh[\x22\x27]\s*,\s*[\x22\x27]auth[\x22\x27]\s*,\s*[\x22\x27]token[\x22\x27]'
+  CRED_KEYCHAIN_SECRET: '{{CRED_LIT}}\bgit\s+credential\s+(?:fill|get)\b|{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password\b(?=[^\n]{0,200}?(?:\s-w\b|[\x22\x27]-w[\x22\x27]))|dump-keychain\b)|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password[\x22\x27](?=[^\n]{0,200}?[\x22\x27]-w[\x22\x27])|dump-keychain[\x22\x27])'
+  CRED_KEYCHAIN_ANY: '{{CRED_LIT}}\bgit\s+credential\s+(?:fill|get)\b|{{CRED_LIT}}\bsecurity\s+(?:-\S+\s+){0,2}(?:find-(?:generic|internet)-password|dump-keychain)\b|[\x22\x27]security[\x22\x27]\s*,\s*\[?\s*[\x22\x27](?:find-(?:generic|internet)-password|dump-keychain)[\x22\x27]|{{CRED_LIT}}\bgh\s+auth\s+token\b|[\x22\x27]gh[\x22\x27]\s*,\s*[\x22\x27]auth[\x22\x27]\s*,\s*[\x22\x27]token[\x22\x27]'
   # Any network use somewhere in the file.
   NET_ANY: '(?<![\w.~$-])(?:curl|wget|nc|ncat|netcat|socat|scp|sftp|ftp|telnet|ssh)\b(?=[ \t])|/dev/(?:tcp|udp)/|\brsync\b[^\n]{0,200}?\s[\x22\x27]?[\w.$@-]{1,100}::?[\w/~$.\x22\x27-]|(?:\brequire\s*\(|\bfrom)\s*[\x22\x27](?:node:)?(?:https?|net|dgram|tls|http2)[\x22\x27]|\b(?:requests|httpx|aiohttp|urllib3|http\.client|socket)\.\w|\burllib\.request\b|\burlopen\s*\(|\.request\s*\(\s*[\x22\x27][A-Za-z]{3,7}[\x22\x27]|\bfetch\s*\(|\b(?:https?|axios|got|superagent|undici)\.\w+\s*\(|\baxios\s*\(|\bXMLHttpRequest\b|\bsendBeacon\s*\(|\bnet\.(?:connect|createConnection)\s*\(|\bnew\s+WebSocket\s*\(|\bInvoke-(?:WebRequest|RestMethod)\b|\b(?:iwr|irm)[ \t]|Net\.WebClient\b|\.Upload(?:String|File|Data|Values)(?:Async)?\s*\(|\bSend-MailMessage\b|Net\.Sockets\.TcpClient\b|\bmail\s+-s\b|\bsendmail\b|\.(?:upload_file|upload_fileobj|put_object)\s*\('
   # Test files (the path contexts of pathContext.ts).

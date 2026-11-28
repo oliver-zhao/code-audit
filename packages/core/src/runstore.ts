@@ -305,6 +305,8 @@ interface RunSession {
   rulesDir?: string;
   ruleSet?: RuleSet | null;
   rootProblem?: string;
+  /** Error code of `rootProblem` (default ROOT_UNCONFIRMED). */
+  rootProblemCode?: string;
   coverageProblem?: string;
 }
 
@@ -1136,6 +1138,17 @@ function recordedRootOf(run: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/** "archive" or "git" when skill.json of the run says its target was a temporary copy. */
+function temporaryTargetKind(runDir: string): "archive" | "git" | undefined {
+  try {
+    const document = JSON.parse(fs.readFileSync(path.join(runDir, "skill.json"), "utf8")) as { target?: { kind?: unknown } };
+    const kind = document.target?.kind;
+    return kind === "archive" || kind === "git" ? kind : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isDirectorySafe(target: string): boolean {
   try {
     return fs.statSync(target).isDirectory();
@@ -1172,6 +1185,18 @@ function establishRoot(
   session: RunSession,
 ): { root: string | undefined; rootSource?: RunRootSource; recordedRoot?: string } {
   const recordedRoot = recordedRootOf(run);
+  // `code-audit skill` / audit_skill of an archive or a git URL scans a
+  // temporary copy that is deleted when the scan ends: the findings stay
+  // readable, the files do not. No other root is substituted.
+  const temporary = temporaryTargetKind(resolved.runDir);
+  if (temporary !== undefined && (recordedRoot === undefined || !isDirectorySafe(recordedRoot))) {
+    session.rootProblem =
+      `this run's files were unpacked from ${temporary === "git" ? "a git clone" : "an archive"} to a temporary directory that no longer exists; ` +
+      "the findings can be read (audit_findings, the reports) but the files cannot be read, searched or cited as evidence. " +
+      "To review the files, unpack or clone the package into a directory and run audit_skill on that directory.";
+    session.rootProblemCode = "RUN_FILES_DELETED";
+    return { root: undefined, recordedRoot };
+  }
   const recordedReal = canonicalIfAbsolute(recordedRoot);
   const derived = resolved.derivedRoot;
   const shownRecorded = recordedRoot === undefined ? "none" : printable(recordedRoot);
@@ -1219,7 +1244,7 @@ export function requireAuditRoot(run: LoadedRun): string {
   if (run.root === undefined) {
     throw new RunStoreError(
       run.session.rootProblem ?? "the audit root of this run is not established",
-      "ROOT_UNCONFIRMED",
+      run.session.rootProblemCode ?? "ROOT_UNCONFIRMED",
     );
   }
   return validateAuditRoot(run.root).root;

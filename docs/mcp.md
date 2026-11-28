@@ -96,7 +96,15 @@ evidence lines, rule messages, search matches) is wrapped in
 ```
 
 and the result carries `untrusted_content: true` and a `note`. It is data,
-never instructions. Secrets in such text are masked (what is recognised is
+never instructions. So that repository text cannot close the wrapper early,
+every string a tool returns (wrapped or not: file names, package paths,
+error messages) has each run of three or more angle brackets replaced with
+`(lt x3)` / `(gt x3)`. Look-alike brackets (fullwidth, guillemets,
+mathematical and CJK angle brackets, anything NFKC maps to `<` or `>`)
+count, and invisible characters between them (zero-width, soft hyphen,
+bidi controls, combining marks) do not break a run. Only the wrapper's own
+delimiters contain such a run; code such as a shell `<<<` here-string is
+shown in the replaced form. Secrets in such text are masked (what is recognised is
 listed in [security-model.md](security-model.md#what-the-tool-guarantees)).
 
 **Run ids, not paths.** Tools take the `run_id` returned by `audit_start`. An

@@ -552,6 +552,9 @@ function checksumOk(block: Buffer): boolean {
   return stored === unsigned || stored === signed;
 }
 
+/** The pax records the reader uses; `path` and `linkpath` must be UTF-8. */
+const PAX_USED_KEYS = new Set(["path", "linkpath", "size"]);
+
 function parsePax(data: Buffer): Map<string, string> {
   const records = new Map<string, string>();
   let at = 0;
@@ -565,8 +568,13 @@ function parsePax(data: Buffer): Map<string, string> {
     const record = data.subarray(space + 1, at + length - 1);
     const equals = record.indexOf(0x3d);
     if (equals > 0) {
-      const key = decodeName(record.subarray(0, equals), "tar pax key");
-      records.set(key, decodeName(record.subarray(equals + 1), "tar"));
+      // Only the records that name or size the entry are read. The others
+      // carry values that are not names and may be binary: extended
+      // attributes (SCHILY.xattr.*, LIBARCHIVE.xattr.*, com.apple.* - macOS
+      // tar adds com.apple.provenance to almost every file), ACLs, times,
+      // owner names. They are ignored and never decoded as a path.
+      const key = record.subarray(0, equals).toString("latin1");
+      if (PAX_USED_KEYS.has(key)) records.set(key, decodeName(record.subarray(equals + 1), "tar"));
     }
     at += length;
   }

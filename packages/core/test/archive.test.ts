@@ -285,6 +285,41 @@ describe("tar reader", () => {
     expect(rejection(() => planTar(tar)).code).toBe(code);
   });
 
+  it("ignores binary xattr pax records of macOS tar and keeps AppleDouble entries as files (review R2-M3)", () => {
+    const binaryRecord = (key: string, value: Buffer): Buffer => {
+      const body = Buffer.concat([Buffer.from(` ${key}=`, "latin1"), value, Buffer.from("\n", "latin1")]);
+      let length = body.length + 1;
+      while (`${length}`.length + body.length !== length) length += 1;
+      return Buffer.concat([Buffer.from(`${length}`, "latin1"), body]);
+    };
+    const provenance = Buffer.from([0x01, 0x02, 0xff, 0xfe, 0x00, 0xc3, 0x28, 0x80]);
+    const pax = Buffer.concat([
+      binaryRecord("SCHILY.xattr.com.apple.provenance", provenance),
+      binaryRecord("LIBARCHIVE.xattr.com.apple.quarantine", Buffer.from([0xc0, 0xaf, 0x0a, 0x2f])),
+      binaryRecord("SCHILY.xattr.com.apple.FinderInfo", Buffer.alloc(32, 0xff)),
+      binaryRecord("LIBARCHIVE.creationtime", Buffer.from("1764300000", "latin1")),
+      Buffer.from(paxRecord("path", "plain/SKILL.md"), "utf8"),
+    ]);
+    // AppleDouble header ("Mac OS X" resource fork) of the `._SKILL.md` entry.
+    const appleDouble = Buffer.concat([Buffer.from([0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00]), Buffer.from("Mac OS X        "), Buffer.alloc(40)]);
+    const tar = buildTar([
+      { name: "plain/" },
+      { name: "plain/PaxHeader/._SKILL.md", type: "x", data: binaryRecord("SCHILY.xattr.com.apple.provenance", provenance) },
+      { name: "plain/._SKILL.md", data: appleDouble },
+      { name: "plain/PaxHeader/SKILL.md", type: "x", data: pax },
+      { name: "plain/SKILL.md-ustar-name", data: "---\nname: plain\ndescription: x\n---\nHello.\n" },
+    ]);
+    const plan = planTar(tar);
+    const dir = freshDir();
+    const result = extractPlan(plan, dir);
+    expect(result.files).toBe(2);
+    expect(fs.readFileSync(path.join(dir, "plain/SKILL.md"), "utf8")).toContain("name: plain");
+    expect(fs.readFileSync(path.join(dir, "plain/._SKILL.md")).subarray(0, 4)).toEqual(Buffer.from([0x00, 0x05, 0x16, 0x07]));
+    // A binary value is never a name: a non-UTF-8 pax path is still refused.
+    const badPath = buildTar([{ name: "h", type: "x", data: binaryRecord("path", Buffer.from([0x61, 0xff, 0x62])) }, { name: "a.md", data: "x" }]);
+    expect(rejection(() => planTar(badPath)).code).toBe("ARCHIVE_BAD_NAME");
+  });
+
   it("refuses traversal through the plain name, a pax path and a GNU long name", () => {
     expect(rejection(() => planTar(buildTar([{ name: "../x.md", data: "x" }]))).code).toBe("ARCHIVE_BAD_PATH");
     expect(
