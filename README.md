@@ -56,12 +56,12 @@ the rule counts of your build.
 | **Kubernetes manifests** | `.yml`, `.yaml` with `apiVersion` or `securityContext` | 26 | |
 | **Terraform** | `.tf`, `.tfvars` (AWS, Azure, GCP) | 35 | |
 | **GitHub Actions** | `.github/workflows/*.yml` | 18 | |
-| **Agent configuration** | MCP server configs, agent settings and hooks, `.codex/config.toml`, skills, instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, ..., `.cursorrules`, `.windsurfrules`, `.clinerules`, `.rules`, Cursor `.mdc`) | 38 | |
+| **Agent configuration** | MCP server configs, agent settings and hooks, `.codex/config.toml`, skills, instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, ..., `.cursorrules`, `.windsurfrules`, `.clinerules`, `.rules`, Cursor `.mdc`), skill and plugin scripts, MCP server tool descriptions, bundled binaries | 72 | |
 | **Dependency hygiene** | `package.json`, Markdown, JSON, YAML, Dockerfiles, shell scripts (`.sh`, `.bash`, `.zsh`, `.ksh`), requirements files, `.npmrc`, `.yarnrc`, `pip.conf`, `*.ini`, `*.cfg`, `uv.toml` | 11 | |
 | **Other recognised files** | HTML and templates (`.html`, `.jinja`, `.j2`, `.twig`, `.vue`, `.svelte`, `.ejs`, `.hbs`, ...), `.properties`, `.xml` (other than .NET `*.config`) | 0 (counted in coverage; secret detection only) | |
 | **Secrets** | every text file | detectors, not rules | |
 
-589 built-in rules in total: 381 report **findings** and 208 report
+623 built-in rules in total: 406 report **findings** and 217 report
 **hotspots** (a dangerous API with no visible attacker input: a reading list
 for the reviewer, never counted). Source files are matched one statement at
 a time, with comments ignored and a call split over several lines seen as
@@ -132,7 +132,7 @@ code-audit doctor
 ```text
 code-audit doctor (0.4.0)
 Node.js: 24.22.1 OK
-Rules: 589 built-in: 381 finding, 208 hotspot (<checkout>/rules)
+Rules: 623 built-in: 406 finding, 217 hotspot (<checkout>/rules)
 Opengrep rules: 47 (<checkout>/rules/opengrep)
 Active tier: Tier 0 + Tier 1
 External tools (detection only, not invoked):
@@ -261,7 +261,7 @@ code-audit scan examples/demo-app --offline --no-external --out /tmp/code-audit-
 ```text
 code-audit scan completed: 20261127T143732Z-479f2b6d
 Files: 8 scanned / 0 skipped, LOC 504
-Rules: 589
+Rules: 623
 Findings: 15 (critical 4, high 9, medium 1, low 1, info 0) at confidence >= medium
   by category: code 9, secrets 2, config/IaC 4, dependencies 0
 Low-confidence candidates: 0 (not counted above)
@@ -439,7 +439,7 @@ credential and configuration directories (`~/.ssh`, `~/.aws`, `~/.config`,
 
 | Engine | Needs | What it does |
 |---|---|---|
-| Built-in rules | Node only | 589 rules (381 findings, 208 hotspots); `code-audit doctor` prints the counts of your build. See [docs/rules.md](docs/rules.md). |
+| Built-in rules | Node only | 623 rules (406 findings, 217 hotspots); `code-audit doctor` prints the counts of your build. See [docs/rules.md](docs/rules.md). |
 | Built-in secret detection | Node only | Private keys, provider tokens (AWS, GitHub, Slack, ...), credentials in URLs, password and key assignments, and credential files (`.netrc`, `.pgpass`, `.npmrc`, `.pypirc` / `pip.conf`, Docker `auths`, kubeconfig). Values are masked in every output. |
 | Dependency advisories | Node only, network | Parses `package-lock.json`, `pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `go.mod`, `pom.xml` (direct dependencies with literal versions), `packages.lock.json`, NuGet project files (`*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` / `.targets`, `Directory.Packages.props`, `packages.config`), `Cargo.lock` (with `Cargo.toml`) and queries OSV.dev. Only package names and versions are sent. `--offline` skips the queries and the report says so. |
 | Opengrep (optional) | `opengrep` on `PATH` | Runs the 47 bundled Opengrep-syntax rules, including 37 taint rules (Python, JavaScript/TypeScript, Java, Go, C#, C) that follow request data to a sink inside one file. Every bundled rule was executed for real with Opengrep 1.33.1 on Linux during development; the test suite replays recorded output. |

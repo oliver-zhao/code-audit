@@ -40,7 +40,7 @@
 | **其他可识别的文件** | HTML 和模板（`.html`、`.jinja`、`.j2`、`.twig`、`.vue`、`.svelte`、`.ejs`、`.hbs` 等）、`.properties`、`.xml`（.NET 的 `*.config` 除外） | 0（计入覆盖统计，只做密钥检测） | |
 | **密钥** | 所有文本文件 | 检测器，不计入规则数 | |
 
-内置规则共 589 条：381 条报**结果**，208 条报**热点**（用了危险 API 但看不出攻击者能控制输入，供复核者阅读，不计入统计）。源代码按语句匹配，忽略注释，跨多行的调用当作一个整体：Python 按逻辑行（同时忽略文档字符串），C#、Java、JavaScript/TypeScript、Go、C/C++、Rust 由一个共用的 C 系词法分析器切分。规则覆盖注入（SQL、命令、代码、路径）、反序列化、SSRF 和重定向、响应里的 XSS、TLS、加密和硬编码密钥，按各语言主流库和框架的 API 编写（例如 Flask 和 Django、Express、Spring、net/http 和 gin、ASP.NET Core 和 EF Core、sqlx 和 diesel、OpenSSL 和 libcurl）。各语言的深度不同，Python 的规则最多。规则文件和匹配方式见 [docs/rules.md](docs/rules.md)。
+内置规则共 623 条：406 条报**结果**，217 条报**热点**（用了危险 API 但看不出攻击者能控制输入，供复核者阅读，不计入统计）。源代码按语句匹配，忽略注释，跨多行的调用当作一个整体：Python 按逻辑行（同时忽略文档字符串），C#、Java、JavaScript/TypeScript、Go、C/C++、Rust 由一个共用的 C 系词法分析器切分。规则覆盖注入（SQL、命令、代码、路径）、反序列化、SSRF 和重定向、响应里的 XSS、TLS、加密和硬编码密钥，按各语言主流库和框架的 API 编写（例如 Flask 和 Django、Express、Spring、net/http 和 gin、ASP.NET Core 和 EF Core、sqlx 和 diesel、OpenSSL 和 libcurl）。各语言的深度不同，Python 的规则最多。规则文件和匹配方式见 [docs/rules.md](docs/rules.md)。
 
 装了 [Opengrep](https://github.com/opengrep/opengrep) 之后会多跑 47 条随附规则，其中 37 条是**数据流（taint）规则**，在同一个文件内跟踪请求数据流向 SQL、命令、路径、SSRF、模板、重定向、XSS、反序列化和 `eval` 等危险位置：Python 13 条（11 条 taint，Flask、Django、FastAPI），JavaScript/TypeScript 8 条（7），Java 7 条（6），Go 7 条（7），C# 6 条（5），C 4 条（1），Rust 2 条（用 `format!` 拼出的命令和 SQL）。
 
@@ -81,7 +81,7 @@ code-audit doctor
 ```text
 code-audit doctor (0.4.0)
 Node.js: 24.22.1 OK
-Rules: 589 built-in: 381 finding, 208 hotspot (<checkout>/rules)
+Rules: 623 built-in: 406 finding, 217 hotspot (<checkout>/rules)
 Opengrep rules: 47 (<checkout>/rules/opengrep)
 Active tier: Tier 0 + Tier 1
 External tools (detection only, not invoked):
@@ -183,7 +183,7 @@ code-audit scan examples/demo-app --offline --no-external --out /tmp/code-audit-
 ```text
 code-audit scan completed: 20261127T143732Z-479f2b6d
 Files: 8 scanned / 0 skipped, LOC 504
-Rules: 589
+Rules: 623
 Findings: 15 (critical 4, high 9, medium 1, low 1, info 0) at confidence >= medium
   by category: code 9, secrets 2, config/IaC 4, dependencies 0
 Low-confidence candidates: 0 (not counted above)

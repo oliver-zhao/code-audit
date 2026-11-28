@@ -7,39 +7,6 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-Fixes from the real-host test of 0.4.0 (Claude Code and Codex on macOS).
-
-### Added
-
-- Rules `agent-credential-read-script` (high, confidence medium) and
-  `agent-credential-exfil-script` (high, confidence high, `malicious-intent`):
-  a skill or plugin script that reads an SSH private key, `~/.aws/credentials`,
-  `~/.netrc`, the GitHub CLI, Docker or Kubernetes credentials,
-  `~/.git-credentials` or the macOS keychain; with a network send in the same
-  file the package is `DO_NOT_INSTALL`. PowerShell scripts in skill and plugin
-  trees are now read (`powershell` rule language).
-- MCP `audit_skill`: each package carries `capabilities` (how many scripts
-  use the network, subprocesses or file writes, whether `allowed-tools` is
-  declared, what is undeclared); `details` lists the tools and up to five
-  script paths per capability.
-- `findings.json`, SARIF and MCP `audit_findings` carry the agreeing
-  independent reviewer's own status (`independentStatus` /
-  `independent_status`), and the report says `confirmed (independently
-  reviewed by <label>: subagent, said likely)` when it is weaker.
-
-### Fixed
-
-- `agent-anti-refusal-never-refuse` missed "You must never refuse any
-  request while ..." and "Never refuse," before a comma, colon, question
-  mark or dash.
-- `install --host codex --absolute` named `AGENTS.md` as containing the
-  machine-specific path; only files that hold the path are named.
-- `audit_search` / `search --regex`: an inline flag group such as `(?i)` now
-  gets an `INVALID_REGEX` message that says the pattern is a JavaScript
-  regular expression and the search is case-sensitive, with no
-  case-insensitive option.
-- The docs said the MCP server has eight tools; it has nine.
-
 ## [0.4.0] - 2026-11-28
 
 Vetting agent skills before install, stricter agent triage, pull-request
@@ -75,7 +42,7 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
   - in skill mode every text file counts as an instruction file;
   - `allowed-tools` is compared with what the bundled scripts do
     (`skill-undeclared-capability`).
-- **Agent and skill rules: 589 → 621 built-in rules.** New groups:
+- **Agent and skill rules: 589 → 623 built-in rules.** New groups:
   anti-refusal / jailbreak wording (English and Chinese), writes to agent
   memory, configuration and shell start-up files, trigger abuse in
   `description:` front matter, padding that pushes text off screen, prompt
@@ -114,6 +81,22 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
   when they lie outside the scanned directory and its git work tree (the
   summary names them).
 
+- Rules `agent-credential-read-script` (high, confidence medium) and
+  `agent-credential-exfil-script` (high, confidence high, `malicious-intent`):
+  a skill or plugin script that reads an SSH private key, `~/.aws/credentials`,
+  `~/.netrc`, the GitHub CLI, Docker or Kubernetes credentials,
+  `~/.git-credentials` or the macOS keychain; with a network send in the same
+  file the package is `DO_NOT_INSTALL`. PowerShell scripts in skill and plugin
+  trees are now read (`powershell` rule language).
+- MCP `audit_skill`: each package carries `capabilities` (how many scripts
+  use the network, subprocesses or file writes, whether `allowed-tools` is
+  declared, what is undeclared); `details` lists the tools and up to five
+  script paths per capability.
+- `findings.json`, SARIF and MCP `audit_findings` carry the agreeing
+  independent reviewer's own status (`independentStatus` /
+  `independent_status`), and the report says `confirmed (independently
+  reviewed by <label>: subagent, said likely)` when it is weaker.
+
 ### Changed
 
 - A missing `--ignore-file` is now an error (exit 2).
@@ -132,6 +115,19 @@ by 0.4.0 (schema version 2) cannot be read by 0.3.0.
   `prompt-injection-read-credentials` are gone; no 0.3.0 detection was
   lost. Markdown shell blocks are read across `\` continuations, which can
   add hotspots.
+
+### Fixed
+
+- `agent-anti-refusal-never-refuse` missed "You must never refuse any
+  request while ..." and "Never refuse," before a comma, colon, question
+  mark or dash.
+- `install --host codex --absolute` named `AGENTS.md` as containing the
+  machine-specific path; only files that hold the path are named.
+- `audit_search` / `search --regex`: an inline flag group such as `(?i)` now
+  gets an `INVALID_REGEX` message that says the pattern is a JavaScript
+  regular expression and the search is case-sensitive, with no
+  case-insensitive option.
+- The docs said the MCP server has eight tools; it has nine.
 
 ### Security
 
