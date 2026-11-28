@@ -151,8 +151,8 @@ Vetting a skill or plugin before install (code-audit skill):
   Always audited as untrusted. Verdict per package: DO_NOT_INSTALL, REVIEW,
   INCOMPLETE or SAFE_TO_INSTALL (no known risk patterns found; not a guarantee
   of safety). Default engines: builtin plus installed opengrep and gitleaks.
-  An unpacked or cloned target is written to --out or ./.audit, never into the
-  temporary copy, which is removed afterwards. Exit code 0 only when every
+  The run is written to --out or ./.audit, never into the package or a
+  temporary copy (removed afterwards). A SKILL.md target scans its directory. Exit code 0 only when every
   package is SAFE_TO_INSTALL, 1 otherwise, 2 on errors.
 
 Auditing a repository you do not trust:

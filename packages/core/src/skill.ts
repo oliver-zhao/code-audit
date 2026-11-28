@@ -51,7 +51,7 @@ import { TOOL_NAME, TOOL_VERSION, defaultRulesDir } from "./meta.js";
 import { validateAuditRoot } from "./pathJail.js";
 import { redactText, splitLines } from "./redact.js";
 import { singleLineText } from "./report.js";
-import { loadRules } from "./rules.js";
+import { loadRules, type RuleSet } from "./rules.js";
 import { writeRunFile } from "./runstore.js";
 import { printable, readFileNoFollow } from "./safeFs.js";
 import type { HttpClient } from "./sca.js";
@@ -146,7 +146,8 @@ export const SkillPackageSchema = z.object({
   /** Package directory relative to the scanned root; "." for the root. */
   path: z.string(),
   name: z.string(),
-  kind: z.enum(["skill", "plugin", "directory"]),
+  /** `outside`: the group of files that belong to no package (recursive scans). */
+  kind: z.enum(["skill", "plugin", "directory", "outside"]),
   verdict: SkillVerdictSchema,
   verdictText: z.string(),
   riskScore: z.number().min(0).max(100),
@@ -242,13 +243,14 @@ export function checkGitTarget(input: string, localExists = false): GitTargetChe
     if (!HOST.test(url.hostname)) return refuse("git URL has an invalid host name");
     if (url.password !== "") return refuse("git URL must not carry a password");
     if (protocol === "https:" && url.username !== "") return refuse("https git URL must not carry user info");
-    if (url.username !== "" && !/^[A-Za-z0-9._-]+$/.test(url.username)) return refuse("git URL has an invalid user name");
+    if (url.username !== "" && !/^[A-Za-z0-9._][A-Za-z0-9._-]*$/.test(url.username)) return refuse("git URL has an invalid user name");
     if (url.pathname === "" || url.pathname === "/") return refuse("git URL has no repository path");
     return { remote: true, ok: true, url: input, protocol: protocol === "https:" ? "https" : "ssh" };
   }
   const match = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):(.+)$/.exec(input);
   if (!match) return refuse("not an accepted git URL");
-  const [, , host, repoPath] = match as unknown as [string, string, string, string];
+  const [, user, host, repoPath] = match as unknown as [string, string, string, string];
+  if (user.startsWith("-")) return refuse("git URL user name starts with '-'");
   if (!HOST.test(host)) return refuse("git URL has an invalid host name");
   if (repoPath.startsWith("-")) return refuse("git repository path starts with '-'");
   return { remote: true, ok: true, url: input, protocol: "ssh" };
@@ -370,13 +372,25 @@ function isFileNoFollow(file: string): boolean {
   }
 }
 
+/** A regular file or a symbolic link at `file` (a link is not followed). */
+function presentNoFollow(file: string): boolean {
+  try {
+    const stat = fs.lstatSync(file);
+    return stat.isFile() || stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 function packageKindAt(dir: string): "skill" | "plugin" | undefined {
   // `.claude-plugin/plugin.json` makes the directory above it the plugin.
   if (path.basename(dir) === ".claude-plugin") return undefined;
-  if (isFileNoFollow(path.join(dir, ".claude-plugin", "plugin.json")) || isFileNoFollow(path.join(dir, "plugin.json"))) {
+  // A manifest that is a symbolic link still makes a package (an install
+  // follows the link); it is reported as not analysed.
+  if (presentNoFollow(path.join(dir, ".claude-plugin", "plugin.json")) || presentNoFollow(path.join(dir, "plugin.json"))) {
     return "plugin";
   }
-  if (isFileNoFollow(path.join(dir, "SKILL.md"))) return "skill";
+  if (presentNoFollow(path.join(dir, "SKILL.md"))) return "skill";
   return undefined;
 }
 
@@ -622,15 +636,29 @@ function capabilityCheck(
   packages: PackageDir[],
   allowedByPackage: Map<string, string[] | null>,
   states: Map<string, CapabilityState>,
+  notAnalysed: Array<{ path: string; reason: string }>,
 ): (inv: InventoryResult) => Finding[] {
   return (inv) => {
     const findings: Finding[] = [];
     for (const file of inv.files) {
+      const buffer = readScript(file);
+      if (buffer === undefined) continue;
+      // A Git LFS pointer stands in for content that was never fetched; an
+      // install with LFS gets the real file.
+      if (buffer.subarray(0, LFS_POINTER.length).equals(LFS_POINTER)) {
+        notAnalysed.push({ path: file.relPath, reason: "content not present: Git LFS object (only the pointer was analysed)" });
+        continue;
+      }
+      let content: string;
+      try {
+        content = STRICT_UTF8.decode(buffer);
+      } catch {
+        notAnalysed.push({ path: file.relPath, reason: "not valid UTF-8 (unknown encoding; matched only as decoded with replacement characters)" });
+        content = buffer.toString("utf8");
+      }
       const owner = owningPackage(packages, file.relPath);
       if (!owner) continue;
       if (owner.skillFile === file.relPath) continue;
-      const content = readScript(file);
-      if (content === undefined) continue;
       const firstLine = content.slice(0, Math.min(content.length, 200)).split(/\r?\n/, 1)[0] ?? "";
       const kind = scriptKindOf(file.relPath, firstLine);
       if (!kind) continue;
@@ -668,10 +696,13 @@ function capabilityCheck(
   };
 }
 
-function readScript(file: InventoryFile): string | undefined {
+const LFS_POINTER = Buffer.from("version https://git-lfs.github.com/spec/", "latin1");
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+function readScript(file: InventoryFile): Buffer | undefined {
   if (!file.scannable || file.size > ARCHIVE_MAX_FILE_BYTES) return undefined;
   try {
-    return readFileNoFollow(file.absPath, ARCHIVE_MAX_FILE_BYTES)?.toString("utf8");
+    return readFileNoFollow(file.absPath, ARCHIVE_MAX_FILE_BYTES);
   } catch {
     return undefined;
   }
@@ -724,6 +755,9 @@ const ARCHIVE_FORMATS: Magic[] = [
   { name: "gzip data", extensions: [], test: (h) => startsWith(h, "1f8b") },
 ];
 
+/** How much of a skipped file is read to decide whether it really is binary. */
+const BINARY_PROBE_BYTES = 8192;
+
 function readHead(file: string): Buffer | undefined {
   const flags = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
   let fd: number;
@@ -733,8 +767,8 @@ function readHead(file: string): Buffer | undefined {
     return undefined;
   }
   try {
-    const head = Buffer.alloc(16);
-    const read = fs.readSync(fd, head, 0, 16, 0);
+    const head = Buffer.alloc(BINARY_PROBE_BYTES);
+    const read = fs.readSync(fd, head, 0, BINARY_PROBE_BYTES, 0);
     return head.subarray(0, read);
   } catch {
     return undefined;
@@ -745,8 +779,10 @@ function readHead(file: string): Buffer | undefined {
 
 /**
  * Undefined when a skipped binary file is a recognised data format under its
- * own extension (it needs no analysis); otherwise why it makes the result
- * incomplete.
+ * own extension AND really is binary (a NUL byte in its first 8 KiB): only
+ * then does it need no analysis. A 2-5 byte magic alone (`BM`, `%PDF-`,
+ * `ID3`, `true`) is printable text and proves nothing. Otherwise the reason
+ * it makes the result incomplete.
  */
 export function classifySkippedBinary(relPath: string, head: Buffer | undefined): string | undefined {
   if (!head) return "binary file could not be read";
@@ -756,6 +792,12 @@ export function classifySkippedBinary(relPath: string, head: Buffer | undefined)
   const archive = ARCHIVE_FORMATS.find((magic) => magic.test(head));
   if (archive) return `nested ${archive.name} (contents not analysed)`;
   const known = KNOWN_DATA_FORMATS.find((magic) => magic.test(head));
+  const binary = head.subarray(0, BINARY_PROBE_BYTES).includes(0);
+  if (!binary) {
+    return known
+      ? `${known.name} header but text content (no NUL byte in the first 8 KiB; not analysed)`
+      : `text content under a binary file extension (not analysed)`;
+  }
   if (known && known.extensions.includes(ext)) return undefined;
   if (known) return `${known.name} content under a ${ext || "missing"} extension (not analysed)`;
   return "unrecognised binary file (not analysed)";
@@ -847,11 +889,39 @@ const PARTIAL_WARNINGS: RegExp[] = [
 ];
 
 /** Skipped entries of the inventory that are not part of the package's content. */
-function ignorableSkip(relPath: string, reason: string): boolean {
-  if (reason === "default-excluded directory" && (relPath === ".git/" || relPath.endsWith("/.git/"))) return true;
-  if (reason === "code-audit output" && (relPath.startsWith(".audit/") || relPath.includes("/.audit/"))) return true;
-  if (reason === "code-audit control file") return true;
-  return false;
+/**
+ * The only skipped files that are not package content: those of the run this
+ * scan is writing, when its output directory lies inside the scanned root.
+ * Everything else the inventory skipped - `.git/` content, control files,
+ * planted `.audit/` look-alikes, earlier runs - is listed as not analysed.
+ */
+function ownRunFile(relPath: string, ownRunRel: string | undefined): boolean {
+  return ownRunRel !== undefined && relPath.startsWith(`${ownRunRel}/`);
+}
+
+/** Files below a directory the inventory did not enter (bounded). */
+function filesBelow(root: string, relDir: string, limit: number): { files: string[]; more: number } {
+  const files: string[] = [];
+  let more = 0;
+  const walk = (rel: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(path.join(root, ...rel.split("/")), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        if (depth < 40) walk(child, depth + 1);
+        else more += 1;
+      } else if (files.length < limit) files.push(child);
+      else more += 1;
+    }
+  };
+  walk(relDir, 0);
+  return { files, more };
 }
 
 const BINARY_SKIP_REASONS = new Set(["binary extension", "binary content detected (NUL byte)"]);
@@ -864,6 +934,81 @@ function packageRelative(pkgRel: string, fileRel: string): string {
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Instruction-file rules in skill mode
+// ---------------------------------------------------------------------------
+
+function listRuleFiles(dir: string, depth = 0): string[] {
+  if (depth > 10) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...listRuleFiles(full, depth + 1));
+    else if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) files.push(full);
+  }
+  return files;
+}
+
+/**
+ * Ids of the rules whose `pathInclude` uses the `{{INSTR}}` macro (the
+ * instruction files agent hosts load: SKILL.md, CLAUDE.md, ...), read from
+ * the rule files as written, before the macro is expanded.
+ */
+export function instructionRuleIds(rulesDir: string): Set<string> {
+  const ids = new Set<string>();
+  for (const file of listRuleFiles(path.resolve(rulesDir))) {
+    let document: unknown;
+    try {
+      document = parseYaml(fs.readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+    const rules = Array.isArray(document) ? document : (document as { rules?: unknown } | null)?.rules;
+    if (!Array.isArray(rules)) continue;
+    for (const rule of rules) {
+      if (!rule || typeof rule !== "object") continue;
+      const { id, pathInclude } = rule as { id?: unknown; pathInclude?: unknown };
+      if (typeof id === "string" && typeof pathInclude === "string" && pathInclude.includes("{{INSTR}}")) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Skill mode: a skill loads the files its SKILL.md points at (`reference.md`,
+ * `FORMS.md`, ...), so every Markdown file inside a package is an
+ * instruction file. The instruction-file rules additionally match `*.md` /
+ * `*.mdc` below every package directory.
+ */
+export function extendInstructionRules(ruleSet: RuleSet, ids: ReadonlySet<string>, packageRels: readonly string[]): RuleSet {
+  if (ids.size === 0 || packageRels.length === 0) return ruleSet;
+  const markdown = packageRels.includes("")
+    ? "\\.mdc?$"
+    : `^(?:${packageRels.map((rel) => `${escapeRegex(rel)}/`).join("|")}).*\\.mdc?$`;
+  return {
+    ...ruleSet,
+    rules: ruleSet.rules.map((rule) => {
+      const include = rule.compiled.pathInclude;
+      if (!ids.has(rule.id) || !include) return rule;
+      return {
+        ...rule,
+        compiled: { ...rule.compiled, pathInclude: new RegExp(`(?:${include.source})|${markdown}`, include.flags) },
+      };
+    }),
+  };
+}
+
+/** `path` of the group of files outside every package. */
+export const OUTSIDE_PACKAGES_PATH = "(outside packages)";
 
 export const SKILL_DEFAULT_ENGINES: EngineName[] = ["builtin", "opengrep", "gitleaks"];
 
@@ -918,6 +1063,9 @@ async function resolveTarget(options: SkillScanOptions): Promise<ResolvedTarget>
     try {
       const destination = path.join(tempDir, "repo");
       await cloneRepository(git.url, destination, { pathEnv: options.pathEnv, timeoutMs: options.gitTimeoutMs });
+      // Our own fresh clone's repository data is not package content; any
+      // other `.git` (nested, or in a directory or archive) is reported.
+      fs.rmSync(path.join(destination, ".git"), { recursive: true, force: true });
       return { kind: "git", root: destination, tempDir, archiveSkipped: [] };
     } catch (error) {
       removeTempDir(tempDir);
@@ -946,18 +1094,10 @@ async function resolveTarget(options: SkillScanOptions): Promise<ResolvedTarget>
     }
   }
   if (path.extname(input).toLowerCase() === ".md") {
-    const content = readFileNoFollow(input, ARCHIVE_MAX_FILE_BYTES);
-    if (content === undefined) throw new SkillTargetError(`target does not exist: ${input}`, "SKILL_TARGET_MISSING");
-    const tempDir = makeTempDir();
-    try {
-      const destination = path.join(tempDir, "package");
-      fs.mkdirSync(destination);
-      fs.writeFileSync(path.join(destination, "SKILL.md"), content, { mode: 0o644, flag: "wx" });
-      return { kind: "skill-file", root: destination, tempDir, archiveSkipped: [] };
-    } catch (error) {
-      removeTempDir(tempDir);
-      throw error;
-    }
+    // A skill is its directory: the scripts and references next to SKILL.md
+    // are part of what gets installed, so the containing directory is the
+    // package.
+    return { kind: "skill-file", root: path.dirname(path.resolve(input)), archiveSkipped: [] };
   }
   throw new SkillTargetError(
     `unsupported target ${input}: expected a directory, a SKILL.md, a .zip, .tar, .tar.gz or .tgz archive, or an https/ssh git URL`,
@@ -977,8 +1117,13 @@ function readManifestName(file: string): string | undefined {
   return undefined;
 }
 
+/** Free text taken from the package (names, parser messages): one printable line, secrets masked. */
+function cleanText(value: string, max: number): string {
+  return redactText(singleLineText(printable(value, max), max));
+}
+
 function cleanName(value: string): string {
-  return singleLineText(printable(value, 100), 100);
+  return cleanText(value, 100);
 }
 
 function describePackage(root: string, rel: string, kind: PackageDir["kind"]): { pkg: PackageDir; allowed: string[] | null } {
@@ -988,6 +1133,13 @@ function describePackage(root: string, rel: string, kind: PackageDir["kind"]): {
   let allowed: string[] | null = null;
   let skillFile: string | undefined;
   const skillPath = path.join(dir, "SKILL.md");
+  let skillIsLink = false;
+  try {
+    skillIsLink = fs.lstatSync(skillPath).isSymbolicLink();
+  } catch {
+    skillIsLink = false;
+  }
+  if (skillIsLink) notes.push("SKILL.md is a symbolic link; it was not followed or analysed");
   if (isFileNoFollow(skillPath)) {
     skillFile = joinRel(rel, "SKILL.md");
     let text: string | undefined;
@@ -1015,7 +1167,13 @@ function describePackage(root: string, rel: string, kind: PackageDir["kind"]): {
   if (kind === "directory") notes.push("no SKILL.md or plugin manifest found; scanned as a plain directory");
   const fallback = rel === "" ? path.basename(root) : (rel.split("/").pop() as string);
   return {
-    pkg: { rel, kind, name: cleanName(name ?? fallback), ...(skillFile ? { skillFile } : {}), notes },
+    pkg: {
+      rel,
+      kind,
+      name: cleanName(name ?? fallback),
+      ...(skillFile ? { skillFile } : {}),
+      notes: notes.map((note) => cleanText(note, 300)),
+    },
     allowed,
   };
 }
@@ -1062,7 +1220,11 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
   // ---- Scan (untrusted, always) ----
   const explicitEngines = options.engines !== undefined;
   const engines = options.engines ?? SKILL_DEFAULT_ENGINES;
-  const out = options.out ?? (target.tempDir ? path.join(options.cwd ?? process.cwd(), ".audit") : undefined);
+  // Never into the package by default: a vetted directory is often copied
+  // as it is into the host's skills directory.
+  const out = options.out ?? path.join(options.cwd ?? process.cwd(), ".audit");
+  const contentNotAnalysed: Array<{ path: string; reason: string }> = [];
+  const instructionRules = instructionRuleIds(options.rulesDir ?? defaultRulesDir());
   const scan = await scanProject({
     root,
     untrusted: true,
@@ -1075,7 +1237,8 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
     ...(options.pathEnv ? { pathEnv: options.pathEnv } : {}),
     ...(options.http ? { http: options.http } : {}),
     ...(options.now ? { now: options.now } : {}),
-    extraFindings: capabilityCheck(packageDirs, allowedByPackage, capabilityStates),
+    extraFindings: capabilityCheck(packageDirs, allowedByPackage, capabilityStates, contentNotAnalysed),
+    transformRules: (loaded) => extendInstructionRules(loaded, instructionRules, packageDirs.map((pkg) => pkg.rel)),
   });
 
   // Tags come from the rule set the scan used, by rule id.
@@ -1108,9 +1271,21 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
         ? "dependency advisories could not be checked for every package (OSV.dev unavailable)"
         : undefined;
 
-  const fileIncomplete: Array<{ path: string; reason: string }> = [];
+  const fileIncomplete: Array<{ path: string; reason: string }> = [...contentNotAnalysed];
+  const ownRunRel = (() => {
+    const rel = path.relative(root, scan.runDir);
+    return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : undefined;
+  })();
   for (const skip of scan.coverage.skipped) {
-    if (ignorableSkip(skip.path, skip.reason)) continue;
+    if (ownRunFile(skip.path, ownRunRel)) continue;
+    if (skip.path.endsWith("/") && skip.reason === "default-excluded directory") {
+      // A directory the inventory never enters (`.git`): every file in it.
+      const dir = skip.path.slice(0, -1);
+      const below = filesBelow(root, dir, 200);
+      for (const file of below.files) fileIncomplete.push({ path: file, reason: `inside ${dir}/, which is never scanned (not analysed)` });
+      if (below.more > 0) fileIncomplete.push({ path: dir, reason: `${below.more} more file(s) inside ${dir}/ not analysed` });
+      continue;
+    }
     if (BINARY_SKIP_REASONS.has(skip.reason)) {
       const reason = classifySkippedBinary(skip.path, readHead(path.join(root, ...skip.path.split("/"))));
       if (reason) fileIncomplete.push({ path: skip.path, reason });
@@ -1120,7 +1295,10 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
       fileIncomplete.push({ path: skip.path, reason: "symbolic link (not followed, not analysed)" });
       continue;
     }
-    fileIncomplete.push({ path: skip.path.replace(/\/$/, ""), reason: skip.reason });
+    fileIncomplete.push({
+      path: skip.path.replace(/\/$/, ""),
+      reason: skip.reason === "code-audit output" ? "named like code-audit output but not written by this run (not rule-matched)" : skip.reason,
+    });
   }
   for (const skip of target.archiveSkipped) fileIncomplete.push({ path: skip.path, reason: `archive entry ${skip.reason}` });
   // Every partial-analysis warning names its file; it counts for the packages
@@ -1136,22 +1314,18 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
 
   // ---- Per package ----
   const all = [...scan.findings, ...scan.hotspots];
-  const packages: SkillPackage[] = packageDirs.map((pkg) => {
-    const own = all.filter((finding) => isInside(pkg.rel, finding.file));
+  const toPackage = (
+    entry: { path: string; name: string; kind: SkillPackage["kind"]; notes: string[] },
+    own: Finding[],
+    incomplete: SkillIncomplete[],
+    state: CapabilityState,
+  ): SkillPackage => {
     const reasons = verdictReasons(own, tagsOf);
-    const incomplete: SkillIncomplete[] = [...globalIncomplete];
-    for (const entry of fileIncomplete) {
-      if (isInside(pkg.rel, entry.path)) incomplete.push({ path: packageRelative(pkg.rel, entry.path), reason: entry.reason });
-    }
-    if (dependencyGap && scan.coverage.manifests.some((manifest) => isInside(pkg.rel, manifest.relPath))) {
-      incomplete.push({ reason: dependencyGap });
-    }
     const verdict = decideVerdict(reasons, incomplete);
-    const state = capabilityStates.get(pkg.rel) as CapabilityState;
     return {
-      path: pkg.rel === "" ? "." : pkg.rel,
-      name: pkg.name,
-      kind: pkg.kind,
+      path: entry.path,
+      name: entry.name,
+      kind: entry.kind,
       verdict,
       verdictText: VERDICT_TEXT[verdict],
       riskScore: riskScore(own),
@@ -1178,15 +1352,51 @@ async function scanResolved(options: SkillScanOptions, target: ResolvedTarget): 
         },
         undeclared: CAPABILITIES.filter((capability) => state.undeclared.has(capability)),
       },
-      notes: pkg.notes,
+      notes: entry.notes,
     };
+  };
+  const packages: SkillPackage[] = packageDirs.map((pkg) => {
+    const own = all.filter((finding) => isInside(pkg.rel, finding.file));
+    const incomplete: SkillIncomplete[] = [...globalIncomplete];
+    for (const entry of fileIncomplete) {
+      if (isInside(pkg.rel, entry.path)) incomplete.push({ path: packageRelative(pkg.rel, entry.path), reason: entry.reason });
+    }
+    if (dependencyGap && scan.coverage.manifests.some((manifest) => isInside(pkg.rel, manifest.relPath))) {
+      incomplete.push({ reason: dependencyGap });
+    }
+    return toPackage(
+      { path: pkg.rel === "" ? "." : pkg.rel, name: pkg.name, kind: pkg.kind, notes: pkg.notes },
+      own,
+      incomplete,
+      capabilityStates.get(pkg.rel) as CapabilityState,
+    );
   });
+  // Results and unanalysed files outside every package (recursive scans of a
+  // directory that is not itself a package) form a group of their own, which
+  // counts toward the overall verdict and the exit code like a package.
+  const insideSome = (file: string): boolean => packageDirs.some((pkg) => isInside(pkg.rel, file));
+  const outside = all.filter((finding) => !insideSome(finding.file));
+  const outsideIncomplete = fileIncomplete.filter((entry) => !insideSome(entry.path));
+  if (outside.length > 0 || outsideIncomplete.length > 0) {
+    packages.push(
+      toPackage(
+        {
+          path: OUTSIDE_PACKAGES_PATH,
+          name: "outside any package",
+          kind: "outside",
+          notes: ["files below the target that belong to no discovered skill or plugin"],
+        },
+        outside,
+        outsideIncomplete,
+        emptyCapabilities(null),
+      ),
+    );
+  }
   packages.sort((a, b) => VERDICT_RANK[b.verdict] - VERDICT_RANK[a.verdict] || b.riskScore - a.riskScore || a.path.localeCompare(b.path));
 
   const counts = { DO_NOT_INSTALL: 0, REVIEW: 0, INCOMPLETE: 0, SAFE_TO_INSTALL: 0 };
   for (const pkg of packages) counts[pkg.verdict] += 1;
   const verdict = worstVerdict(packages.map((pkg) => pkg.verdict));
-  const outside = all.filter((finding) => !packageDirs.some((pkg) => isInside(pkg.rel, finding.file)));
   const document: SkillScanDocument = SkillScanDocumentSchema.parse({
     schemaVersion: 1,
     tool: { name: TOOL_NAME, version: TOOL_VERSION },

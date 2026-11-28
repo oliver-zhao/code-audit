@@ -131,8 +131,8 @@ or asks whether one is safe to install, vet it first:
    - `DO_NOT_INSTALL`: say so, list the matched `rule_ids` and the files in
      `details`, and do not install it.
    - `REVIEW`: list the reasons; read the findings with `audit_findings`
-     (`run_id`, and `root` set to the target directory) and explain them, then
-     let the user decide.
+     (`run_id`; the run is in the base directory's `.audit`) and explain
+     them, then let the user decide.
    - `INCOMPLETE`: name what was not analysed; the result is not a clean bill
      of health.
    - `SAFE_TO_INSTALL`: say "no known risk patterns found (not a guarantee of

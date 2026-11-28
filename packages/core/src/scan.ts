@@ -178,6 +178,11 @@ export interface ScanOptions {
    * suppression and reporting. Called only when the builtin engine runs.
    */
   extraFindings?: (inventory: InventoryResult) => Finding[];
+  /**
+   * Adjust the loaded rule set before matching (skill mode widens the
+   * instruction-file rules to every Markdown file of a package).
+   */
+  transformRules?: (ruleSet: RuleSet) => RuleSet;
 }
 
 /** True when `file` is `root` or lies below it (both absolute). */
@@ -369,7 +374,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   const offline = options.offline === true || profile === "quick";
   const failOn = options.failOn ?? "high";
   const minConfidence = options.minConfidence ?? "medium";
-  const ruleSet = loadRules(options.rulesDir ?? defaultRulesDir());
+  const loadedRules = loadRules(options.rulesDir ?? defaultRulesDir());
+  const ruleSet = options.transformRules ? options.transformRules(loadedRules) : loadedRules;
   const selected = resolveEngines(options);
   // `--untrusted`: nothing the audited repository contains may lower the result.
   const untrusted = options.untrusted === true;

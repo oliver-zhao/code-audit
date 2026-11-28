@@ -158,6 +158,11 @@ export function normalizeArchivePath(raw: string): string {
     throw new ArchiveError(`entry ${shown(raw)} is nested more than ${MAX_DEPTH} levels`, "ARCHIVE_BAD_PATH");
   }
   for (const segment of segments) {
+    // Windows drops a trailing dot or space (`SKILL.md.` is `SKILL.md`) and
+    // some tools fold full-width dots (`．．`) to `..`.
+    if (/[. ]$/.test(segment) || segment.normalize("NFKC").split("/").includes("..")) {
+      throw new ArchiveError(`entry ${shown(raw)} has a name component that Windows would rewrite`, "ARCHIVE_BAD_PATH");
+    }
     if (Buffer.byteLength(segment, "utf8") > MAX_SEGMENT_BYTES) {
       throw new ArchiveError(`entry ${shown(raw)} has a name component over ${MAX_SEGMENT_BYTES} bytes`, "ARCHIVE_BAD_PATH");
     }
@@ -231,6 +236,36 @@ function findEndOfCentralDirectory(buffer: Buffer): number {
   throw new ArchiveError("not a zip archive (no end of central directory record)", "ARCHIVE_MALFORMED");
 }
 
+/**
+ * Walk an extra field. It must be well formed, and a field that renames the
+ * entry (Info-ZIP Unicode Path, 0x7075; some extractors use it instead of the
+ * name) must name the same file, in the local header as in the central
+ * directory.
+ */
+function checkExtraField(extra: Buffer, rawName: string, where: string): void {
+  let at = 0;
+  while (at < extra.length) {
+    if (at + 4 > extra.length) {
+      throw new ArchiveError(`zip entry ${shown(rawName)}: malformed extra field in the ${where}`, "ARCHIVE_MALFORMED");
+    }
+    const id = extra.readUInt16LE(at);
+    const length = extra.readUInt16LE(at + 2);
+    if (at + 4 + length > extra.length) {
+      throw new ArchiveError(`zip entry ${shown(rawName)}: malformed extra field in the ${where}`, "ARCHIVE_MALFORMED");
+    }
+    if (id === 0x7075) {
+      const unicodeName = length >= 5 ? decodeName(extra.subarray(at + 9, at + 4 + length), "zip") : "";
+      if (unicodeName !== rawName) {
+        throw new ArchiveError(
+          `zip entry ${shown(rawName)} carries a different Unicode path ${shown(unicodeName)} in the ${where}`,
+          "ARCHIVE_BAD_NAME",
+        );
+      }
+    }
+    at += 4 + length;
+  }
+}
+
 /** Plan the extraction of a zip archive held in `buffer`. */
 export function planZip(buffer: Buffer): ArchivePlan {
   if (buffer.length < 22) throw new ArchiveError("not a zip archive (too short)", "ARCHIVE_MALFORMED");
@@ -286,24 +321,7 @@ export function planZip(buffer: Buffer): ArchivePlan {
     }
     const nameBytes = buffer.subarray(offset + 46, offset + 46 + nameLength);
     const rawName = decodeName(nameBytes, "zip");
-    // Info-ZIP Unicode Path extra field: some unzip tools use it instead of
-    // the name. It must name the same file, or the scan and the install
-    // would see different trees.
-    const extra = buffer.subarray(offset + 46 + nameLength, offset + 46 + nameLength + extraLength);
-    for (let at = 0; at + 4 <= extra.length; ) {
-      const id = extra.readUInt16LE(at);
-      const length = extra.readUInt16LE(at + 2);
-      if (id === 0x7075 && at + 4 + length <= extra.length && length >= 5) {
-        const unicodeName = decodeName(extra.subarray(at + 9, at + 4 + length), "zip");
-        if (unicodeName !== rawName) {
-          throw new ArchiveError(
-            `zip entry ${shown(rawName)} carries a different Unicode path ${shown(unicodeName)}`,
-            "ARCHIVE_BAD_NAME",
-          );
-        }
-      }
-      at += 4 + length;
-    }
+    checkExtraField(buffer.subarray(offset + 46 + nameLength, offset + 46 + nameLength + extraLength), rawName, "central directory");
     offset = next;
 
     const hostSystem = madeBy >>> 8;
@@ -323,20 +341,58 @@ export function planZip(buffer: Buffer): ArchivePlan {
     if (localOffset + 30 > cdOffset || buffer.readUInt32LE(localOffset) !== LOCAL_SIGNATURE) {
       throw new ArchiveError(`zip entry ${shown(rawName)}: local header missing`, "ARCHIVE_MALFORMED");
     }
+    // Extractors read the local header (streaming ones read nothing else):
+    // every field that names or sizes the entry must agree with the central
+    // directory, or the scan and the install see different files.
+    const disagree = (field: string): never => {
+      throw new ArchiveError(
+        `zip entry ${shown(rawName)}: local header and central directory disagree (${field})`,
+        "ARCHIVE_MALFORMED",
+      );
+    };
+    const localFlags = buffer.readUInt16LE(localOffset + 6);
     const localMethod = buffer.readUInt16LE(localOffset + 8);
+    const localCrc = buffer.readUInt32LE(localOffset + 14);
+    const localCompressed = buffer.readUInt32LE(localOffset + 18);
+    const localSize = buffer.readUInt32LE(localOffset + 22);
     const localNameLength = buffer.readUInt16LE(localOffset + 26);
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
     const localName = buffer.subarray(localOffset + 30, localOffset + 30 + localNameLength);
-    if (!localName.equals(nameBytes) || localMethod !== method) {
-      throw new ArchiveError(
-        `zip entry ${shown(rawName)}: local header and central directory disagree`,
-        "ARCHIVE_MALFORMED",
-      );
+    if (!localName.equals(nameBytes)) disagree("name");
+    if (localMethod !== method) disagree("method");
+    if (localFlags !== flags) disagree("flags");
+    if (localOffset + 30 + localNameLength + localExtraLength > cdOffset) {
+      throw new ArchiveError(`zip entry ${shown(rawName)}: local header lies outside the archive`, "ARCHIVE_MALFORMED");
     }
+    checkExtraField(
+      buffer.subarray(localOffset + 30 + localNameLength, localOffset + 30 + localNameLength + localExtraLength),
+      rawName,
+      "local header",
+    );
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-    const dataEnd = dataStart + compressedSize;
+    let dataEnd = dataStart + compressedSize;
     if (dataEnd > cdOffset) {
       throw new ArchiveError(`zip entry ${shown(rawName)}: data lies outside the archive`, "ARCHIVE_MALFORMED");
+    }
+    const usesDescriptor = (flags & 0x8) !== 0;
+    if (!usesDescriptor || localCrc !== 0 || localCompressed !== 0 || localSize !== 0) {
+      // Without a data descriptor (or when the local header fills them in
+      // anyway) the local values are what extractors use.
+      if (localCrc !== crc) disagree("CRC-32");
+      if (localCompressed !== compressedSize) disagree("compressed size");
+      if (localSize !== size) disagree("uncompressed size");
+    }
+    if (usesDescriptor) {
+      // Data descriptor: optional signature, then CRC-32 and both sizes.
+      const signed = dataEnd + 4 <= cdOffset && buffer.readUInt32LE(dataEnd) === 0x08074b50;
+      const at = signed ? dataEnd + 4 : dataEnd;
+      if (at + 12 > cdOffset) {
+        throw new ArchiveError(`zip entry ${shown(rawName)}: data descriptor missing`, "ARCHIVE_MALFORMED");
+      }
+      if (buffer.readUInt32LE(at) !== crc) disagree("data descriptor CRC-32");
+      if (buffer.readUInt32LE(at + 4) !== compressedSize) disagree("data descriptor compressed size");
+      if (buffer.readUInt32LE(at + 8) !== size) disagree("data descriptor uncompressed size");
+      dataEnd = at + 12;
     }
     spans.push({ start: localOffset, end: dataEnd, name: rawName });
 
@@ -377,7 +433,7 @@ export function planZip(buffer: Buffer): ArchivePlan {
       throw new ArchiveError(`zip entry ${shown(rawName)}: stored entry with mismatching sizes`, "ARCHIVE_MALFORMED");
     }
     const read = (): Buffer => {
-      const raw = buffer.subarray(dataStart, dataEnd);
+      const raw = buffer.subarray(dataStart, dataStart + compressedSize);
       let data: Buffer;
       if (method === 0) {
         data = Buffer.from(raw);
@@ -405,15 +461,28 @@ export function planZip(buffer: Buffer): ArchivePlan {
     entries.push({ path: relPath, type: "file", size, read });
   }
   spans.sort((a, b) => a.start - b.start);
-  for (let index = 1; index < spans.length; index += 1) {
-    const previous = spans[index - 1] as { end: number; name: string };
-    const current = spans[index] as { start: number; name: string };
-    if (current.start < previous.end) {
+  // The entries must tile the archive from offset 0 to the central directory:
+  // no prefix, no gap, no unreferenced local entry (a streaming extractor
+  // unpacks every local header it meets), no overlap. Only the archive
+  // comment may follow the end record.
+  let expected = 0;
+  for (const span of spans) {
+    if (span.start < expected) {
+      throw new ArchiveError(`zip entry ${shown(span.name)} overlaps the entry before it (zip bomb construction)`, "ARCHIVE_OVERLAP");
+    }
+    if (span.start > expected) {
       throw new ArchiveError(
-        `zip entries ${shown(previous.name)} and ${shown(current.name)} overlap (zip bomb construction)`,
-        "ARCHIVE_OVERLAP",
+        `zip archive has ${span.start - expected} unreferenced byte(s) before entry ${shown(span.name)}`,
+        "ARCHIVE_UNREFERENCED",
       );
     }
+    expected = span.end;
+  }
+  if (expected !== cdOffset) {
+    throw new ArchiveError(`zip archive has ${cdOffset - expected} unreferenced byte(s) before its central directory`, "ARCHIVE_UNREFERENCED");
+  }
+  if (cdOffset + cdSize !== eocd) {
+    throw new ArchiveError("zip archive has data between its central directory and its end record", "ARCHIVE_UNREFERENCED");
   }
   const plan: ArchivePlan = { format: "zip", entries, skipped };
   checkPlan(plan);
@@ -502,7 +571,8 @@ export function planTar(buffer: Buffer, format: ArchiveFormat = "tar"): ArchiveP
     const magic = block.subarray(257, 263).toString("latin1");
     let size = parseOctal(block, 124, 12, "size");
     if (pax?.has("size")) {
-      const paxSize = Number(pax.get("size"));
+      const text = pax.get("size") as string;
+      const paxSize = /^[0-9]{1,15}$/.test(text) ? Number(text) : Number.NaN;
       if (!Number.isSafeInteger(paxSize) || paxSize < 0) throw new ArchiveError("tar pax size is invalid", "ARCHIVE_MALFORMED");
       size = paxSize;
     }

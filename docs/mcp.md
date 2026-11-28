@@ -494,15 +494,15 @@ user clones the repository into the base directory first, or runs
 `code-audit skill <url>` on the command line. A file target in a credential
 directory is refused (`ROOT_SENSITIVE`); an archive that fails the
 pre-extraction checks is refused with an `ARCHIVE_*` code (treat that
-archive as unsafe). The run is written to `<target>/.audit/<run_id>` for a
-directory and to `<base>/.audit/<run_id>` for a file; `skill.json` in the run
-directory holds every package in full.
+archive as unsafe). The run is written to `<base>/.audit/<run_id>`, never into the package; a
+`SKILL.md` target scans the directory that contains it. `skill.json` in the
+run directory holds every package in full.
 
 ```json
 {
   "run_id": "20261128T060209Z-305fc7d9",
-  "run_dir": "/work/skills/.audit/20261128T060209Z-305fc7d9",
-  "json_path": "/work/skills/.audit/20261128T060209Z-305fc7d9/skill.json",
+  "run_dir": "/work/.audit/20261128T060209Z-305fc7d9",
+  "json_path": "/work/.audit/20261128T060209Z-305fc7d9/skill.json",
   "target_kind": "directory",
   "verdict": "REVIEW",
   "verdicts": { "DO_NOT_INSTALL": 0, "REVIEW": 1, "INCOMPLETE": 0, "SAFE_TO_INSTALL": 1 },

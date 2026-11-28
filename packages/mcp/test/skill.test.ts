@@ -69,7 +69,9 @@ describe("audit_skill", () => {
     expect(String(packages[0]?.details)).toMatch(/^<<<UNTRUSTED_REPOSITORY_CONTENT>>>/);
     expect(String(packages[1]?.verdict_text)).toContain("not a guarantee of safety");
     expect(fs.existsSync(String(json.json_path))).toBe(true);
-    expect(String(json.run_dir).startsWith(path.join(base, "skills", ".audit"))).toBe(true);
+    // Never into the vetted package.
+    expect(String(json.run_dir).startsWith(path.join(base, ".audit"))).toBe(true);
+    expect(fs.existsSync(path.join(base, "skills", ".audit"))).toBe(false);
   });
 
   it("scans an archive inside the base and writes the run to <base>/.audit", async () => {

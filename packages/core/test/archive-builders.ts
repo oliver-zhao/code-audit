@@ -23,6 +23,12 @@ export interface ZipEntrySpec {
   localName?: string;
   /** Write the data region as given instead of compressing `data`. */
   rawData?: Buffer;
+  /** Extra field bytes for the local header. */
+  localExtra?: Buffer;
+  /** Override local header fields (CRC, sizes, flags). */
+  local?: { crc?: number; compressed?: number; size?: number; flags?: number };
+  /** Set bit 3, zero the local CRC/sizes and append a data descriptor (values may be overridden). */
+  descriptor?: { crc?: number; compressed?: number; size?: number };
 }
 
 export function infoZipUnicodePath(name: string): Buffer {
@@ -36,7 +42,15 @@ export function infoZipUnicodePath(name: string): Buffer {
   return field;
 }
 
-function localHeader(name: Buffer, method: number, crc: number, compressed: number, size: number, flags: number): Buffer {
+function localHeader(
+  name: Buffer,
+  method: number,
+  crc: number,
+  compressed: number,
+  size: number,
+  flags: number,
+  extra: Buffer = Buffer.alloc(0),
+): Buffer {
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
@@ -46,8 +60,8 @@ function localHeader(name: Buffer, method: number, crc: number, compressed: numb
   header.writeUInt32LE(compressed, 18);
   header.writeUInt32LE(size, 22);
   header.writeUInt16LE(name.length, 26);
-  header.writeUInt16LE(0, 28);
-  return Buffer.concat([header, name]);
+  header.writeUInt16LE(extra.length, 28);
+  return Buffer.concat([header, name, extra]);
 }
 
 interface CentralSpec {
@@ -90,6 +104,27 @@ function endRecord(count: number, cdSize: number, cdOffset: number): Buffer {
   return end;
 }
 
+/** A local header + data that no central directory record points at. */
+export function strayLocalEntry(name: string, data: string): Buffer {
+  const bytes = Buffer.from(data, "utf8");
+  return Buffer.concat([localHeader(Buffer.from(name, "utf8"), 0, crc32(bytes), bytes.length, bytes.length, 0), bytes]);
+}
+
+/**
+ * A zip with `inserted` placed between the last entry and the central
+ * directory (offsets in the central directory and the end record adjusted).
+ */
+export function zipWithInsertedBytes(entries: ZipEntrySpec[], inserted: Buffer): Buffer {
+  const zip = buildZip(entries);
+  const eocd = zip.length - 22;
+  const cdSize = zip.readUInt32LE(eocd + 12);
+  const cdOffset = zip.readUInt32LE(eocd + 16);
+  const out = Buffer.concat([zip.subarray(0, cdOffset), inserted, zip.subarray(cdOffset)]);
+  out.writeUInt32LE(cdOffset + inserted.length, out.length - 22 + 16);
+  void cdSize;
+  return out;
+}
+
 export function buildZip(entries: ZipEntrySpec[]): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
@@ -101,13 +136,31 @@ export function buildZip(entries: ZipEntrySpec[]): Buffer {
     const name = Buffer.from(entry.name, "utf8");
     const crc = entry.crc ?? crc32(data);
     const size = entry.declaredSize ?? data.length;
-    const flags = entry.flags ?? 0;
-    const local = localHeader(Buffer.from(entry.localName ?? entry.name, "utf8"), method, crc, compressed.length, size, flags);
-    locals.push(local, compressed);
+    const flags = (entry.flags ?? 0) | (entry.descriptor ? 0x8 : 0);
+    const lf = entry.local ?? {};
+    const local = localHeader(
+      Buffer.from(entry.localName ?? entry.name, "utf8"),
+      method,
+      lf.crc ?? (entry.descriptor ? 0 : crc),
+      lf.compressed ?? (entry.descriptor ? 0 : compressed.length),
+      lf.size ?? (entry.descriptor ? 0 : size),
+      lf.flags ?? flags,
+      entry.localExtra,
+    );
+    const parts = [local, compressed];
+    if (entry.descriptor) {
+      const descriptor = Buffer.alloc(16);
+      descriptor.writeUInt32LE(0x08074b50, 0);
+      descriptor.writeUInt32LE(entry.descriptor.crc ?? crc, 4);
+      descriptor.writeUInt32LE(entry.descriptor.compressed ?? compressed.length, 8);
+      descriptor.writeUInt32LE(entry.descriptor.size ?? size, 12);
+      parts.push(descriptor);
+    }
+    locals.push(...parts);
     centrals.push(
       centralRecord({ name, method, crc, compressed: compressed.length, size, flags, mode: entry.mode, extra: entry.extra, offset }),
     );
-    offset += local.length + compressed.length;
+    offset += parts.reduce((total, part) => total + part.length, 0);
   }
   const cd = Buffer.concat(centrals);
   return Buffer.concat([...locals, cd, endRecord(entries.length, cd.length, offset)]);

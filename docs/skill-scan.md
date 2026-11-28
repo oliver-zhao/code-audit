@@ -7,7 +7,7 @@ server offers the same as the tool `audit_skill` (local paths only; see
 
 ```sh
 code-audit skill ./downloads/pdf-helper            # a directory
-code-audit skill ./downloads/SKILL.md              # a single SKILL.md
+code-audit skill ./downloads/pdf-helper/SKILL.md   # the directory of this SKILL.md
 code-audit skill ./downloads/pdf-helper.zip        # .zip, .tar, .tar.gz, .tgz
 code-audit skill https://github.com/org/skills --recursive
 code-audit skill ./plugins --recursive --json
@@ -35,10 +35,18 @@ Checked in this order; the first that applies wins.
 `REVIEW` and `DO_NOT_INSTALL` still list what was not analysed. A package
 with a skipped file is never `SAFE_TO_INSTALL`.
 
-`INCOMPLETE` reasons: a file the scanner skipped (over 1 MiB, unreadable, not
-a regular file, a symbolic link); a binary file that is not a recognised
+`INCOMPLETE` reasons, each listed by path: a file the scanner skipped (over
+1 MiB, unreadable, not a regular file, a symbolic link - also a `SKILL.md`
+that is a link); every file inside a `.git` directory (the inventory never
+enters one; only the `.git` of the tool's own fresh clone is deleted before
+the scan); control files (`.code-audit-ignore`, `.code-audit-baseline.json`)
+and files named like code-audit output that this run did not write (an
+earlier or planted `.audit/<run>/`); a binary file that is not a recognised
 image, font, audio, video or PDF under its own extension (executables, nested
-archives and unknown binaries count); an archive entry that was not unpacked
+archives and unknown binaries count), and a file with such an extension that
+is really text (no NUL byte in its first 8 KiB, whatever its first bytes
+say); a Git LFS pointer (the content was not present); text that is not
+valid UTF-8 (unknown encoding); an archive entry that was not unpacked
 (too large, compression ratio over 100:1, unsupported method, encrypted,
 unsupported tar entry type); rule matching that stopped early in a file; an
 external engine that failed or timed out (or a requested one that is not
@@ -65,8 +73,16 @@ With `--recursive`, every directory below the target that holds a
 (`.git`, `.audit` and `node_modules` are not searched for packages, but are
 scanned as content). A result in a nested package also counts for the
 package around it: installing a plugin installs its skills. Results outside
-every package are counted in `summary.outside`. Without `--recursive` the
-target is one package.
+every package (and unanalysed files there) form the group
+`(outside packages)` (kind `outside`), which has its own verdict and counts
+toward the exit code like a package; `summary.outside` counts its results.
+Without `--recursive` the target is one package; a `SKILL.md` target scans
+the directory that contains it.
+
+Every Markdown file inside a package (`*.md`, `*.mdc`) is treated as an
+instruction file: a skill tells the agent to read its `reference.md`,
+`FORMS.md` and so on. The rules whose `pathInclude` uses the `{{INSTR}}`
+macro (prompt injection, agent configuration) are applied to them too.
 
 ### Capability declaration check
 
@@ -101,12 +117,18 @@ refuses it (exit code 2, MCP code `ARCHIVE_*`):
 - a symbolic link, hard link, device, FIFO or socket entry;
 - two entries for one path (compared after Unicode NFC normalisation and
   case folding), or a file used as a directory;
-- zip: overlapping entries, a local header that disagrees with the central
-  directory, an Info-ZIP Unicode path that names another file, ZIP64 or
-  multi-volume archives; an entry that inflates beyond its declared size or
-  fails its CRC-32;
-- tar: a bad header checksum, a truncated archive; gzip: a ratio over 100:1
-  for more than 1 MiB of output.
+- a name component ending in a dot or space, or full-width dots that fold
+  to `..` (Windows rewrites them);
+- zip: a local header that disagrees with the central directory on name,
+  method, flags, CRC-32 or sizes (with bit 3 set: the data descriptor must
+  match), an Info-ZIP Unicode path (in the local or the central record) that
+  names another file, a malformed extra field, entries that do not tile the
+  archive from offset 0 to the central directory (gaps, prefixes, local
+  entries no central record points at, overlaps), data between the central
+  directory and the end record, ZIP64 or multi-volume archives; an entry that
+  inflates beyond its declared size or fails its CRC-32;
+- tar: a bad header checksum, a truncated archive, a pax `size` that is not
+  plain decimal; gzip: a ratio over 100:1 for more than 1 MiB of output.
 
 Entries over 1 MiB, with a compression ratio over 100:1, encrypted, or with
 another compression method are not unpacked and make the package
@@ -138,9 +160,12 @@ run. The MCP server never clones.
 
 ## Output
 
-The run is written like any scan: `<target>/.audit/<run-id>/` for a
-directory target, and `--out <dir>` or `./.audit/` for an unpacked archive, a
-single `SKILL.md` or a clone (never into the temporary copy). Besides the
+The run is written to `--out <dir>` or `./.audit/<run-id>/` (the current
+directory), never into the package or a temporary copy: a vetted directory is
+often copied as it is into a host's skills directory. When the current
+directory is inside the package, the run lands inside it, and an earlier run
+there makes the next scan `INCOMPLETE` (run from outside the package, or pass
+`--out`). Besides the
 usual run files it holds `skill.json` and, with `md` in `--format`,
 `skill.md`. Because the root of an unpacked or cloned target is removed after
 the scan, `read` / `search` on such a run cannot show source lines.
@@ -201,3 +226,13 @@ Paths in `findings` and `reasons` are relative to the scanned root; paths in
 - `.tar.bz2` / `.tar.xz` and other formats are not accepted as targets; a
   nested archive inside a package is not unpacked (it makes the package
   `INCOMPLETE`).
+- A critical hotspot never gives `DO_NOT_INSTALL` (hotspots are review
+  prompts; it gives `REVIEW`).
+- Untrusted mode keeps placeholder-looking secrets at full confidence, so a
+  documentation placeholder such as `api_key="your-api-key"` makes a package
+  `REVIEW`.
+- File names are printed as they are (a secret in a file name is not
+  masked); package names, notes and evidence are masked.
+- No size cap on a git clone other than its 180 s timeout; SIGTERM ends the
+  scan and removes the temporary directory, but a `git clone` still running
+  is not killed.
