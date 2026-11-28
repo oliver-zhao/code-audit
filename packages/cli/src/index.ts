@@ -130,7 +130,9 @@ Scan options:
                          skipped without it): every commit reachable from any
                          ref, or the range <ref>, <ref>..<ref> or <ref>...<ref>.
                          Runs in an isolated clone; at most 10000 commits
-                         (CODE_AUDIT_HISTORY_MAX_COMMITS) and 5 minutes
+                         (CODE_AUDIT_HISTORY_MAX_COMMITS) and 5 minutes. A
+                         shallow clone is scanned only partially: fetch the full
+                         history first (fetch-depth: 0 in GitHub Actions)
   --ci                   CI output: annotations (GitHub Actions) and a Markdown summary
   --latest-link          also copy the reports to <out>/latest/
   --allow-sensitive-root audit a credential or configuration directory (~/.ssh,
@@ -482,7 +484,7 @@ async function runScan(args: string[]): Promise<number> {
               `Git history: ${result.coverage.history.status} (${result.coverage.history.range ?? "all refs"}): ${result.coverage.history.detail}`,
               ...(result.coverage.history.status === "failed" || result.coverage.history.status === "partial"
                 ? [
-                    `WARNING: the git history scan is ${result.coverage.history.status}; secrets in the history may be missing from this result`,
+                    `WARNING: the git history scan is ${result.coverage.history.status} (${result.coverage.history.detail}); secrets in the history may be missing from this result`,
                   ]
                 : []),
             ]

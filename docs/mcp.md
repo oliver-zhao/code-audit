@@ -133,7 +133,7 @@ Starts a scan in the background and returns immediately.
 | `profile` | `quick` \| `standard` | `standard` | `quick`: built-in engines only and no OSV.dev lookups; `standard`: every installed engine (`--profile`). |
 | `since` | string | none | Only findings in files changed since this git ref (`--since`). |
 | `latestLink` | boolean | false | Also copy the reports to `<root>/.audit/latest/` (`--latest-link`). |
-| `history` | boolean \| string | none | Also scan the git history for secrets with Gitleaks (`--history[=<range>]`): `true` for every commit reachable from any ref, or a range `<ref>`, `<ref>..<ref>`, `<ref>...<ref>` (refs of `[A-Za-z0-9._/-]`, not starting with `-`; anything else is refused before the run starts). Skipped, not an error, when gitleaks is not installed. See [security-model.md](security-model.md#git-history-scan---history). |
+| `history` | boolean \| string | none | Also scan the git history for secrets with Gitleaks (`--history[=<range>]`): `true` for every commit reachable from any ref, or a range `<ref>`, `<ref>..<ref>`, `<ref>...<ref>` (refs of `[A-Za-z0-9._/-]`, not starting with `-`; anything else is refused before the run starts). Skipped, not an error, when gitleaks is not installed. A shallow clone gives a `partial` history scan: fetch the full history first (`fetch-depth: 0` in GitHub Actions). See [security-model.md](security-model.md#git-history-scan---history). |
 
 Result:
 

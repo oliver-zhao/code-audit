@@ -14,6 +14,7 @@ import { isProviderCredentialRule } from "../pathContext.js";
 import { splitLines } from "../redact.js";
 import { PathJailError, resolveInside, toPosixRelative } from "../pathJail.js";
 import { redactSecret } from "../secrets.js";
+import { registerCleanup } from "./cleanup.js";
 import { runTool } from "./run.js";
 
 export interface ExternalRunOutcome {
@@ -265,11 +266,22 @@ export async function runGitleaks(options: {
     "0",
   ];
 
-  const result = await runTool(options.toolPath, args, {
-    cwd: options.root,
-    timeoutMs: options.timeoutMs,
-    maxOutputBytes: options.maxOutputBytes,
-  });
+  // Killed (with everything it started) and its report removed on SIGINT,
+  // SIGTERM, SIGHUP or exit while it runs.
+  const cleanup = registerCleanup([reportPath], { detached: true });
+  let result: Awaited<ReturnType<typeof runTool>>;
+  try {
+    result = await runTool(options.toolPath, args, {
+      cwd: options.root,
+      timeoutMs: options.timeoutMs,
+      maxOutputBytes: options.maxOutputBytes,
+      detached: true,
+      onSpawn: cleanup.track,
+    });
+  } catch (error) {
+    cleanup.release();
+    throw error;
+  }
   const outcome: ExternalRunOutcome = {
     exitCode: result.exitCode,
     timedOut: result.timedOut,
@@ -295,6 +307,7 @@ export async function runGitleaks(options: {
     } catch {
       // best effort cleanup
     }
+    cleanup.release();
   }
 
   const lineCache = new Map<string, readonly string[] | undefined>();

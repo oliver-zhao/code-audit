@@ -33,7 +33,6 @@
  * scan ends, also on error, timeout, SIGINT, SIGTERM, SIGHUP and exit.
  */
 import { createHash, scrypt } from "node:crypto";
-import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,6 +47,7 @@ import { PathJailError, resolveInside } from "../pathJail.js";
 import { redactText, scrubValues } from "../redact.js";
 import { redactSecret } from "../secrets.js";
 import { gitleaksRuleConfidence, isGitleaksPlaceholder, secretHash } from "./gitleaks.js";
+import { registerCleanup, type CleanupHandle } from "./cleanup.js";
 import { runTool, type RunToolResult } from "./run.js";
 
 /** Invalid `--history` value (CLI argument or MCP parameter). */
@@ -202,86 +202,6 @@ export function historyMaxCommits(env: NodeJS.ProcessEnv = process.env): {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup on signals and exit
-
-interface ActiveScan {
-  dir: string;
-  children: Set<ChildProcess>;
-}
-
-const activeScans = new Set<ActiveScan>();
-const CLEANUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-const signalHandlers = new Map<string, () => void>();
-
-function cleanupScanSync(scan: ActiveScan): void {
-  for (const child of scan.children) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // already gone
-    }
-  }
-  scan.children.clear();
-  try {
-    fs.rmSync(scan.dir, { recursive: true, force: true });
-  } catch {
-    // best effort
-  }
-}
-
-function cleanupAllSync(): void {
-  for (const scan of [...activeScans]) cleanupScanSync(scan);
-  activeScans.clear();
-  uninstallCleanup();
-}
-
-function onExit(): void {
-  cleanupAllSync();
-}
-
-function installCleanup(): void {
-  if (signalHandlers.size > 0) return;
-  process.on("exit", onExit);
-  for (const signal of CLEANUP_SIGNALS) {
-    const handler = (): void => {
-      cleanupAllSync();
-      // Without another listener the process would now ignore the signal:
-      // raise it again so that the default action (termination) happens.
-      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
-    };
-    signalHandlers.set(signal, handler);
-    process.on(signal, handler);
-  }
-}
-
-function uninstallCleanup(): void {
-  process.removeListener("exit", onExit);
-  for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-  signalHandlers.clear();
-}
-
-function registerScan(dir: string): ActiveScan {
-  const scan: ActiveScan = { dir, children: new Set() };
-  activeScans.add(scan);
-  installCleanup();
-  return scan;
-}
-
-function unregisterScan(scan: ActiveScan): void {
-  cleanupScanSync(scan);
-  activeScans.delete(scan);
-  if (activeScans.size === 0) uninstallCleanup();
-}
-
-function trackChild(scan: ActiveScan | undefined): ((child: ChildProcess) => void) | undefined {
-  if (!scan) return undefined;
-  return (child) => {
-    scan.children.add(child);
-    child.once("close", () => scan.children.delete(child));
-  };
-}
-
-// ---------------------------------------------------------------------------
 // git
 
 /** Transport protocols refused for every git process of the history scan. */
@@ -362,7 +282,7 @@ interface GitRunOptions {
   timeoutMs: number;
   maxOutputBytes?: number;
   cwd?: string;
-  scan?: ActiveScan;
+  cleanup?: CleanupHandle;
 }
 
 function runHistoryGit(
@@ -393,7 +313,8 @@ function runHistoryGit(
       timeoutMs: Math.max(1, options.timeoutMs),
       maxOutputBytes: options.maxOutputBytes,
       env: historyGitEnv(options.pathEnv),
-      onSpawn: trackChild(options.scan),
+      onSpawn: options.cleanup?.track,
+      detached: true,
     },
   );
 }
@@ -417,7 +338,13 @@ export interface HistoryTarget {
   resolvedRange: string | null;
   /** Commit ids of the range's refs. */
   commits: string[];
+  /** The repository is shallow: commits before the boundary are missing. */
+  shallow: boolean;
 }
+
+/** Why a shallow repository makes the history scan partial. */
+export const SHALLOW_HISTORY_DETAIL =
+  "the repository is a shallow clone: history before the shallow boundary was not scanned; fetch the full history (git fetch --unshallow, or fetch-depth: 0 in GitHub Actions) and scan again";
 
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -453,7 +380,16 @@ export async function prepareHistoryTarget(
   if (!topLevel || !path.isAbsolute(topLevel)) {
     throw new GitScopeError(`--history: git reported no top level for ${root}`);
   }
-  if (range === null) return { topLevel, prefix, resolvedRange: null, commits: [] };
+  // A shallow repository (a CI checkout with depth 1, or a `.git/shallow`
+  // file written by hand) hides every commit before its boundary.
+  const shallowCheck = await runHistoryGit(
+    ["-C", root, "rev-parse", "--is-shallow-repository"],
+    { pathEnv: options.pathEnv, timeoutMs },
+  );
+  if (shallowCheck.timedOut) throw new GitScopeError("--history: git rev-parse timed out");
+  // Anything but a clear "false" counts as shallow (fail towards `partial`).
+  const shallow = shallowCheck.exitCode !== 0 || shallowCheck.stdout.trim() !== "false";
+  if (range === null) return { topLevel, prefix, resolvedRange: null, commits: [], shallow };
   const commits: string[] = [];
   for (const ref of historyRangeRefs(range)) {
     const verify = await runHistoryGit(
@@ -473,6 +409,7 @@ export async function prepareHistoryTarget(
     prefix,
     resolvedRange: separator ? commits.join(separator) : (commits[0] as string),
     commits,
+    shallow,
   };
 }
 
@@ -944,14 +881,14 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
   });
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "code-audit-history-"));
-  const scan = registerScan(tmp);
+  const cleanup = registerCleanup([tmp], { detached: true });
   try {
     fs.chmodSync(tmp, 0o700);
     const mirror = path.join(tmp, "repo.git");
     const ignoreDir = path.join(tmp, "ignore");
     fs.mkdirSync(ignoreDir, { mode: 0o700 });
     const reportPath = path.join(tmp, "report.json");
-    const gitOptions = { pathEnv: options.pathEnv, cwd: tmp, scan };
+    const gitOptions = { pathEnv: options.pathEnv, cwd: tmp, cleanup };
 
     // 1. Isolated copy. Of the refused protocols, the file transport is
     // allowed again for this one clone: it is how `--no-local` reads a local
@@ -1100,7 +1037,8 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
       cwd: tmp,
       timeoutMs: Math.max(1, remaining() - reserveMs),
       env: { ...historyGitEnv(options.pathEnv), ...configEnv },
-      onSpawn: trackChild(scan),
+      onSpawn: cleanup.track,
+      detached: true,
     });
 
     let document: unknown = [];
@@ -1161,6 +1099,10 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
     for (const warning of parsed.warnings) warnings.push(warning);
 
     const partialReasons: string[] = [];
+    // Shallow source, or a shallow copy (the boundary travels with the clone).
+    if (options.target.shallow || fs.existsSync(path.join(mirror, "shallow"))) {
+      partialReasons.push(SHALLOW_HISTORY_DETAIL);
+    }
     if (commits > maxCommits) {
       partialReasons.push(
         `${commits} commits, only the ${maxCommits} most recent were scanned (CODE_AUDIT_HISTORY_MAX_COMMITS)`,
@@ -1192,6 +1134,6 @@ async function scanHistory(options: HistoryScanOptions): Promise<HistoryScanResu
           : `${scanned} commit(s) scanned, ${parsed.results} result(s), ${parsed.candidates.length} distinct secret(s)`,
     };
   } finally {
-    unregisterScan(scan);
+    cleanup.release();
   }
 }

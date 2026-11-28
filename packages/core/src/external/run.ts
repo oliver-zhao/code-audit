@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { killProcessTree } from "./cleanup.js";
 
 export interface RunToolOptions {
   cwd?: string;
@@ -9,7 +10,20 @@ export interface RunToolOptions {
   env?: Record<string, string | undefined>;
   /** Called with the child process right after it was started. */
   onSpawn?: (child: ChildProcess) => void;
+  /**
+   * Start the tool in its own process group (POSIX), so that a timeout (or a
+   * cleanup handler, see cleanup.ts) kills the tool and everything it
+   * started.
+   */
+  detached?: boolean;
 }
+
+/**
+ * After a timeout, how long to wait for the child's output pipes to close
+ * before giving up on them: a grandchild that holds the pipes must not hold
+ * up the caller.
+ */
+export const KILL_GRACE_MS = 2000;
 
 export interface RunToolResult {
   exitCode: number;
@@ -79,6 +93,7 @@ export function runTool(
         windowsHide: true,
         timeout: timeoutMs,
         env: minimalEnv(options.env),
+        detached: options.detached === true,
       });
       options.onSpawn?.(child);
     } catch (error) {
@@ -137,7 +152,14 @@ export function runTool(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killProcessTree(child, options.detached === true);
+      // Do not wait for ever on pipes that another process still holds.
+      const grace = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(-1);
+      }, KILL_GRACE_MS);
+      if (typeof grace.unref === "function") grace.unref();
     }, timeoutMs);
     if (typeof timer.unref === "function") timer.unref();
 

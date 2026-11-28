@@ -229,7 +229,11 @@ code-audit scan . --since HEAD --ci --profile quick
 (`<ref>`, `<ref>..<ref>`, `<ref>...<ref>`) adds a Gitleaks scan of the git
 history, run in an isolated clone (see
 [security-model.md](security-model.md#git-history-scan---history)). It needs
-gitleaks and is skipped without it.
+gitleaks and is skipped without it. It needs the full history: a shallow
+clone (the default of `actions/checkout` in GitHub Actions) only has the
+commits after its boundary, so the history scan is then `partial` with a
+`WARNING`. Use `fetch-depth: 0` in `actions/checkout`, or run
+`git fetch --unshallow` before the scan.
 
 | Where | What |
 |---|---|

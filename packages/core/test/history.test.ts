@@ -332,6 +332,7 @@ interface FakeLog {
     refs?: string;
     pid: number;
     logHasKey?: boolean;
+    grandchild?: number;
   }>;
 }
 
@@ -373,12 +374,19 @@ function installFakeGitleaks(name: string): { dir: string; log: string } {
       "  const current = path.join(__dirname, 'current.json');",
       "  fs.writeFileSync(out, fs.existsSync(current) ? fs.readFileSync(current) : '[]');",
       "}",
+      "const grandchildFile = path.join(__dirname, 'grandchild.txt');",
+      "if (args[0] === 'git' && fs.existsSync(grandchildFile)) {",
+      "  const sleeper = cp.spawn('sleep', [fs.readFileSync(grandchildFile, 'utf8').trim()], { stdio: ['ignore', 'inherit', 'inherit'] });",
+      "  call.grandchild = sleeper.pid;",
+      "}",
       "entries.calls.push(call);",
       "fs.writeFileSync(log, JSON.stringify(entries));",
       "const stderrFile = path.join(__dirname, 'stderr.txt');",
       "if (args[0] === 'git' && fs.existsSync(stderrFile)) process.stderr.write(fs.readFileSync(stderrFile, 'utf8'));",
       "const sleepFile = path.join(__dirname, 'sleep.txt');",
       "if (args[0] === 'git' && fs.existsSync(sleepFile)) { setTimeout(() => process.exit(0), Number(fs.readFileSync(sleepFile, 'utf8'))); }",
+      "const detectSleepFile = path.join(__dirname, 'detect-sleep.txt');",
+      "if (args[0] !== 'git' && fs.existsSync(detectSleepFile)) { setTimeout(() => process.exit(0), Number(fs.readFileSync(detectSleepFile, 'utf8'))); }",
     ].join("\n"),
   );
   const launcher = path.join(dir, "gitleaks");
@@ -866,6 +874,133 @@ describe("history scan: fixes after review (fake gitleaks)", () => {
       expect(() => process.kill(call?.pid as number, 0)).toThrow();
     }, 60_000);
   }
+});
+
+function isAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("history scan: fixes after re-review (fake gitleaks)", () => {
+  it("marks a depth-1 clone partial and says to fetch the full history (N1)", async () => {
+    const source = newRepo("shallow-source");
+    write(source, "a.py", `aws_key = "${FAKE_KEY_1}"\n`);
+    commitAll(source, "secret");
+    fs.rmSync(path.join(source, "a.py"));
+    commitAll(source, "rm");
+    write(source, "b.py", "print(1)\n");
+    commitAll(source, "more");
+    const shallow = path.join(temp, "shallow-ci");
+    git(["-c", "protocol.file.allow=always", "clone", "-q", "--depth", "1", `file://${source}`, shallow], temp);
+    const fake = installFakeGitleaks("shallow-ci");
+    const result = await scanProject({
+      root: shallow,
+      out: path.join(temp, "out-shallow-ci"),
+      offline: true,
+      formats: ["json", "md"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+    });
+    expect(result.coverage.history?.status).toBe("partial");
+    expect(result.coverage.history?.detail).toContain("shallow");
+    expect(result.coverage.history?.detail).toContain("fetch-depth: 0");
+    expect(result.coverage.history?.detail).toContain("git fetch --unshallow");
+    const markdown = fs.readFileSync(path.join(result.runDir, "report.md"), "utf8");
+    expect(markdown).toMatch(/\*\*WARNING:\*\* the git history scan is partial \(the repository is a shallow clone/);
+  }, 60_000);
+
+  it("marks a repository with a hand-written .git/shallow partial (N1)", async () => {
+    const repo = newRepo("fake-shallow");
+    write(repo, "base.txt", "x\n");
+    commitAll(repo, "base");
+    write(repo, "a.py", `aws_key = "${FAKE_KEY_1}"\n`);
+    commitAll(repo, "secret");
+    fs.rmSync(path.join(repo, "a.py"));
+    const head = commitAll(repo, "rm");
+    // Every object is present, but git now stops at HEAD.
+    fs.writeFileSync(path.join(repo, ".git", "shallow"), `${head}\n`);
+    const fake = installFakeGitleaks("fake-shallow");
+    const result = await scanProject({
+      root: repo,
+      out: path.join(temp, "out-fake-shallow"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+      untrusted: true,
+    });
+    expect(result.coverage.history?.status).toBe("partial");
+    expect(result.coverage.history?.detail).toContain("shallow");
+    expect(result.warnings.join("\n")).toContain("shallow");
+  }, 60_000);
+
+  it("kills the process group on a timeout and does not wait for pipes a grandchild holds (N2)", async () => {
+    const repo = newRepo("grandchild");
+    write(repo, "creds.txt", `aws_key = "${FAKE_KEY_1}"\n`);
+    const added = commitAll(repo, "add");
+    const fake = installFakeGitleaks("grandchild");
+    fs.writeFileSync(
+      path.join(fake.dir, "history.json"),
+      JSON.stringify([historyEntry(added, "creds.txt", 1, 13, "2024-01-01T00:00:00Z")]),
+    );
+    fs.writeFileSync(path.join(fake.dir, "grandchild.txt"), "60");
+    const started = Date.now();
+    const result = await scanProject({
+      root: repo,
+      out: path.join(temp, "out-grandchild"),
+      offline: true,
+      formats: ["json"],
+      engines: ["builtin"],
+      pathEnv: pathWith(fake.dir),
+      history: true,
+      historyTimeoutMs: 6000,
+    });
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(result.coverage.history?.status).toBe("partial");
+    // The report was processed: the still-present key carries its history.
+    const withHistory = result.findings.filter((finding) => finding.history);
+    expect(withHistory).toHaveLength(1);
+    expect(withHistory[0]?.history).toMatchObject({ commit: added, stillPresent: true });
+    const call = readFakeLog(fake.log).calls.find((entry) => entry.args[0] === "git");
+    expect(call?.grandchild).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(isAlive(call?.pid)).toBe(false);
+    expect(isAlive(call?.grandchild)).toBe(false);
+  }, 60_000);
+
+  it("kills the working-tree gitleaks and removes its report on SIGTERM (N3)", async () => {
+    const repo = newRepo("detect-signal");
+    write(repo, "a.py", "print(1)\n");
+    commitAll(repo, "one");
+    const fake = installFakeGitleaks("detect-signal");
+    fs.writeFileSync(path.join(fake.dir, "detect-sleep.txt"), "60000");
+    const child = spawn(
+      process.execPath,
+      [CLI, "scan", repo, "--offline", "--engines", "builtin,gitleaks", "--format", "json", "--out", path.join(temp, "out-detect-signal")],
+      { env: { ...process.env, PATH: pathWith(fake.dir) }, stdio: "ignore" },
+    );
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    let call: FakeLog["calls"][0] | undefined;
+    for (let attempt = 0; attempt < 200 && !call; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      call = readFakeLog(fake.log).calls.find((entry) => entry.args[0] === "detect");
+    }
+    expect(call).toBeDefined();
+    const report = call?.args[call.args.indexOf("--report-path") + 1] as string;
+    expect(fs.existsSync(report)).toBe(true);
+    child.kill("SIGTERM");
+    await exited;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(fs.existsSync(report)).toBe(false);
+    expect(isAlive(call?.pid)).toBe(false);
+  }, 60_000);
 });
 
 describe("history scan of a hostile repository (fake gitleaks)", () => {

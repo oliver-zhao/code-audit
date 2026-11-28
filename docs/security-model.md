@@ -344,7 +344,15 @@ never given the audited repository:
    that added a secret for a clean one (tested; the run warns when the
    repository had replace refs).
 4. `git rev-list --count` and `git rev-list --topo-order` give the number of
-   commits and their order. A failure is `failed`, never `ok`.
+   commits and their order. A failure is `failed`, never `ok`. A shallow
+   repository - a CI checkout with depth 1, or a `.git/shallow` file the
+   repository was given by hand, which makes git stop at the listed commits
+   although every object is there - is detected with `git rev-parse
+   --is-shallow-repository` in the source and by a `shallow` file in the
+   copy; the history scan is then `partial` with a `WARNING` that the
+   history before the boundary was not scanned and should be fetched in full
+   (`git fetch --unshallow`, or `fetch-depth: 0` in GitHub Actions). It is
+   never `ok`.
 5. Gitleaks runs on the copy: `gitleaks git <copy> --log-opts
    "--full-history --max-count=N <ids|--all>" --report-format json
    --report-path <tmp>/report.json --no-banner --no-color --exit-code 0
@@ -371,11 +379,15 @@ never given the audited repository:
    its lines) masked. Nothing is read back from the copy, so deduplication
    has no per-file budget.
 7. The temporary directory is removed when the scan ends, also on error and
-   timeout. While a history scan runs, handlers for `SIGINT`, `SIGTERM`,
-   `SIGHUP` and process exit kill Gitleaks and the git processes it was
-   started with and remove the directory synchronously; then the signal's
-   default action proceeds (the handlers are removed when no history scan
-   runs). A `SIGKILL` of the code-audit process cannot be handled: the
+   timeout. Gitleaks and every git command are started in their own process
+   group; a timeout kills the whole group, and code-audit stops waiting for
+   the output pipes two seconds later, so that a grandchild holding them
+   cannot use up the time left for fingerprinting. While a history scan (or
+   the working-tree Gitleaks scan) runs, handlers for `SIGINT`, `SIGTERM`,
+   `SIGHUP` and process exit kill those process groups and remove the
+   temporary directory (and the working-tree report) synchronously; then the
+   signal's default action proceeds (the handlers are removed when nothing
+   is running). A `SIGKILL` of the code-audit process cannot be handled: the
    directory (mode 0700) is left in the system temporary directory.
 
 Limits: `--max-count=10000` (`CODE_AUDIT_HISTORY_MAX_COMMITS`), one
